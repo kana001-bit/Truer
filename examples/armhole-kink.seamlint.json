@@ -1,0 +1,45 @@
+{
+  "status": "warning",
+  "target": "body-armhole",
+  "lengthMm": 249.609,
+  "diagnostics": [
+    {
+      "severity": "warning",
+      "code": "geometry.curve_kink",
+      "target": "body-armhole",
+      "message": "Path direction changes sharply near sampled point 27.",
+      "expected": {
+        "maxAngleDeg": 25
+      },
+      "actual": {
+        "angleDeg": 45.809,
+        "point": {
+          "x": 120,
+          "y": 72
+        }
+      },
+      "suggestion": [
+        "Check whether this is an intentional corner or an unwanted kink."
+      ]
+    },
+    {
+      "severity": "warning",
+      "code": "geometry.curve_kink",
+      "target": "body-armhole",
+      "message": "Path direction changes sharply near sampled point 39.",
+      "expected": {
+        "maxAngleDeg": 25
+      },
+      "actual": {
+        "angleDeg": 69.983,
+        "point": {
+          "x": 124,
+          "y": 130
+        }
+      },
+      "suggestion": [
+        "Check whether this is an intentional corner or an unwanted kink."
+      ]
+    }
+  ]
+}

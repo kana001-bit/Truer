@@ -1,0 +1,4 @@
+interface:
+  display_name: "Truer Implementation"
+  short_description: "Truer の proposal・geometry edit・preview・apply・CLI の規約"
+  default_prompt: "$truer-implementation を使って、Truer の proposal model、fix rules、geometry edit、preview、apply、CLI behavior、tests、docs、または Seamlint/Loomit 連携を変更する。"

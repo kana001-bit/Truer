@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="220mm" height="180mm" viewBox="0 0 220 180">
+  <path
+    id="body-armhole"
+    fill="none"
+    stroke="black"
+    d="M 40 140 C 42 80 88 42 120 72 L 124 130 L 70 154"
+  />
+  <path
+    id="sleeve-cap"
+    fill="none"
+    stroke="blue"
+    d="M 40 140 C 48 84 92 48 122 76 C 148 106 144 140 72 154"
+  />
+</svg>
