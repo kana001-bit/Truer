@@ -40,6 +40,39 @@ function curveKink(point: { x: number; y: number }): DiagnosticInput {
   };
 }
 
+// seam_length_mismatch is a *pair* diagnostic: target is "from/to", no actual.point,
+// carries the two edge lengths. The adapter (stubbed here) resolves the pair's "from"
+// side as the addressing anchor.
+const SEAM_TARGET = "back.outseam/front.outseam";
+const SEAM_BLOCK = "BACK";
+const SEAM_EDGE = "outseam";
+const SEAM_GEOMETRY = "polyline 0,0 0,120 0,240";
+
+function resolveSeamFrom(diagnostic: DiagnosticInput): ResolveTargetResult {
+  if (diagnostic.target === SEAM_TARGET) {
+    return {
+      status: "resolved",
+      target: { blockName: SEAM_BLOCK, edgeId: SEAM_EDGE, edgeGeometry: SEAM_GEOMETRY }
+    };
+  }
+  return { status: "not-found" };
+}
+
+function seamLengthMismatch(fromLengthMm: number, toLengthMm: number): DiagnosticInput {
+  return {
+    code: "geometry.seam_length_mismatch",
+    severity: "warning",
+    target: SEAM_TARGET,
+    expected: { maxLengthDiffMm: 3 },
+    actual: {
+      fromLengthMm,
+      toLengthMm,
+      lengthDiffMm: Math.abs(fromLengthMm - toLengthMm)
+    },
+    suggestion: ["Check whether the difference is intentional ease, gather, or a pattern mismatch."]
+  };
+}
+
 test("supported curve_kink diagnostic becomes a preview-only proposal with required fields", () => {
   // 守る仕様: geometry.curve_kink + 有効な point は proposal になり、schema-required field を満たす。
   //           geometry 未実装の Milestone 1 では必ず preview-only (changes:[])。
@@ -126,14 +159,51 @@ test("target with neither edgeId nor arcRange is rejected by validation", () => 
   assert.ok(errors.some((error) => error.includes("edgeId or arcRange")));
 });
 
+test("arcRange that is swapped or out of [0,1] is rejected by validation", () => {
+  // 守る仕様: arcRange は 0..1 正規化・start<end（原点をまたがない, docs/seamlint-requests.md）。
+  //           [0.9,0.1] や [2,-1] のような不正 addressing を保存させない（後段の edge 解決 /
+  //           digest 照合の破綻を防ぐ）。
+  function withArcRange(arcRange: unknown) {
+    return {
+      schema: PROPOSAL_SCHEMA_V0,
+      source: { file: "x.dxf", sourceDigest: "sha256:0", createdBy: "tru propose" },
+      proposals: [
+        {
+          id: "prop_001",
+          status: "proposed",
+          mode: "preview-only",
+          target: { blockName: "body-armhole", arcRange, targetDigest: "sha256:0" },
+          sourceDiagnostic: { code: "geometry.curve_kink" },
+          intent: { kind: "inspect-local-kink", confidence: "low", reviewRequired: true },
+          changes: [],
+          preview: {},
+          notes: []
+        }
+      ],
+      skipped: []
+    };
+  }
+  const invalid: unknown[] = [[0.9, 0.1], [2, -1], [0.5, 0.5], [-0.1, 0.5], [0.5, 1.1]];
+  for (const bad of invalid) {
+    const errors = validateProposalFile(withArcRange(bad));
+    assert.ok(
+      errors.some((error) => error.includes("arcRange")),
+      `expected arcRange rejection for ${JSON.stringify(bad)}`
+    );
+  }
+  // 正常な正規化区間 (0 <= start < end <= 1) は通る。
+  assert.deepEqual(validateProposalFile(withArcRange([0.25, 0.5])), []);
+});
+
 test("unsupported diagnostic code is skipped with a reason, not dropped", () => {
   // 守る仕様 (T8): 未対応 code は crash させず skipped として理由付きで残す。黙って捨てない。
+  // 例は Truer が今扱わない code を使う（seam_length_mismatch は対応済みになった）。
   const file = createProposalFile({
     sourceFile: "armhole-kink.dxf",
     sourceText: DXF,
     diagnostics: [
       {
-        code: "geometry.seam_length_mismatch",
+        code: "geometry.endpoint_gap",
         target: "body-armhole",
         actual: { point: { x: 1, y: 1 } }
       }
@@ -143,7 +213,7 @@ test("unsupported diagnostic code is skipped with a reason, not dropped", () => 
   assert.equal(file.proposals.length, 0);
   assert.equal(file.skipped.length, 1);
   assert.equal(file.skipped[0]!.code, "proposal.unsupported_diagnostic_code");
-  assert.equal(file.skipped[0]!.diagnosticCode, "geometry.seam_length_mismatch");
+  assert.equal(file.skipped[0]!.diagnosticCode, "geometry.endpoint_gap");
 });
 
 test("missing actual.point is skipped, not crashed", () => {
@@ -183,6 +253,88 @@ test("ambiguous target is skipped as ambiguous_target, distinct from target_not_
   assert.equal(file.skipped.length, 1);
   assert.equal(file.skipped[0]!.code, "proposal.ambiguous_target");
   assert.equal(file.skipped[0]!.diagnosticCode, "geometry.curve_kink");
+});
+
+test("seam_length_mismatch becomes an intent-carrying preview-only proposal", () => {
+  // 守る仕様: ペア診断 seam_length_mismatch は「初の意図つき」proposal になる。まだ線は引かない
+  //           ので preview-only / changes:[]。点は無く、from 辺にアンカーし、元の長さを保持する。
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(2415.778, 2167.495)],
+    resolveTarget: resolveSeamFrom
+  });
+
+  assert.deepEqual(validateProposalFile(file), []);
+  assert.equal(file.proposals.length, 1);
+
+  const proposal = file.proposals[0]!;
+  assert.equal(proposal.mode, "preview-only");
+  assert.equal(proposal.changes.length, 0);
+  assert.equal(proposal.intent.kind, "reconcile-seam-length");
+  assert.equal(proposal.intent.reviewRequired, true);
+  // 点を持たない診断なので preview に診断点は出さない。
+  assert.equal(proposal.preview.diagnosticPoint, undefined);
+  // from 辺がアンカー（表示・特定用。直す辺の決定ではない）。
+  assert.equal(proposal.target.blockName, SEAM_BLOCK);
+  assert.equal(proposal.target.edgeId, SEAM_EDGE);
+  assert.equal(proposal.target.targetDigest, digestPathData(SEAM_GEOMETRY));
+  // 元診断（ペア target と長さ）を保持（T8 / traceability）。
+  assert.equal(proposal.sourceDiagnostic.code, "geometry.seam_length_mismatch");
+  assert.equal(proposal.sourceDiagnostic.target, SEAM_TARGET);
+  const actual = proposal.sourceDiagnostic.actual as { fromLengthMm: number; toLengthMm: number };
+  assert.equal(actual.fromLengthMm, 2415.778);
+  assert.equal(actual.toLengthMm, 2167.495);
+});
+
+test("seam_length_mismatch confidence: small gap is a medium true-up candidate", () => {
+  // 守る仕様: 差が閾値 (10mm) 以内なら medium（真値合わせの候補）。reviewRequired は true のまま。
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(500, 505)],
+    resolveTarget: resolveSeamFrom
+  });
+  assert.equal(file.proposals[0]!.intent.confidence, "medium");
+  assert.equal(file.proposals[0]!.intent.reviewRequired, true);
+});
+
+test("seam_length_mismatch confidence: large gap is low (human must decide)", () => {
+  // 守る仕様: 差が閾値超なら low（イセ/ギャザー/ペア間違いの疑い。人間必須）。
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(2415.778, 2167.495)],
+    resolveTarget: resolveSeamFrom
+  });
+  assert.equal(file.proposals[0]!.intent.confidence, "low");
+});
+
+test("seam_length_mismatch without length fields is skipped, not crashed", () => {
+  // 守る仕様 (T8): from/to/diff mm が欠けると crash させず missing_length_fields で skip。
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [{ code: "geometry.seam_length_mismatch", target: SEAM_TARGET, actual: {} }],
+    resolveTarget: resolveSeamFrom
+  });
+  assert.equal(file.proposals.length, 0);
+  assert.equal(file.skipped.length, 1);
+  assert.equal(file.skipped[0]!.code, "proposal.missing_length_fields");
+});
+
+test("createProposalFile is deterministic for seam_length_mismatch too", () => {
+  // 守る仕様 (T10): length カードも同じ入力から byte 一致（notes の mm 整形も決定的）。
+  const input = {
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(2415.778, 2167.495)],
+    resolveTarget: resolveSeamFrom
+  };
+  assert.equal(
+    JSON.stringify(createProposalFile(input)),
+    JSON.stringify(createProposalFile(input))
+  );
 });
 
 test("missing required field is caught by validateProposalFile", () => {
