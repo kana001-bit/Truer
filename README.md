@@ -7,7 +7,7 @@ Truer は、Seamlint が「この線は少しおかしいかもしれない」�
 
 - 設計と方針: [docs/](docs/) （`docs/README.md` が索引）
 - 実装ルールと守るべき invariant: [skills/truer-implementation/](skills/truer-implementation/)
-- Agent 向け入口: [AGENTS.md](AGENTS.md)
+- Agent 向け入口 / 規約の正本: [AGENTS.md](AGENTS.md)（[CLAUDE.md](CLAUDE.md) はここへのポインタ）
 
 ## Status
 
