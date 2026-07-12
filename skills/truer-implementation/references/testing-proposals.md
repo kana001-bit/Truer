@@ -55,19 +55,28 @@ proposal は JSON-serializable で、preview / apply / 将来の Studio と互�
   "proposals": [
     {
       "id": "prop_001",
-      "status": "proposed",          // proposed | accepted | rejected | applied
-      "mode": "preview-only",        // preview-only | local-adjustment
+      "status": "proposed", // proposed | accepted | rejected | applied
+      "mode": "preview-only", // preview-only | local-adjustment
       "target": { "blockName": "body-armhole", "edgeId": "edge3", "targetDigest": "sha256:..." },
-      "sourceDiagnostic": { "code": "geometry.curve_kink", "severity": "warning", "actual": { "point": {"x":124,"y":130} } },
+      "sourceDiagnostic": {
+        "code": "geometry.curve_kink",
+        "severity": "warning",
+        "actual": { "point": { "x": 124, "y": 130 } }
+      },
       "intent": { "kind": "inspect-local-kink", "confidence": "low", "reviewRequired": true },
-      "changes": [],                 // preview-only は [] (DXF first slice の既定)
-      "preview": { "diagnosticPoint": {"x":124,"y":130} },
+      "changes": [], // preview-only は [] (DXF first slice の既定)
+      "preview": { "diagnosticPoint": { "x": 124, "y": 130 } },
       "notes": ["..."]
     }
   ],
   "skipped": [
     // proposal にできなかった診断を理由付きで残す（黙って捨てない, T8）。additive。
-    { "code": "proposal.unsupported_diagnostic_code", "diagnosticCode": "geometry.endpoint_gap", "message": "...", "diagnostic": { } }
+    {
+      "code": "proposal.unsupported_diagnostic_code",
+      "diagnosticCode": "geometry.endpoint_gap",
+      "message": "...",
+      "diagnostic": {}
+    }
   ]
 }
 ```

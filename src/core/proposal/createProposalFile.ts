@@ -108,11 +108,7 @@ export function proposalId(index: number): string {
 }
 
 function isFinitePoint(point: Point | undefined): point is Point {
-  return (
-    point !== undefined &&
-    Number.isFinite(point.x) &&
-    Number.isFinite(point.y)
-  );
+  return point !== undefined && Number.isFinite(point.x) && Number.isFinite(point.y);
 }
 
 interface SeamLengths {
@@ -297,11 +293,7 @@ const PROPOSAL_BUILDERS: Record<string, ProposalBuilder> = {
   "geometry.seam_length_mismatch": buildSeamLengthMismatchProposal
 };
 
-function skip(
-  code: string,
-  diagnostic: DiagnosticInput,
-  message: string
-): SkippedDiagnostic {
+function skip(code: string, diagnostic: DiagnosticInput, message: string): SkippedDiagnostic {
   return {
     code,
     diagnosticCode: diagnostic.code,
@@ -361,9 +353,7 @@ export function createProposalFile(input: CreateProposalFileInput): ProposalFile
   // Guard: we must never emit a file that fails our own contract.
   const errors = validateProposalFile(file);
   if (errors.length > 0) {
-    throw new Error(
-      "createProposalFile produced an invalid proposal file: " + errors.join("; ")
-    );
+    throw new Error("createProposalFile produced an invalid proposal file: " + errors.join("; "));
   }
 
   return file;
