@@ -1,3 +1,6 @@
 node_modules/
 dist/
 *.log
+
+# 個人のエディタ装飾（タイトルバー色など）は各自ローカルに置き、repo では追跡しない
+.vscode/settings.json
