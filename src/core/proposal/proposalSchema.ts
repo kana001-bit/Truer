@@ -35,12 +35,25 @@ export type ChangeKind = "replace-path-data";
 
 // Seamlint diagnostic codes Truer currently produces correction proposals for.
 // Everything else becomes a `skipped` entry, not a dropped diagnostic (T8).
-export const SUPPORTED_DIAGNOSTIC_CODES = ["geometry.curve_kink"] as const;
+//
+//   - geometry.curve_kink: single edge + `actual.point`. First-slice preview-only.
+//   - geometry.seam_length_mismatch: a *pair* diagnostic (`target` is "a/b", no
+//     `actual.point`; carries fromLengthMm/toLengthMm/lengthDiffMm). It is addressed
+//     by anchoring on the pair's "from" edge — an addressing anchor for display, NOT a
+//     claim about which edge to change (T6). Which side absorbs Δ, and the apply write
+//     target, are OPEN, so it stays preview-only (`changes: []`) too.
+export const SUPPORTED_DIAGNOSTIC_CODES = [
+  "geometry.curve_kink",
+  "geometry.seam_length_mismatch"
+] as const;
 
 // Truer skip-reason codes (stable, english; wording lives in `message`).
 // See references/testing-proposals.md "Codes".
 export const SKIP_UNSUPPORTED_DIAGNOSTIC_CODE = "proposal.unsupported_diagnostic_code";
+// curve_kink has no valid `actual.point`.
 export const SKIP_MISSING_DIAGNOSTIC_POINT = "proposal.missing_diagnostic_point";
+// seam_length_mismatch is missing the finite length fields it needs (from/to/diff mm).
+export const SKIP_MISSING_LENGTH_FIELDS = "proposal.missing_length_fields";
 // DXF addressing: the target BLOCK/edge is absent from, or not unique in, the source.
 export const SKIP_TARGET_NOT_FOUND = "proposal.target_not_found";
 export const SKIP_AMBIGUOUS_TARGET = "proposal.ambiguous_target";
@@ -98,8 +111,9 @@ export interface ProposalTarget {
   // are only stably identifiable by arcRange, so edgeId is not mandatory.
   blockName: string;
   edgeId?: string;
-  // Normalized loop range [start, end] for the edge (Seamlint arcRange). May address
-  // the edge on its own when no stable edgeId is available.
+  // Normalized [start, end] slice of the piece loop (Seamlint arcRange): origin at the
+  // first corner, values in 0..1, and start < end (edges are corner-bounded and never
+  // wrap the origin). May address the edge on its own when no stable edgeId is available.
   arcRange?: [number, number];
   // Digest of the addressed edge's net-line geometry, checked before apply writes (T3).
   targetDigest: string;
@@ -153,12 +167,22 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+// Seamlint arcRange: a normalized [start, end] slice of the piece loop, origin at the
+// first corner, values in 0..1 (docs/seamlint-requests.md). Edges are corner-bounded and
+// never wrap the origin, so start < end. Reject swapped / out-of-[0,1] ranges here so a
+// malformed addressing (e.g. [0.9, 0.1] or [2, -1]) never reaches a saved proposal and
+// breaks later edge resolution or digest matching.
 function isArcRange(value: unknown): value is [number, number] {
+  if (!Array.isArray(value) || value.length !== 2) return false;
+  const [start, end] = value as [unknown, unknown];
   return (
-    Array.isArray(value) &&
-    value.length === 2 &&
-    Number.isFinite(value[0]) &&
-    Number.isFinite(value[1])
+    typeof start === "number" &&
+    typeof end === "number" &&
+    Number.isFinite(start) &&
+    Number.isFinite(end) &&
+    start >= 0 &&
+    end <= 1 &&
+    start < end
   );
 }
 
@@ -188,7 +212,7 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
       errors.push(`${at}.target.edgeId must be a non-empty string when present`);
     }
     if (target.arcRange !== undefined && !isArcRange(target.arcRange)) {
-      errors.push(`${at}.target.arcRange must be a [start, end] pair of finite numbers`);
+      errors.push(`${at}.target.arcRange must be a normalized [start, end] with 0 <= start < end <= 1`);
     }
     // Addressing needs at least one of edgeId / arcRange (T6: never guess the edge).
     if (!isNonEmptyString(target.edgeId) && !isArcRange(target.arcRange)) {
