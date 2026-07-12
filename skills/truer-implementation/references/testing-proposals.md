@@ -5,10 +5,12 @@ Truer は write tool なので、test の主目的は「補正が正しいこと
 preview と apply が一致する・採用と digest のゲートが効く** ことの回帰固定です。
 
 > **Geometry source は DXF (ASTM)**（2026-07-11 pivot）。fixture は DXF ベース、addressing は
-> BLOCK 名 + `edgeId`/`arcRange`。以下の JSON 例・field 名の一部は SVG 時代（`target.pathId` /
-> `replace-path-data`）のまま残っている。これは **実装コードの現状**（`proposalSchema.ts` 未変更）に
-> 合わせた記述で、DXF addressing への schema 再設計は次工程。テスト観点（source 不変 / preview==apply /
-> accept・digest ゲート / preview-only）は format 非依存で不変。
+> BLOCK 名 + `edgeId`/`arcRange`。proposal `target` は DXF addressing（`blockName` + `edgeId` +
+> `targetDigest`、`arcRange` は optional）へ **再設計済み**（`proposalSchema.ts` /
+> `createProposalFile.ts`、v0 in-place の schema break）。`changes[].kind` の `replace-path-data` は
+> **legacy SVG** として残し、DXF 用 change kind は editing surface が OPEN のため未新設（first slice は
+> preview-only）。テスト観点（source 不変 / preview==apply / accept・digest ゲート / preview-only）は
+> format 非依存で不変。
 
 ## Test Comments
 
@@ -54,12 +56,12 @@ proposal は JSON-serializable で、preview / apply / 将来の Studio と互�
     {
       "id": "prop_001",
       "status": "proposed",          // proposed | accepted | rejected | applied
-      "mode": "local-adjustment",    // preview-only | local-adjustment
-      "target": { "pathId": "...", "pathDigest": "sha256:..." },
-      "sourceDiagnostic": { "code": "geometry.curve_kink", "severity": "warning", "actual": { "point": {"x":0,"y":0} } },
-      "intent": { "kind": "smooth-local-kink", "confidence": "low", "reviewRequired": true },
-      "changes": [ { "kind": "replace-path-data", "from": "M ...", "to": "M ..." } ],
-      "preview": { "movedPoints": [ { "from": {"x":0,"y":0}, "to": {"x":0,"y":0} } ] },
+      "mode": "preview-only",        // preview-only | local-adjustment
+      "target": { "blockName": "body-armhole", "edgeId": "edge3", "targetDigest": "sha256:..." },
+      "sourceDiagnostic": { "code": "geometry.curve_kink", "severity": "warning", "actual": { "point": {"x":124,"y":130} } },
+      "intent": { "kind": "inspect-local-kink", "confidence": "low", "reviewRequired": true },
+      "changes": [],                 // preview-only は [] (DXF first slice の既定)
+      "preview": { "diagnosticPoint": {"x":124,"y":130} },
       "notes": ["..."]
     }
   ],
@@ -75,7 +77,8 @@ required（明示 break なしに rename / 削除しない）:
 - `schema`（MVP は `truer.proposal.v0` 固定）
 - `source.file` / `source.sourceDigest`
 - `proposals[].id` / `status` / `mode`
-- `target.pathId` / `target.pathDigest`
+- `target.blockName` / `target.targetDigest`、および `target.edgeId` か `target.arcRange` の少なくとも一方
+  （両方可。edgeId が安定に取れない辺は arcRange 単独で addressing する）
 - `sourceDiagnostic.code`
 - `changes`（`preview-only` では `[]`）
 - `intent.reviewRequired`（MVP は常に `true`）
@@ -90,10 +93,10 @@ required（明示 break なしに rename / 削除しない）:
   `applied`（適用済み）。勝手に増やさない。
 - `mode`: `preview-only`（示すだけ・`changes:[]`）/ `local-adjustment`（辺内部の小補正）。DXF では
   first slice の既定を `preview-only` にする（editing surface が OPEN）。
-- `changes[].kind`: 現状コードは `replace-path-data`（SVG 時代）。DXF flattened polyline には制御点が
-  無いので `move-control-point` は採らない。DXF 用の change kind（vertex 操作等）を足すときは
-  propose / preview / apply の三点を同時に対応させる（`references/extensibility.md`）。apply が知らない
-  kind は silent に skip せず error。
+- `changes[].kind`: 現状コードの唯一の kind は `replace-path-data`（**legacy SVG**）。DXF flattened
+  polyline には制御点が無いので `move-control-point` は採らない。DXF 用の change kind（vertex 操作等）は
+  editing surface が OPEN のため未新設で、足すときは propose / preview / apply の三点を同時に対応させる
+  （`references/extensibility.md`）。apply が知らない kind は silent に skip せず error。
 
 ## Codes（Truer 側の error code）
 

@@ -81,8 +81,14 @@ MVP の入力は Seamlint の DXF check（`format:"dxf"` + `structuralEdges`）�
 
 `truer.proposal.v0` は preview / apply / 将来 Studio が読む contract。育てるときは version で守る。
 
+- **`v0` は pre-1.0（unstable）。** 最初の consumer（apply / preview / Studio のいずれか）が動くか、
+  保存して残す proposal artifact が生まれるまでは、`v0` を **in-place で破壊的に作り直してよい**
+  （semver の 0.x 慣習）。まだ誰も読まず、混ざる artifact も無いので reader が判別不能になる問題は
+  起きない。現に DXF pivot では旧 `pathId/pathDigest` → BLOCK addressing の required break を
+  `v0` 据え置きで行った（`proposalSchema.ts` 冒頭コメント）。**下の rename ルールは、この
+  「最初の consumer / persisted artifact」以降に適用される。**
 - 後方互換な追加（新しい optional field）は `v0` のまま。既存 field の意味変更・rename・必須化は
-  version を上げる（`v1`）。
+  version を上げる（`v1`）。**ただし上記の pre-1.0 期間は例外**：in-place で壊してよい。
 - apply / preview は `schema` を読んで分岐する。**未知 version を mis-parse せず** 明示 error
   （`apply.unsupported_schema`）にする（`critical-invariants.md` T9）。
 - 複数 version を当面サポートするなら、version ごとの reader を分け、共通の内部表現へ正規化して

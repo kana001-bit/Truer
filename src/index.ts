@@ -6,7 +6,8 @@ export { createProposalFile, proposalId } from "./core/proposal/createProposalFi
 export type {
   CreateProposalFileInput,
   DiagnosticInput,
-  ResolvedTarget
+  ResolvedTarget,
+  ResolveTargetResult
 } from "./core/proposal/createProposalFile.ts";
 
 export {
