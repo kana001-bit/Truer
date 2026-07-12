@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Spec Manager"
+  short_description: "長期タスクの確定/未確認仕様をチャット外に固定し引き継ぐ"
+  default_prompt: "$task-spec-manager を使って、docs/task-specs/<slug>/task-spec.md に長期タスクの確定仕様・未確認事項・調査結果・次にやることを、証拠付きで記録・更新する。"

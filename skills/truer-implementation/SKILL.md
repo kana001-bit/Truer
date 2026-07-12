@@ -1,6 +1,6 @@
 ---
 name: truer-implementation
-description: "Truer の実装変更で使う project skill。AGENTS.md は薄く保ち、proposal contract・geometry edit・preview・apply・CLI・tests・Seamlint/Loomit 境界の実務ルールと拡張方針はここから必要な reference だけ読む。propose/apply の書き込み境界、preview と apply の一致、digest 検証、端点の扱い、fix registry などを確認するとき。"
+description: "Truer の実装変更で使う project skill。AGENTS.md は薄く保ち、proposal contract・geometry edit・preview・apply・CLI・tests・Seamlint/Loomit 境界の実務ルールと拡張方針はここから必要な reference だけ読む。propose/apply の書き込み境界、preview と apply の一致、digest 検証、端点の扱い、fix registry などを確認するとき。ブランチ単位の作業記録は branch-progress、長期タスクの確定/未確認 spec の管理は task-spec-manager の領分なので、コードや契約を触らずメモ/spec を書くだけのときは使わない。"
 ---
 
 # Truer Implementation
@@ -13,11 +13,16 @@ Truer は Seamlint（read-only linter）と違い、**型紙の線を書き換�
 **人間が本当は見ていない補正を、見たつもりで適用してしまうこと** に移ります。skill 全体の
 背骨はここにあります。
 
+> **Geometry source は DXF (ASTM)**（2026-07-11 pivot、`docs/seamlint-requests.md`）。addressing は
+> BLOCK 名 + `structuralEdges` の `edgeId`/`arcRange`。SVG adapter は legacy。DXF net line は制御点の
+> 無い flattened polyline なので、curve_kink の直し方（editing surface）と apply の書き先は未確定
+> （OPEN）。未確定を確定ルールとして書かない。詳細は各 reference / docs 冒頭の注記を参照。
+
 ## まず切り分ける
 
 変更対象を先に分類します。主な区分は proposal model / fix rule / geometry-edit /
-svg adapter / seamlint adapter / preview / apply / CLI / examples・tests / docs /
-Seamlint・Loomit boundary です。
+dxf adapter（+ legacy svg adapter）/ seamlint adapter / preview / apply / CLI / examples・tests /
+docs / Seamlint・Loomit boundary です。
 
 ## 読むもの（reference）
 
@@ -28,7 +33,7 @@ Seamlint・Loomit boundary です。
   - propose/apply の境界、preview と apply の一致、digest 検証、最小・局所変更、端点境界、
     不確実性の落とし先、determinism など、破ると silent に間違った線を出す急所をまとめる。
 - `references/implementation-rules.md`
-  - 技術選定、module boundary、core/CLI 分離、proposal model、SVG 読み書き、
+  - 技術選定、module boundary、core/CLI 分離、proposal model、DXF 読み取り（+ legacy SVG）、
     geometry-edit、apply、dependencies、Seamlint/Loomit 境界、docs 優先順位を触るときに読む。
 - `references/testing-proposals.md`
   - proposal JSON、preview、apply の tests、fixtures、schema 安定性、exit code を
@@ -46,7 +51,7 @@ docs は総覧しません。今のタスクに必要なものだけ読みます
 - `docs/truer-mvp-spec.md`
   - proposal schema、CLI、preview、apply、safety rules、acceptance criteria を触るとき。
 - `docs/truer-first-slice.md`
-  - 最初の実装範囲。`geometry.curve_kink` の path 内部だけを対象にし、端点単体移動を避け、
+  - 最初の実装範囲。`geometry.curve_kink` の辺内部だけを対象にし、端点単体移動を避け、
     `preview-only` から始める方針を確認するとき。
 - `docs/truer-implementation-plan.md`
   - どの milestone を進めるか、その完了条件を確認するとき。
@@ -65,14 +70,14 @@ docs の JSON 例は「意図の説明」であって最終 schema の写経元�
 5. proposal schema / `changes` kind / preview 表現 / apply 挙動のどれかを変えたら、
    propose → preview → apply を通す fixture test を追加または更新する。
 6. 完了前に fixture を使った propose → preview → apply を実行し、source 不変と
-   preview/apply の path data 一致を確認する。実行できない場合は理由を書く。
+   preview/apply の geometry 一致を確認する。実行できない場合は理由を書く。
 
 ## 守ること（要約）
 
 - Truer は補正案を作り・見せ・採用済みだけ当てる道具。自動で最終形まで直す CAD ではない。
 - propose は source を書き換えない。apply は accept された id だけを `--out` に当て、事前に
   digest を検証する。
-- **preview の「補正後」は apply が出す path data と同一。** 両者は同じ `changes` を同じ適用
+- **preview の「補正後」は apply が出す geometry と同一。** 両者は同じ `changes` を同じ適用
   関数に通して作る。preview 専用に別計算しない。
 - 端点単体は動かさない（first slice）。確信を持って対応づけられない補正は `preview-only`。
 - proposal JSON（`truer.proposal.v0`）と `changes` kind は下流 contract。rename・silent skip
