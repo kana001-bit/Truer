@@ -6,12 +6,12 @@
 const USAGE = `tru — Truer CLI (MVP)
 
 Usage:
-  tru propose <pattern.svg> --diagnostic <report.json> --out <proposal.json> --preview <preview.svg>
-  tru apply   <pattern.svg> --proposal <proposal.json> --accepted <id...> --out <out.svg>
+  tru propose <pattern.dxf> --diagnostic <report.json> --out <proposal.json> --preview <preview.svg>
+  tru apply   <pattern.dxf> --proposal <proposal.json> --accepted <id...> --out <out>
 
 Commands:
-  propose   Seamlint 診断から補正案 (proposal) と preview を作る。source は書き換えない。
-  apply     採用された proposal だけを新しい SVG に適用する (--out にのみ書く)。
+  propose   Seamlint 診断 (DXF) から補正案 (proposal) と preview を作る。source は書き換えない。
+  apply     採用された proposal だけを --out に適用する (書き先は Loomit と未確定 / OPEN)。
 
 Options:
   -h, --help   Show this help.

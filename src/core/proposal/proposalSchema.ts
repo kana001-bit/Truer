@@ -5,6 +5,13 @@
 // required fields are not renamed or removed without an explicit schema break
 // (see references/critical-invariants.md T9, references/testing-proposals.md).
 //
+// Geometry source is DXF (ASTM) after the 2026-07-11 pivot. The edge to fix is
+// addressed by BLOCK name + `edgeId`/`arcRange` on the Seamlint `structuralEdges`
+// primitive, not by an SVG path id (docs/truer-mvp-spec.md). This `target` re-design
+// is an explicit, documented v0 schema break: nothing consumes the contract yet
+// (apply/preview/Studio are unimplemented), so v0 is re-done in place rather than
+// bumped to v1.
+//
 // It is pure and has no IO. Digests come from ./proposalDigest.ts; assembly from
 // ./createProposalFile.ts.
 
@@ -15,8 +22,15 @@ export type ProposalStatus = "proposed" | "accepted" | "rejected" | "applied";
 export type ProposalMode = "preview-only" | "local-adjustment";
 export type IntentConfidence = "low" | "medium" | "high";
 
-// MVP change kinds. `apply` dispatches on `kind`; unknown kinds are an explicit
-// error, never a silent skip (T9). New kinds are added in references/extensibility.md.
+// Change kinds. `apply` dispatches on `kind`; unknown kinds are an explicit error,
+// never a silent skip (T9). New kinds are added in references/extensibility.md.
+//
+// `replace-path-data` is a *legacy SVG* kind (operates on a path `d` string). DXF
+// layer-14 net line is a flattened polyline with no Bezier control points, so a DXF
+// `local-adjustment` change kind is deliberately NOT added here: the DXF edit surface
+// is OPEN (references/implementation-rules.md, docs/truer-first-slice.md). First-slice
+// DXF proposals stay `preview-only` with `changes: []`; a DXF kind is added later,
+// three-point synced across propose/preview/apply (references/extensibility.md E2).
 export type ChangeKind = "replace-path-data";
 
 // Seamlint diagnostic codes Truer currently produces correction proposals for.
@@ -27,6 +41,10 @@ export const SUPPORTED_DIAGNOSTIC_CODES = ["geometry.curve_kink"] as const;
 // See references/testing-proposals.md "Codes".
 export const SKIP_UNSUPPORTED_DIAGNOSTIC_CODE = "proposal.unsupported_diagnostic_code";
 export const SKIP_MISSING_DIAGNOSTIC_POINT = "proposal.missing_diagnostic_point";
+// DXF addressing: the target BLOCK/edge is absent from, or not unique in, the source.
+export const SKIP_TARGET_NOT_FOUND = "proposal.target_not_found";
+export const SKIP_AMBIGUOUS_TARGET = "proposal.ambiguous_target";
+// Legacy SVG path: kept for the pre-pivot svg adapter path, not used by DXF addressing.
 export const SKIP_PATH_NOT_FOUND = "proposal.path_not_found";
 
 export interface Point {
@@ -74,9 +92,17 @@ export interface ProposalPreview {
 }
 
 export interface ProposalTarget {
-  pathId: string;
-  // Digest of the original path data, checked before apply writes (T3).
-  pathDigest: string;
+  // DXF addressing: BLOCK name + edge on the Seamlint `structuralEdges` primitive.
+  // The edge is addressed by `edgeId`, by `arcRange`, or by both — at least one is
+  // required (docs/truer-mvp-spec.md: "BLOCK name + edgeId/arcRange"). Some edges
+  // are only stably identifiable by arcRange, so edgeId is not mandatory.
+  blockName: string;
+  edgeId?: string;
+  // Normalized loop range [start, end] for the edge (Seamlint arcRange). May address
+  // the edge on its own when no stable edgeId is available.
+  arcRange?: [number, number];
+  // Digest of the addressed edge's net-line geometry, checked before apply writes (T3).
+  targetDigest: string;
 }
 
 export interface Proposal {
@@ -127,6 +153,15 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function isArcRange(value: unknown): value is [number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    Number.isFinite(value[0]) &&
+    Number.isFinite(value[1])
+  );
+}
+
 function validateProposal(candidate: unknown, index: number, errors: string[]): void {
   const at = `proposals[${index}]`;
   if (typeof candidate !== "object" || candidate === null) {
@@ -147,8 +182,18 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
   if (!target || typeof target !== "object") {
     errors.push(`${at}.target is required`);
   } else {
-    if (!isNonEmptyString(target.pathId)) errors.push(`${at}.target.pathId is required`);
-    if (!isNonEmptyString(target.pathDigest)) errors.push(`${at}.target.pathDigest is required`);
+    if (!isNonEmptyString(target.blockName)) errors.push(`${at}.target.blockName is required`);
+    if (!isNonEmptyString(target.targetDigest)) errors.push(`${at}.target.targetDigest is required`);
+    if (target.edgeId !== undefined && !isNonEmptyString(target.edgeId)) {
+      errors.push(`${at}.target.edgeId must be a non-empty string when present`);
+    }
+    if (target.arcRange !== undefined && !isArcRange(target.arcRange)) {
+      errors.push(`${at}.target.arcRange must be a [start, end] pair of finite numbers`);
+    }
+    // Addressing needs at least one of edgeId / arcRange (T6: never guess the edge).
+    if (!isNonEmptyString(target.edgeId) && !isArcRange(target.arcRange)) {
+      errors.push(`${at}.target must address the edge by edgeId or arcRange`);
+    }
   }
 
   const sourceDiagnostic = proposal.sourceDiagnostic as Record<string, unknown> | undefined;
