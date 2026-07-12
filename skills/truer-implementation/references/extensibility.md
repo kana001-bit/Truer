@@ -26,7 +26,7 @@ interface FixRule {
 
 interface FixResult {
   mode: "preview-only" | "local-adjustment";
-  changes: Change[];          // preview-only は []
+  changes: Change[]; // preview-only は []
   intent: { kind: string; confidence: "low" | "medium" | "high"; reviewRequired: true };
   notes: string[];
 }

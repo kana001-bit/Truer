@@ -43,7 +43,8 @@ test("duplicate id throws duplicate_path_id, never a guess", () => {
   const duplicate = `<svg><path id="dup" d="M 0 0 L 1 1"/><path id="dup" d="M 0 0 L 2 2"/></svg>`;
   assert.throws(
     () => findSvgPathById(duplicate, "dup"),
-    (error: unknown) => error instanceof SvgAdapterError && error.code === "proposal.duplicate_path_id"
+    (error: unknown) =>
+      error instanceof SvgAdapterError && error.code === "proposal.duplicate_path_id"
   );
 });
 
