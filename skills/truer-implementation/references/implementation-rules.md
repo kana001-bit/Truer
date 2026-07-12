@@ -4,6 +4,11 @@ Truer の source code、package 構成、CLI behavior、Seamlint / Loomit 連携
 ルールです。書き込み・preview・apply の急所は `references/critical-invariants.md`、拡張の設計は
 `references/extensibility.md` を併読します。
 
+> **Geometry source は DXF (ASTM)**（2026-07-11 pivot、`docs/seamlint-requests.md`）。addressing は
+> BLOCK 名 + `structuralEdges` の `edgeId`/`arcRange`。SVG adapter は pre-pivot slice の legacy として
+> 残す（拡張しない）。DXF layer-14 net line は flattened polyline で **Bezier 制御点が無い**ため、
+> curve_kink の editing surface と apply の書き先は未確定（OPEN）。未確定を確定ルールとして書かない。
+
 ## 技術選定 (Milestone 0 の既定)
 
 姉妹 2 つ（Seamlint / Loomit）が共に TypeScript で、proposal JSON は将来 Loomit Studio が読む
@@ -21,12 +26,13 @@ src/
   core/
     proposal/       # schema, createProposalFile, digest
     fixes/          # diagnostic code ごとの補正ルール (registry)
-    geometry-edit/  # path command mapping, local smoothing, path data emit
+    geometry-edit/  # edge/vertex mapping, geometry emit（DXF は flattened polyline; 制御点前提にしない）
     apply/          # applyChanges, applyProposal
   adapters/
-    seamlint/       # Seamlint report -> 内部 TruerDiagnostic
-    svg/            # path 読み取り / 書き込み / digest
-  preview/          # svg overlay 生成
+    seamlint/       # Seamlint report (format:"dxf" + structuralEdges) -> 内部 TruerDiagnostic
+    dxf/            # BLOCK/edge addressing, layer-14 net line 読み取り, edge digest（主軸）
+    svg/            # legacy: path 読み取り / 書き込み / digest（残すが拡張しない）
+  preview/          # overlay SVG 生成（format 非依存）
   cli/
     tru.ts          # entry
     commands/       # propose, apply
@@ -43,15 +49,19 @@ examples/
 geometry を後に**。
 
 1. proposal model（schema / id / digest / skipped 表現）を安定させる。
-2. SVG adapter（id で path を読む / 対象 `d` だけ差し替える / digest）を作る。
-3. Seamlint adapter（report -> 内部 diagnostic、`actual.point` 欠落は skip）を作る。
-4. 最初の fix rule `geometry.curve_kink`（path 内部の kink のみ）を作る。
+2. DXF adapter（BLOCK/edge で addressing、layer-14 net line 読み取り、edge digest）を作る。
+   SVG adapter は pre-pivot slice で既に存在する legacy。
+3. Seamlint adapter（`format:"dxf"` + `structuralEdges` -> 内部 diagnostic、`actual.point` 欠落は
+   skip）を作る。
+4. 最初の fix rule `geometry.curve_kink`（辺内部の kink のみ）を作る。DXF では **preview-only を
+   既定**にし、`local-adjustment` は editing surface が決まってから。
 5. preview overlay を作る（apply と同じ適用関数を通す。T2）。
 6. `tru propose` を出す。
-7. `tru apply` を出す（accept + digest + atomic）。
+7. `tru apply` を出す（accept + digest + atomic）。**書き先は Loomit と握るまで確定させない**。
 
-task が明示しない限り、CAD engine、GUI editor、自動最終修正、端点ペア補正、3D / 布シミュ、
-DXF / Valentina 対応へ先に進まない。「一つの diagnostic を深くやる。多くを浅くやらない」。
+task が明示しない限り、CAD engine、GUI editor、自動最終修正、端点ペア補正、3D / 布シミュへ先に
+進まない。DXF editing surface と apply の書き先を推測で先に固めない（OPEN のまま preview-only に
+倒す）。「一つの diagnostic を深くやる。多くを浅くやらない」。
 
 ## Module Boundaries
 
@@ -59,13 +69,17 @@ DXF / Valentina 対応へ先に進まない。「一つの diagnostic を深く�
   unsupported diagnostic の skipped 表現を担当する。
 - `src/core/fixes/` は diagnostic code ごとの補正ルール。`code` から fix を引く registry を持つ
   （`references/extensibility.md`）。fix は **pure**。
-- `src/core/geometry-edit/` は path のコマンド分解、diagnostic point の近傍 mapping、局所平滑化、
-  path data 文字列の emit を担当する。丸めはここの emit 1 箇所だけ（`critical-invariants.md` T10）。
-- `src/core/apply/` は proposal の `changes` を original path data に当てる単一関数
-  （`applyChanges`）と、accept / digest 検証を含む `applyProposal` を担当する。
-- `src/adapters/seamlint/` は Seamlint の report JSON を内部 diagnostic 型へ正規化する。core は
-  Seamlint の JSON 形に直接依存しない。
-- `src/adapters/svg/` は path の読み取り・対象 `d` の差し替え・digest・atomic write を担当する。
+- `src/core/geometry-edit/` は net line の頂点分解、diagnostic point の近傍 mapping、（editing
+  surface が決まれば）局所補正、geometry の emit を担当する。DXF flattened polyline には Bezier
+  制御点が無いので制御点操作前提にしない。丸めはここの emit 1 箇所だけ（`critical-invariants.md` T10）。
+- `src/core/apply/` は proposal の `changes` を original geometry（対象辺の net line）に当てる単一
+  関数（`applyChanges`）と、accept / digest 検証を含む `applyProposal` を担当する。
+- `src/adapters/seamlint/` は Seamlint の report JSON（`format:"dxf"` + `structuralEdges`）を内部
+  diagnostic 型へ正規化する。core は Seamlint の JSON 形に直接依存しない。
+- `src/adapters/dxf/` は DXF の BLOCK/edge addressing、layer-14 net line 読み取り、edge digest を
+  担当する（主軸）。書き戻し先は未確定（apply 節参照）。
+- `src/adapters/svg/` は legacy: path の読み取り・対象 `d` の差し替え・digest・atomic write を
+  担当する。残すが拡張しない。
 - `src/preview/` は overlay SVG を生成する。補正後 path は `apply` の `applyChanges` を通して得る。
 - `src/cli/` は argument parsing、file read/write の起動、command error、出力、exit status を
   担当する。
@@ -79,7 +93,7 @@ process.stdout.write(text);
 process.stderr.write(text);
 ```
 
-fix rule は file path ではなく、path data と diagnostic（domain object）を受け取る。file を
+fix rule は file path ではなく、net line geometry と diagnostic（domain object）を受け取る。file を
 読むのは CLI と adapter の責務。**core は CLI / preview 表示 / Studio に依存しない**（acceptance
 criteria: 将来 Loomit Studio が shell を経由せず core を呼べる）。
 
@@ -90,41 +104,48 @@ proposal JSON は Truer で最も重要な contract。geometry を育てる前�
 - `schema` は MVP では `truer.proposal.v0` 固定。
 - 1 つの propose 実行で 1 ファイル（`source` + `proposals[]`）を出す。id は proposal ファイル内で
   stable。
-- `source.sourceDigest` は入力 SVG テキストの digest、`target.pathDigest` は対象 path data の
+- `source.sourceDigest` は入力 DXF テキストの digest、対象辺 digest は対象 net line geometry の
   digest。apply の事前検証に使う（T3）。digest の正規化方法を決め、propose と apply で同一の
-  ものを使う。
+  ものを使う。（実装コードの field 名は現状まだ `target.pathDigest`＝SVG 時代のまま。schema 再設計は
+  次工程。）
 - 補正できない diagnostic は **黙って捨てず**、skipped として理由付きで残す（proposal report）。
 - `mode` は `preview-only` / `local-adjustment` の 2 種。`local-adjustment` は `changes` を持ち、
   `preview-only` は `changes: []`。first slice は必ず `preview-only` を出せるようにし、確実な
   ケースだけ `local-adjustment` にする。
 - required field と status の意味は `references/testing-proposals.md` を正とする。
 
-## SVG Adapter
+## DXF Adapter（主軸）
 
-Truer が必要とする path 操作だけを担う狭い reader / writer にする。
+Truer が必要とする DXF 操作だけを担う狭い reader にする。
 
-- id で path を 1 本特定する。id 不在 / 重複は推測せず error（`critical-invariants.md` T6）。
-- 対象 path の `d` を読む / 差し替える。**それ以外の SVG 内容（他 path、id、style、metadata、
-  整形）は可能な限り保存** する。full 再シリアライズで無関係要素を消さない。
-- 差し替え後は対象 path の digest だけが変わることを保つ。
-- 座標系ガードは Seamlint に合わせる（`critical-invariants.md` T5）。path / 親 `<g>` の
-  `transform`、非等倍 `viewBox` は補正可能変更の対象にしない。
-- MVP の path command は Seamlint に合わせて `M` `L` `H` `V` `C` `Q` `Z`。未対応は silent に
-  無視せず error。command を増やしたら docs と fixture を更新する。
-- 現状の reader は narrow MVP 実装で full XML parser ではない前提を docs に残す。SVG 選択が複雑に
-  なるなら real parser への置き換えを検討する（下記 Dependencies）。
+- 対象を **BLOCK 名 + `structuralEdges` の `edgeId`/`arcRange`** で 1 辺特定する。BLOCK/edge の
+  不在・曖昧は推測せず error（`critical-invariants.md` T6）。SVG path id には頼らない。
+- 対象辺の layer-14 net line（flattened polyline）を読む。**それ以外の DXF 内容（他 BLOCK、
+  TEXT、layer、整形）は可能な限り保存** する。full 再シリアライズで無関係要素を消さない。
+- 対象辺の geometry digest を取り、apply の事前検証に使う。変更後は対象辺の digest だけが変わる。
+- 座標系ガードは Seamlint に合わせる（`critical-invariants.md` T5）。ASTM 単位（mm）と BLOCK 変換の
+  前提が検証できない箇所は補正可能変更の対象にしない。
+- **書き戻し先は未確定**（apply 節・`docs/truer-mvp-spec.md` の "apply write target" を参照）。
+  DXF export への書き戻しは Loomit と握るまで実装しない。
+
+### legacy SVG Adapter
+
+pre-pivot slice の `src/adapters/svg/`（id で path を特定、対象 `d` の読み書き、round-trip 保存、
+transform / 非等倍 `viewBox` は補正対象にしない、path command は `M L H V C Q Z`）は残すが拡張
+しない。SVG 経路を触るときだけ参照する。
 
 ## Geometry Edit
 
 補正計算は全 proposal の土台。`critical-invariants.md` T6 / T8 / T10 を守る。
 
 - point は `{ x, y }` の形を保つ。
-- 同じ入力（path data + diagnostic point + options）から deterministic な `changes` を返す。
-- 補正は diagnostic point 近傍の command neighborhood **だけ** を触る。全体再整形をしない。
-- 内部計算は full precision。丸めは path data emit の 1 箇所だけ。emit 精度（小数桁）を固定する。
-- endpoint / 端コマンドに対応づく補正は `local-adjustment` にせず preview-only に落とす
+- 同じ入力（net line 頂点列 + diagnostic point + options）から deterministic な `changes` を返す。
+- 補正は diagnostic point 近傍の vertex neighborhood **だけ** を触る。全体再整形をしない。
+- 内部計算は full precision。丸めは geometry emit の 1 箇所だけ。emit 精度（小数桁）を固定する。
+- endpoint / 端頂点に対応づく補正は `local-adjustment` にせず preview-only に落とす
   （first slice, T7）。
-- 制御点を動かせるコマンド（`C` / `Q`）では **endpoint より制御点を優先** して動かす。
+- **DXF flattened polyline には Bezier 制御点が無い。** 制御点移動前提の補正は使わない。DXF 上の
+  `local-adjustment`（vertex 操作等）の是非自体が OPEN なので、決まるまで preview-only を返す。
 - zero-length / near-degenerate 近傍は defensive に扱い、`NaN` を出さず preview-only にする。
 
 ## Apply
@@ -132,11 +153,15 @@ Truer が必要とする path 操作だけを担う狭い reader / writer にす
 `apply` は proposal を実行するだけで、fix を作り直さない（`critical-invariants.md` T4）。
 
 - `--accepted <id>...`（または `status: accepted`）で明示された id だけを当てる。
-- 書き込み前に `sourceDigest` と対象 `pathDigest` を照合し、mismatch は書く前に error。
+- 書き込み前に `sourceDigest` と対象辺 digest を照合し、mismatch は書く前に error。
 - `changes[].kind` は `applyChanges` の単一 dispatch で処理し、未知 kind は explicit error。
 - source は触らず、`--out` に atomic write する。`--out` == source パスは error。
 - `--report` があれば apply report JSON（source / out / accepted ids / skipped ids と理由 /
   errors）を出す。
+- **書き先は未確定（OPEN / Loomit 合意待ち）。** DXF/SVG は `.val`/`.loom` の lossy な export
+  （袋小路）。「apply が何を・どこに書くか」は Loomit の source-of-truth 判断と握ってから決める。
+  accept + digest + atomic の各ゲートは format 非依存なので先に設計してよいが、DXF export への
+  具体的な書き戻しは contract 確定まで実装しない。
 
 ## Dependencies
 
@@ -144,9 +169,9 @@ Truer が必要とする path 操作だけを担う狭い reader / writer にす
 
 足してよい理由:
 
-- 壊れやすい SVG path parsing / 書き換えを、scope の明確な parser（round-trip 保存できるもの）へ
-  置き換える。
-- 自前で維持しにくい path length / point-at-length を信頼できる形で得る。
+- 壊れやすい DXF parsing / 書き換え（または legacy SVG path 操作）を、scope の明確な parser
+  （round-trip 保存できるもの）へ置き換える。
+- 自前で維持しにくい polyline length / point-at-length を信頼できる形で得る。
 
 弱い理由:
 

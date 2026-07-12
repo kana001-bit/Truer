@@ -20,7 +20,7 @@ if 分岐で増やすとパイプラインが肥大化するので、**code を�
 interface FixRule {
   // 対応する Seamlint diagnostic code
   readonly code: string;
-  // path data + 正規化済み diagnostic から proposal 断片を作る。pure・deterministic。
+  // net line geometry + 正規化済み diagnostic から proposal 断片を作る。pure・deterministic。
   propose(input: FixInput): FixResult;
 }
 
@@ -52,16 +52,19 @@ kind を足すときは、**次の 3 つを同時に** 実装しないと壊れ�
    `applyChanges` を通すので、多くの場合 apply 側を足せば自動で追従する。`critical-invariants.md`
    T2）。
 
-- MVP の kind は `replace-path-data`。`move-control-point` を足すなら、apply が制御点を動かして
-  path data を再構成できることまでを一組で入れる。
+- 現状コードの kind は `replace-path-data`。`move-control-point` は **SVG 時代の例**で、DXF layer-14
+  net line は flattened polyline のため制御点を持たず、このまま DXF には効かない。DXF 用の
+  `local-adjustment`（例: vertex 操作の change kind）を足すかどうか自体が OPEN。足す場合も、apply が
+  その kind から geometry を再構成できることまでを一組で入れる（三点同時）。
 - apply は未知 kind を silent skip せず `apply.unsupported_change_kind` で error にする（T9）。
 - kind を増やしても、可能なら preview は `applyChanges` 経由に保ち、preview 専用ロジックを
   増やさない。これが「preview が嘘をつかない」保証を安く維持する鍵。
 
 ## E3. Diagnostic source adapter — Seamlint 以外の入力も受けられる形
 
-MVP の入力は Seamlint の `slint check --json`。だが overview の方針どおり、将来ほかの diagnostic
-source も受けられる形にする。core を特定 JSON 形に縛らないため、adapter で内部型へ正規化する。
+MVP の入力は Seamlint の DXF check（`format:"dxf"` + `structuralEdges`）。だが overview の方針どおり、
+将来ほかの diagnostic source も受けられる形にする。core を特定 JSON 形に縛らないため、adapter で
+内部型へ正規化する。
 
 - 内部型 `TruerDiagnostic`（`code` / `severity` / `target` / `point` / `expected` / `actual` /
   `suggestion` / 元 diagnostic の保持）を core の入力とする。
