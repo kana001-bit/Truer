@@ -67,7 +67,7 @@ proposal は JSON-serializable で、preview / apply / 将来の Studio と互�
   ],
   "skipped": [
     // proposal にできなかった診断を理由付きで残す（黙って捨てない, T8）。additive。
-    { "code": "proposal.unsupported_diagnostic_code", "diagnosticCode": "geometry.seam_length_mismatch", "message": "...", "diagnostic": { } }
+    { "code": "proposal.unsupported_diagnostic_code", "diagnosticCode": "geometry.endpoint_gap", "message": "...", "diagnostic": { } }
   ]
 }
 ```
@@ -98,6 +98,22 @@ required（明示 break なしに rename / 削除しない）:
   editing surface が OPEN のため未新設で、足すときは propose / preview / apply の三点を同時に対応させる
   （`references/extensibility.md`）。apply が知らない kind は silent に skip せず error。
 
+## 対応している diagnostic code
+
+Truer が proposal を作る Seamlint diagnostic（`proposalSchema.ts` の `SUPPORTED_DIAGNOSTIC_CODES`）:
+
+- `geometry.curve_kink`: 単一辺 + `actual.point`。辺内部の kink。preview-only。intent は
+  `inspect-local-kink`。
+- `geometry.seam_length_mismatch`: **ペア診断**（`target` は `"a/b"`、点は無く from/to/diff mm を
+  持つ）。ペアの **from 辺** を addressing アンカーにして単一辺スキーマへ載せる（表示・特定用で、
+  どちらを直すかの決定ではない, T6）。差の寄せ先と apply 先が OPEN なので preview-only
+  （`changes:[]`）。intent は `reconcile-seam-length`、confidence は長さ差のバンド（既定
+  `LENGTH_ADJUST_CANDIDATE_MAX_MM`=10mm 以内 = `medium` / 超 = `low`）、`reviewRequired` は常に true。
+  点が無いので `preview.diagnosticPoint` は出さない。
+
+これ以外の code は `proposal.unsupported_diagnostic_code` で skipped（黙って捨てない, T8）。新しい
+code を足すときは builder を 1 つ書いて `PROPOSAL_BUILDERS` に登録する（`references/extensibility.md` E1）。
+
 ## Codes（Truer 側の error code）
 
 diagnostic code は Seamlint 由来（`geometry.*`）をそのまま `sourceDiagnostic.code` に保持する。
@@ -113,7 +129,8 @@ proposal.target_not_found        # 対象 BLOCK/edge が DXF に無い（legacy 
 proposal.ambiguous_target        # BLOCK/edge addressing が一意に定まらない（legacy: duplicate_path_id）
 proposal.unmappable_diagnostic   # 補正点を net line 頂点に対応づけられず preview-only へ
 proposal.unsupported_diagnostic_code  # 対応 code 外の診断（skipped に残す）
-proposal.missing_diagnostic_point     # actual.point 欠落で補正候補を作れない（skipped に残す）
+proposal.missing_diagnostic_point     # curve_kink の actual.point 欠落で補正候補を作れない（skipped）
+proposal.missing_length_fields        # seam_length_mismatch の from/to/diff mm 欠落（skipped）
 input.file_not_found
 input.file_permission_denied
 cli.invalid_arguments
