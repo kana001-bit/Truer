@@ -2,7 +2,7 @@
 //
 // This is the Milestone 1 proposal *model*. It has no geometry solver and no file
 // IO: geometry (Milestone 4) will upgrade some proposals from `preview-only` to
-// `local-adjustment`, and the SVG adapter (Milestone 2) provides `resolveTarget`.
+// `local-adjustment`, and the DXF adapter (Milestone 2) provides `resolveTarget`.
 // Until then every supported, mappable diagnostic becomes a `preview-only`
 // proposal, which is exactly the first-slice stance: show the point, do not invent
 // a correction (docs/truer-first-slice.md).
@@ -13,8 +13,9 @@
 
 import {
   PROPOSAL_SCHEMA_V0,
+  SKIP_AMBIGUOUS_TARGET,
   SKIP_MISSING_DIAGNOSTIC_POINT,
-  SKIP_PATH_NOT_FOUND,
+  SKIP_TARGET_NOT_FOUND,
   SKIP_UNSUPPORTED_DIAGNOSTIC_CODE,
   isSupportedDiagnosticCode,
   validateProposalFile
@@ -46,21 +47,38 @@ export interface DiagnosticInput {
   message?: string;
 }
 
-// The resolved target path for a diagnostic. `pathData` is the original `d` used
-// to compute the path digest. Supplied by the SVG adapter via `resolveTarget`.
+// The resolved target edge for a diagnostic. DXF addressing: BLOCK name + edge on
+// the Seamlint `structuralEdges` primitive. `edgeGeometry` is the addressed edge's
+// canonical net-line text, digested into `targetDigest`. Supplied by the DXF adapter
+// (Milestone 2, not yet wired) via `resolveTarget`.
 export interface ResolvedTarget {
-  pathId: string;
-  pathData: string;
+  blockName: string;
+  // At least one of edgeId / arcRange must be present (mirrors ProposalTarget).
+  edgeId?: string;
+  arcRange?: [number, number];
+  edgeGeometry: string;
 }
+
+// The outcome of locating a diagnostic's target edge in the source. "not-found" and
+// "ambiguous" are distinct: the DXF adapter must never collapse "multiple candidate
+// edges" into "missing" (references/critical-invariants.md T6). Ambiguity is a real
+// upstream state — Seamlint emits geometry.seam_edge_ambiguous on real patterns — so
+// Truer preserves it as proposal.ambiguous_target instead of misreporting it as
+// target_not_found or throwing and losing the whole run.
+export type ResolveTargetResult =
+  | { status: "resolved"; target: ResolvedTarget }
+  | { status: "not-found" }
+  | { status: "ambiguous" };
 
 export interface CreateProposalFileInput {
   // User-facing source path as passed on the CLI (goes into source.file verbatim).
   sourceFile: string;
-  // Raw SVG text, digested into source.sourceDigest.
+  // Raw DXF text, digested into source.sourceDigest.
   sourceText: string;
   diagnostics: DiagnosticInput[];
-  // Locates the target path for a diagnostic, or undefined if it is not in the SVG.
-  resolveTarget: (diagnostic: DiagnosticInput) => ResolvedTarget | undefined;
+  // Locates the target edge for a diagnostic. Returns resolved / not-found / ambiguous
+  // so "no such edge" and "more than one candidate edge" stay distinct (T6).
+  resolveTarget: (diagnostic: DiagnosticInput) => ResolveTargetResult;
   createdBy?: string;
 }
 
@@ -101,8 +119,10 @@ function buildPreviewOnlyProposal(
     status: "proposed",
     mode: "preview-only",
     target: {
-      pathId: target.pathId,
-      pathDigest: digestPathData(target.pathData)
+      blockName: target.blockName,
+      ...(target.edgeId !== undefined ? { edgeId: target.edgeId } : {}),
+      ...(target.arcRange !== undefined ? { arcRange: target.arcRange } : {}),
+      targetDigest: digestPathData(target.edgeGeometry)
     },
     sourceDiagnostic: toSourceDiagnostic(diagnostic),
     intent: {
@@ -167,20 +187,31 @@ export function createProposalFile(input: CreateProposalFileInput): ProposalFile
       continue;
     }
 
-    const target = input.resolveTarget(diagnostic);
-    if (!target) {
+    const resolved = input.resolveTarget(diagnostic);
+    if (resolved.status === "not-found") {
       skipped.push(
         skip(
-          SKIP_PATH_NOT_FOUND,
+          SKIP_TARGET_NOT_FOUND,
           diagnostic,
-          `対象 path (${diagnostic.target ?? "unknown"}) が SVG 内に見つかりません。`
+          `対象 BLOCK/edge (${diagnostic.target ?? "unknown"}) が DXF 内に見つかりません。`
+        )
+      );
+      continue;
+    }
+    if (resolved.status === "ambiguous") {
+      // T6: 複数候補で一意に定まらない辺は推測せず、not-found と区別して残す。
+      skipped.push(
+        skip(
+          SKIP_AMBIGUOUS_TARGET,
+          diagnostic,
+          `対象 BLOCK/edge (${diagnostic.target ?? "unknown"}) の候補が複数あり、一意に定まりません。`
         )
       );
       continue;
     }
 
     proposals.push(
-      buildPreviewOnlyProposal(proposalId(proposals.length + 1), diagnostic, point, target)
+      buildPreviewOnlyProposal(proposalId(proposals.length + 1), diagnostic, point, resolved.target)
     );
   }
 
