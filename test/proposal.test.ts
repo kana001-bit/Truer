@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createProposalFile } from "../src/core/proposal/createProposalFile.ts";
-import type { DiagnosticInput, ResolveTargetResult } from "../src/core/proposal/createProposalFile.ts";
-import {
-  PROPOSAL_SCHEMA_V0,
-  validateProposalFile
-} from "../src/core/proposal/proposalSchema.ts";
+import type {
+  DiagnosticInput,
+  ResolveTargetResult
+} from "../src/core/proposal/createProposalFile.ts";
+import { PROPOSAL_SCHEMA_V0, validateProposalFile } from "../src/core/proposal/proposalSchema.ts";
 import {
   digestPathData,
   digestText,
@@ -183,7 +183,13 @@ test("arcRange that is swapped or out of [0,1] is rejected by validation", () =>
       skipped: []
     };
   }
-  const invalid: unknown[] = [[0.9, 0.1], [2, -1], [0.5, 0.5], [-0.1, 0.5], [0.5, 1.1]];
+  const invalid: unknown[] = [
+    [0.9, 0.1],
+    [2, -1],
+    [0.5, 0.5],
+    [-0.1, 0.5],
+    [0.5, 1.1]
+  ];
   for (const bad of invalid) {
     const errors = validateProposalFile(withArcRange(bad));
     assert.ok(

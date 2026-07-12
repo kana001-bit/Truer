@@ -36,11 +36,11 @@ before / after を見せる preview を出し、**人間が明示的に採用し
 繰り返し発生する作業は、まず対応する skill を読んでから着手する。使い分けの境界は各 skill の
 `description` にも書いてある。
 
-| 作業                                                                                   | 使う skill                             |
-| -------------------------------------------------------------------------------------- | -------------------------------------- |
+| 作業                                                                                                 | 使う skill                             |
+| ---------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | Truer 本体の実装・修正（proposal / geometry-edit / apply / preview / CLI / adapters / tests / 契約） | `skills/truer-implementation/SKILL.md` |
-| ブランチ単位の plan・progress・handoff の記録                                           | `skills/branch-progress/SKILL.md`      |
-| 長期タスクの確定仕様・未確認事項・調査・引き継ぎの永続化（確定/未確認を分離）           | `skills/task-spec-manager/SKILL.md`    |
+| ブランチ単位の plan・progress・handoff の記録                                                        | `skills/branch-progress/SKILL.md`      |
+| 長期タスクの確定仕様・未確認事項・調査・引き継ぎの永続化（確定/未確認を分離）                        | `skills/task-spec-manager/SKILL.md`    |
 
 ### truer-implementation を使う場面
 

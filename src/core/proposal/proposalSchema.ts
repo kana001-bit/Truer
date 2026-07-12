@@ -207,12 +207,15 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
     errors.push(`${at}.target is required`);
   } else {
     if (!isNonEmptyString(target.blockName)) errors.push(`${at}.target.blockName is required`);
-    if (!isNonEmptyString(target.targetDigest)) errors.push(`${at}.target.targetDigest is required`);
+    if (!isNonEmptyString(target.targetDigest))
+      errors.push(`${at}.target.targetDigest is required`);
     if (target.edgeId !== undefined && !isNonEmptyString(target.edgeId)) {
       errors.push(`${at}.target.edgeId must be a non-empty string when present`);
     }
     if (target.arcRange !== undefined && !isArcRange(target.arcRange)) {
-      errors.push(`${at}.target.arcRange must be a normalized [start, end] with 0 <= start < end <= 1`);
+      errors.push(
+        `${at}.target.arcRange must be a normalized [start, end] with 0 <= start < end <= 1`
+      );
     }
     // Addressing needs at least one of edgeId / arcRange (T6: never guess the edge).
     if (!isNonEmptyString(target.edgeId) && !isArcRange(target.arcRange)) {

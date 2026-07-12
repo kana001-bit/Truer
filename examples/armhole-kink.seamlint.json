@@ -18,9 +18,7 @@
           "y": 72
         }
       },
-      "suggestion": [
-        "Check whether this is an intentional corner or an unwanted kink."
-      ]
+      "suggestion": ["Check whether this is an intentional corner or an unwanted kink."]
     },
     {
       "severity": "warning",
@@ -37,9 +35,7 @@
           "y": 130
         }
       },
-      "suggestion": [
-        "Check whether this is an intentional corner or an unwanted kink."
-      ]
+      "suggestion": ["Check whether this is an intentional corner or an unwanted kink."]
     }
   ]
 }
