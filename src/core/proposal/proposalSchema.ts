@@ -119,6 +119,35 @@ export interface ProposalTarget {
   targetDigest: string;
 }
 
+// One edge of a mismatched seam pair. Same DXF addressing as ProposalTarget, plus this
+// edge's own geometry digest and measured length. A seam_length_mismatch proposal records
+// BOTH edges (not just the anchor), so a future apply can gate on the whole pair
+// (references/critical-invariants.md T3; resolves the anchor-only-digest gap).
+export interface SeamEdge {
+  blockName: string;
+  edgeId?: string;
+  arcRange?: [number, number];
+  // Digest of this edge's net-line geometry (via digestPathData).
+  edgeDigest: string;
+  // Measured length of this edge in mm (from the diagnostic).
+  lengthMm: number;
+}
+
+// Models decision 2 (conform-to-reference) for a seam_length_mismatch: one edge is the
+// authoritative `reference` (fixed), the other is adjusted by ±Δ to match. `reference`
+// is undefined until a reference is designated (Loomit/human token); while undefined the
+// proposal stays preview-only presenting both directions and never guesses which edge to
+// change (T6). Present only on seam_length_mismatch proposals.
+export interface SeamReconciliation {
+  fromEdge: SeamEdge;
+  toEdge: SeamEdge;
+  // Absolute length gap |fromLen - toLen| in mm. Direction is derivable from `reference`
+  // and the two edge lengths.
+  deltaMm: number;
+  // Which edge is the fixed reference, or undefined = undecided (both directions).
+  reference?: "from" | "to";
+}
+
 export interface Proposal {
   id: string;
   status: ProposalStatus;
@@ -130,6 +159,9 @@ export interface Proposal {
   changes: Change[];
   preview: ProposalPreview;
   notes: string[];
+  // Present only on seam_length_mismatch proposals: the mismatched pair, both edges'
+  // digests, the gap, and which edge (if any) is the reference. Optional/additive.
+  seamReconciliation?: SeamReconciliation;
 }
 
 export interface ProposalSource {
@@ -186,6 +218,21 @@ function isArcRange(value: unknown): value is [number, number] {
   );
 }
 
+// A SeamEdge needs DXF addressing (blockName + edgeId or arcRange, reusing the same T6
+// rule as ProposalTarget), a non-empty digest, and a finite length.
+function isSeamEdge(value: unknown): value is SeamEdge {
+  if (typeof value !== "object" || value === null) return false;
+  const edge = value as Record<string, unknown>;
+  if (!isNonEmptyString(edge.blockName)) return false;
+  if (!isNonEmptyString(edge.edgeDigest)) return false;
+  if (typeof edge.lengthMm !== "number" || !Number.isFinite(edge.lengthMm)) return false;
+  if (edge.edgeId !== undefined && !isNonEmptyString(edge.edgeId)) return false;
+  if (edge.arcRange !== undefined && !isArcRange(edge.arcRange)) return false;
+  // Addressing needs at least one of edgeId / arcRange (T6: never guess the edge).
+  if (!isNonEmptyString(edge.edgeId) && !isArcRange(edge.arcRange)) return false;
+  return true;
+}
+
 function validateProposal(candidate: unknown, index: number, errors: string[]): void {
   const at = `proposals[${index}]`;
   if (typeof candidate !== "object" || candidate === null) {
@@ -238,6 +285,27 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
   } else if (proposal.mode === "preview-only" && proposal.changes.length !== 0) {
     // T2: a preview-only proposal shows nothing to apply.
     errors.push(`${at} is preview-only but carries changes`);
+  }
+
+  // seamReconciliation is optional/additive; validate only when present.
+  if (proposal.seamReconciliation !== undefined) {
+    const seam = proposal.seamReconciliation as Record<string, unknown>;
+    if (typeof seam !== "object" || seam === null) {
+      errors.push(`${at}.seamReconciliation must be an object when present`);
+    } else {
+      if (!isSeamEdge(seam.fromEdge)) {
+        errors.push(`${at}.seamReconciliation.fromEdge is not a valid seam edge`);
+      }
+      if (!isSeamEdge(seam.toEdge)) {
+        errors.push(`${at}.seamReconciliation.toEdge is not a valid seam edge`);
+      }
+      if (typeof seam.deltaMm !== "number" || !Number.isFinite(seam.deltaMm)) {
+        errors.push(`${at}.seamReconciliation.deltaMm must be a finite number`);
+      }
+      if (seam.reference !== undefined && seam.reference !== "from" && seam.reference !== "to") {
+        errors.push(`${at}.seamReconciliation.reference must be "from", "to", or omitted`);
+      }
+    }
   }
 }
 
