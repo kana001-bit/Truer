@@ -4,12 +4,11 @@ Truer の source code、package 構成、CLI behavior、Seamlint / Loomit 連携
 ルールです。書き込み・preview・apply の急所は `references/critical-invariants.md`、拡張の設計は
 `references/extensibility.md` を併読します。
 
-> **Geometry source は DXF (ASTM)**（2026-07-11 pivot、`docs/seamlint-requests.md`）。addressing は
-> BLOCK 名 + `structuralEdges` の `edgeId`/`arcRange`。SVG adapter は pre-pivot slice の legacy として
-> 残す（拡張しない）。DXF layer-14 net line は flattened polyline で **Bezier 制御点が無い**ため、
-> curve_kink の editing surface と apply の書き先は未確定（OPEN）。未確定を確定ルールとして書かない。
+> **geometry source（DXF/ASTM）・addressing・OPEN 事項の pivot 前提は `AGENTS.md` を正とする**
+> （ここに複製しない）。SVG adapter は legacy（拡張しない）、DXF net line は Bezier 制御点の無い flattened
+> polyline、という impl 具体は下の各節（legacy SVG Adapter / Geometry Edit）を読む。
 
-## 技術選定 (Milestone 0 の既定)
+## 技術選定（既定）
 
 姉妹 2 つ（Seamlint / Loomit）が共に TypeScript で、proposal JSON は将来 Loomit Studio が読む
 contract である。したがって Truer も **TypeScript** を既定にする。
@@ -29,10 +28,10 @@ src/
     geometry-edit/  # edge/vertex mapping, geometry emit（DXF は flattened polyline; 制御点前提にしない）
     apply/          # applyChanges, applyProposal
   adapters/
-    seamlint/       # Seamlint report (format:"dxf" + structuralEdges) -> 内部 TruerDiagnostic
-    dxf/            # BLOCK/edge addressing, layer-14 net line 読み取り, edge digest（主軸）
+    seamlint/       # (1) report JSON -> 内部 DiagnosticInput  (2) `slnt edges` subprocess で
+                    #     辺の points を解決 (resolveSeamPair)  (3) slnt runner（spawn）。A1 消費経路
     svg/            # legacy: path 読み取り / 書き込み / digest（残すが拡張しない）
-  preview/          # overlay SVG 生成（format 非依存）
+  preview/          # overlay SVG 生成（proposal.preview.edges から。format 非依存）
   cli/
     tru.ts          # entry
     commands/       # propose, apply
@@ -46,18 +45,26 @@ examples/
 ## Implementation Order
 
 `docs/truer-implementation-plan.md` の milestone 順を優先する。要は **contract を先に、
-geometry を後に**。
+geometry を後に**。以下は「どの層をどの順で積むか」という設計意図（時間に依存しない）。
+**各項目が done か未着手かは、この文書に書かない**（書くと必ず腐る）。現在の実装状況は
+branch note（`docs/branch/`）と task-spec（`docs/task-specs/`）を正とする。
 
-1. proposal model（schema / id / digest / skipped 表現）を安定させる。
-2. DXF adapter（BLOCK/edge で addressing、layer-14 net line 読み取り、edge digest）を作る。
-   SVG adapter は pre-pivot slice で既に存在する legacy。
-3. Seamlint adapter（`format:"dxf"` + `structuralEdges` -> 内部 diagnostic、`actual.point` 欠落は
-   skip）を作る。
-4. 最初の fix rule `geometry.curve_kink`（辺内部の kink のみ）を作る。DXF では **preview-only を
-   既定**にし、`local-adjustment` は editing surface が決まってから。
-5. preview overlay を作る（apply と同じ適用関数を通す。T2）。
-6. `tru propose` を出す。
-7. `tru apply` を出す（accept + digest + atomic）。**書き先は Loomit と握るまで確定させない**。
+> **辺ジオメトリの入手は A1（subprocess）に確定**（2026-07-14, `docs/design-history.md`）。Truer は DXF を
+> 自前 parse せず、Seamlint の **`slnt edges <dxf> --block --json`** を subprocess で叩いて辺の `points` を得る
+> （`structuralEdges` の公開契約）。だから「Truer 内の DXF net-line reader」はもう作らない。Truer が触る DXF は
+> 「source テキストを読んで digest する」「その path を `slnt edges` に渡す」だけ。
+
+1. proposal model（schema / id / digest / skipped 表現）を先に安定させる（geometry を育てる前に）。
+2. Seamlint adapter: (a) report JSON → 内部 `DiagnosticInput`、(b) `slnt edges` subprocess で
+   `resolveSeamPair`（両辺の points を取得。edgeId は number→string coerce）。SVG adapter は
+   pre-pivot slice の legacy。
+3. seam_length_mismatch を **self-contained proposal** にする（両辺 points から `edgeDigest` と
+   `preview.edges` を作る）。
+4. `geometry.curve_kink`（辺内部 kink）は DXF では preview-only 既定、`local-adjustment` は editing
+   surface 確定後。点→辺の住所解決（Seamlint 側 or 射影）が前提。
+5. preview overlay は `proposal.preview.edges` から。補正線を描くなら apply と同じ適用関数を通す（T2）。
+6. `tru propose [--preview]`（slnt の位置は `SEAMLINT_CLI` / `--slnt` で渡す。core は純粋なまま）。
+7. `tru apply`（accept + digest + atomic）。**書き先は Loomit と握るまで確定させない（OPEN な設計判断）**。
 
 task が明示しない限り、CAD engine、GUI editor、自動最終修正、端点ペア補正、3D / 布シミュへ先に
 進まない。DXF editing surface と apply の書き先を推測で先に固めない（OPEN のまま preview-only に
@@ -74,13 +81,14 @@ task が明示しない限り、CAD engine、GUI editor、自動最終修正、�
   制御点が無いので制御点操作前提にしない。丸めはここの emit 1 箇所だけ（`critical-invariants.md` T10）。
 - `src/core/apply/` は proposal の `changes` を original geometry（対象辺の net line）に当てる単一
   関数（`applyChanges`）と、accept / digest 検証を含む `applyProposal` を担当する。
-- `src/adapters/seamlint/` は Seamlint の report JSON（`format:"dxf"` + `structuralEdges`）を内部
-  diagnostic 型へ正規化する。core は Seamlint の JSON 形に直接依存しない。
-- `src/adapters/dxf/` は DXF の BLOCK/edge addressing、layer-14 net line 読み取り、edge digest を
-  担当する（主軸）。書き戻し先は未確定（apply 節参照）。
+- `src/adapters/seamlint/` は Seamlint との境界すべてを担う: (1) report JSON を内部 `DiagnosticInput`
+  へ正規化（`readSeamlintReport`）、(2) `slnt edges` subprocess で seam ペア両辺の `points` を解決
+  （`resolveSeamPair`、A1 消費経路）、(3) spawn 実行（`slntRunner`）。core は Seamlint の JSON 形にも DXF
+  にも直接依存しない。**辺住所と辺ジオメトリは Seamlint から来る**（Truer で DXF を parse しない）。
 - `src/adapters/svg/` は legacy: path の読み取り・対象 `d` の差し替え・digest・atomic write を
   担当する。残すが拡張しない。
-- `src/preview/` は overlay SVG を生成する。補正後 path は `apply` の `applyChanges` を通して得る。
+- `src/preview/` は overlay SVG を生成する（`proposal.preview.edges` から。self-contained）。補正線を
+  描く場合は `apply` の `applyChanges` を通して得る（T2）。
 - `src/cli/` は argument parsing、file read/write の起動、command error、出力、exit status を
   担当する。
 
@@ -104,29 +112,38 @@ proposal JSON は Truer で最も重要な contract。geometry を育てる前�
 - `schema` は MVP では `truer.proposal.v0` 固定。
 - 1 つの propose 実行で 1 ファイル（`source` + `proposals[]`）を出す。id は proposal ファイル内で
   stable。
-- `source.sourceDigest` は入力 DXF テキストの digest、対象辺 digest は対象 net line geometry の
-  digest。apply の事前検証に使う（T3）。digest の正規化方法を決め、propose と apply で同一の
-  ものを使う。（実装コードの field 名は現状まだ `target.pathDigest`＝SVG 時代のまま。schema 再設計は
-  次工程。）
+- `source.sourceDigest` は入力 DXF テキストの digest。対象辺 digest は `target.targetDigest` /
+  `seamReconciliation.{from,to}Edge.edgeDigest`＝**辺の `points` の canonical 直列化**の digest
+  （`digestEdgePoints` / `serializeEdgePoints`、正本は Seamlint の canonical points）。apply の事前検証に
+  使う（T3）。正規化方法は 1 箇所に集約し、propose と apply で同一のものを使う。
+- **proposal は self-contained**: seam ペアは描画用 points を `preview.edges` に載せ、`digestEdgePoints(points)`
+  が対応する `edgeDigest` と一致する（overlay は proposal 単体で再描画でき、DXF / Seamlint 再呼び出し不要）。
+  住所/同一性は `seamReconciliation`、描画幾何は `preview.edges` に分離する。
 - 補正できない diagnostic は **黙って捨てず**、skipped として理由付きで残す（proposal report）。
 - `mode` は `preview-only` / `local-adjustment` の 2 種。`local-adjustment` は `changes` を持ち、
   `preview-only` は `changes: []`。first slice は必ず `preview-only` を出せるようにし、確実な
   ケースだけ `local-adjustment` にする。
 - required field と status の意味は `references/testing-proposals.md` を正とする。
 
-## DXF Adapter（主軸）
+## DXF ジオメトリの入手（A1 subprocess）
 
-Truer が必要とする DXF 操作だけを担う狭い reader にする。
+**Truer は DXF を自前 parse しない。** 辺の住所と実ジオメトリは Seamlint の `slnt edges` から得る
+（A1 消費経路、`src/adapters/seamlint/`）。ここに独自の layer-14 net-line reader を作らない。
 
-- 対象を **BLOCK 名 + `structuralEdges` の `edgeId`/`arcRange`** で 1 辺特定する。BLOCK/edge の
-  不在・曖昧は推測せず error（`critical-invariants.md` T6）。SVG path id には頼らない。
-- 対象辺の layer-14 net line（flattened polyline）を読む。**それ以外の DXF 内容（他 BLOCK、
-  TEXT、layer、整形）は可能な限り保存** する。full 再シリアライズで無関係要素を消さない。
-- 対象辺の geometry digest を取り、apply の事前検証に使う。変更後は対象辺の digest だけが変わる。
+- 対象は **BLOCK 名 + `structuralEdges` の `edgeId`/`arcRange`** で 1 辺特定する。診断が住所
+  （`actual.fromEdge/toEdge = {blockName, edgeId, arcRange}`）を運ぶので、`resolveSeamPair` は `edgeId` を
+  join 鍵に `slnt edges` の `edges[edgeId].points` を引く。edgeId は number→string に coerce。
+- BLOCK/edge の不在・曖昧は推測せず not-found / skip（`critical-invariants.md` T6）。SVG path id には頼らない。
+- 辺の geometry digest は `points` の canonical 直列化から取り、apply の事前検証に使う（T3）。正本は
+  Seamlint の canonical points。
 - 座標系ガードは Seamlint に合わせる（`critical-invariants.md` T5）。ASTM 単位（mm）と BLOCK 変換の
   前提が検証できない箇所は補正可能変更の対象にしない。
+- Truer が触る DXF ファイルは「source テキストを読んで `sourceDigest` を取る」「その path を `slnt edges` に
+  渡す」だけ（source は非破壊）。
 - **書き戻し先は未確定**（apply 節・`docs/truer-mvp-spec.md` の "apply write target" を参照）。
   DXF export への書き戻しは Loomit と握るまで実装しない。
+- slnt の位置は deployment 事項: CLI が `SEAMLINT_CLI`（quote 対応でトークン化）/ `--slnt` で渡す。core は
+  純粋なまま（`SlntEdgesRunner` を注入）。
 
 ### legacy SVG Adapter
 
@@ -169,9 +186,10 @@ transform / 非等倍 `viewBox` は補正対象にしない、path command は `
 
 足してよい理由:
 
-- 壊れやすい DXF parsing / 書き換え（または legacy SVG path 操作）を、scope の明確な parser
-  （round-trip 保存できるもの）へ置き換える。
-- 自前で維持しにくい polyline length / point-at-length を信頼できる形で得る。
+- （apply の書き側が確定したら）DXF export への書き戻しや legacy SVG path 操作を、round-trip 保存できる
+  scope の明確な parser へ置き換える。
+- ※ DXF の parse・辺の `points`・polyline length は **Truer では持たない**（Seamlint の `slnt edges` に委譲,
+  A1）。よってこれらは Truer の dependency 追加理由にはならない。
 
 弱い理由:
 

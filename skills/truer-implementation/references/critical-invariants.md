@@ -13,10 +13,9 @@ invariant です。破ると silent に間違った線を出し、下流（人�
 まだ code がない段階なので、各項目は「最初に実装する人が守る設計ルール」として書きます。
 括弧内は想定する実装場所です。
 
-> **Geometry source は DXF (ASTM)**（2026-07-11 pivot）。以下の invariant の安全保証（source を
-> 壊さない / preview==apply / accept+digest / 端点・不確実は preview-only）は format 非依存で不変。
-> ただし addressing は BLOCK 名 + `edgeId`/`arcRange`、editing surface は flattened polyline（制御点
-> 無し）前提。**apply の書き先** と **DXF 上の curve_kink 補正法** は未確定（OPEN）で、確信を持って
+> 以下の invariant の安全保証（source を壊さない / preview==apply / accept+digest / 端点・不確実は
+> preview-only）は **format 非依存で不変**。geometry source（DXF/ASTM）・addressing・editing surface・OPEN
+> 事項（apply の書き先 / DXF 上の curve_kink 補正法）の pivot 前提は `AGENTS.md` を正とする。確信を持って
 > 対応づけられないものは preview-only に倒す原則が DXF でこそ効く。
 
 ---
@@ -121,9 +120,9 @@ invariant です。破ると silent に間違った線を出し、下流（人�
 - 守ること:
   - fix は diagnostic point 近傍の **vertex neighborhood だけ** を触る。無関係な頂点の
     数値・表現を変えない。変わるのは対象箇所のみになるよう最小化する。
-  - （書き側が実装される段階では）対象辺以外の DXF 内容（他 BLOCK、TEXT、layer、整形）を
-    **可能な限りそのまま保存** する (`src/adapters/dxf/`)。素朴な full 再シリアライズで無関係要素を
-    消さない。legacy SVG 経路では対象 path の `d` 以外を同様に保存する。
+  - （書き側は未実装・OPEN。実装される段階では）対象辺以外の DXF 内容（他 BLOCK、TEXT、layer、整形）を
+    **可能な限りそのまま保存** する。素朴な full 再シリアライズで無関係要素を消さない。legacy SVG 経路では
+    対象 path の `d` 以外を同様に保存する。（読み側の辺ジオメトリは Seamlint の `slnt edges` から得る, A1。）
   - 対象が BLOCK/edge で一意に定まらない（不在 / 曖昧）なら、推測で 1 辺選ばず error にする。
 - 検証: 1 辺を書き換えても、他の BLOCK・TEXT・要素数が preview/apply 後も保たれることを test で
   固定する。書き換え後は対象辺の digest だけが変わることを確認する。
@@ -172,9 +171,10 @@ invariant です。破ると silent に間違った線を出し、下流（人�
   - `schema` / `source` / `proposals[].id` / `status` / `target.*` / `sourceDiagnostic.code` /
     `changes` / `intent.reviewRequired` を、明示的な互換 break なしに rename・削除しない（一覧と
     required は `references/testing-proposals.md`）。表示専用の変更は formatter 側に閉じる。
-    - **DXF pivot 注**: `target` は現状コードでは `pathId`/`pathDigest`（SVG 時代）。DXF addressing
-      （`blockName`+`edgeId`/`arcRange`）への再設計は **明示的な schema break**（次工程）として扱い、
-      その際に `references/testing-proposals.md` の required 一覧を更新する。黙って rename しない。
+    - **DXF addressing（実装済み）**: `target` は `blockName` + `edgeId`/`arcRange` + `targetDigest`。seam ペアは
+      `seamReconciliation`（両辺 `edgeDigest`）+ 描画用 `preview.edges` を持つ。旧 `pathId`/`pathDigest`（SVG
+      時代）は pivot 済み。今後これらを黙って rename・削除しない（互換 break は明示し、
+      `references/testing-proposals.md` の required 一覧を更新する）。
   - `apply` は未知の `changes[].kind` を **silent に無視しない**。explicit に error（
     `apply.unsupported_change_kind`）にして、その proposal を skip 理由付きで report に残す。
   - `apply` は未知の `schema` version を mis-parse しない。対応外なら explicit に error にする。
