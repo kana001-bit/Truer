@@ -36,6 +36,8 @@ import type {
   ProposalFile,
   ProposalSource,
   ProposalTarget,
+  SeamEdge,
+  SeamReconciliation,
   SkippedDiagnostic,
   SourceDiagnostic
 } from "./proposalSchema.ts";
@@ -84,6 +86,30 @@ export type ResolveTargetResult =
   | { status: "not-found" }
   | { status: "ambiguous" };
 
+// A resolved edge of a seam pair: ResolvedTarget plus this edge's measured length. The
+// DXF adapter (Milestone 2, not yet wired) resolves both edges of a seam_length_mismatch.
+export interface ResolvedSeamEdge {
+  blockName: string;
+  edgeId?: string;
+  arcRange?: [number, number];
+  edgeGeometry: string;
+  lengthMm: number;
+}
+
+// The outcome of resolving BOTH edges of a seam pair. `reference` marks the authoritative
+// (fixed) edge when a Loomit/human token designates one; undefined => undecided, so the
+// proposal stays preview-only presenting both directions (T6). not-found / ambiguous mirror
+// ResolveTargetResult.
+export type SeamPairResolution =
+  | {
+      status: "resolved";
+      fromEdge: ResolvedSeamEdge;
+      toEdge: ResolvedSeamEdge;
+      reference?: "from" | "to";
+    }
+  | { status: "not-found" }
+  | { status: "ambiguous" };
+
 export interface CreateProposalFileInput {
   // User-facing source path as passed on the CLI (goes into source.file verbatim).
   sourceFile: string;
@@ -93,6 +119,10 @@ export interface CreateProposalFileInput {
   // Locates the target edge for a diagnostic. Returns resolved / not-found / ambiguous
   // so "no such edge" and "more than one candidate edge" stay distinct (T6).
   resolveTarget: (diagnostic: DiagnosticInput) => ResolveTargetResult;
+  // Resolves BOTH edges of a seam pair (seam_length_mismatch). Optional: when absent the
+  // seam builder falls back to the single-anchor preview-only behaviour (no pair model).
+  // The DXF adapter will always supply it once wired.
+  resolveSeamPair?: (diagnostic: DiagnosticInput) => SeamPairResolution;
   createdBy?: string;
 }
 
@@ -157,6 +187,33 @@ function buildTarget(target: ResolvedTarget): ProposalTarget {
   };
 }
 
+function buildSeamEdge(edge: ResolvedSeamEdge): SeamEdge {
+  return {
+    blockName: edge.blockName,
+    ...(edge.edgeId !== undefined ? { edgeId: edge.edgeId } : {}),
+    ...(edge.arcRange !== undefined ? { arcRange: edge.arcRange } : {}),
+    edgeDigest: digestPathData(edge.edgeGeometry),
+    lengthMm: edge.lengthMm
+  };
+}
+
+function seamNotes(
+  diffMm: number,
+  lengths: SeamLengths,
+  reference: "from" | "to" | undefined
+): string[] {
+  const head = `縫い合わせる2辺の長さが ${formatMm(diffMm)} mm 食い違っています (${formatMm(lengths.fromLengthMm)} / ${formatMm(lengths.toLengthMm)} mm)。`;
+  const direction =
+    reference === undefined
+      ? "基準辺が未指定のため、どちらに寄せるかは決めていません（両方向が候補, T6）。"
+      : `${reference} 辺を基準（固定）とし、もう片方を ±Δ で合わせる想定です。`;
+  return [
+    head,
+    direction,
+    "書き戻し先は未確定 (B: apply 先決定待ち)。意図的なイセ・ギャザーの可能性もあるため人間の確認が必要です。まだ線は引き直していません (preview-only)。"
+  ];
+}
+
 // Per-diagnostic proposal builders. Each returns either a proposal or a skip reason;
 // it never throws for a foreseeable missing field (T8). The loop owns id numbering and
 // the skipped list. Adding a diagnostic = one builder + one registry entry.
@@ -164,6 +221,7 @@ interface BuildContext {
   id: string;
   diagnostic: DiagnosticInput;
   resolveTarget: (diagnostic: DiagnosticInput) => ResolveTargetResult;
+  resolveSeamPair?: (diagnostic: DiagnosticInput) => SeamPairResolution;
 }
 
 type SkipReason = { code: string; message: string };
@@ -235,7 +293,12 @@ const buildCurveKinkProposal: ProposalBuilder = ({ id, diagnostic, resolveTarget
   };
 };
 
-const buildSeamLengthMismatchProposal: ProposalBuilder = ({ id, diagnostic, resolveTarget }) => {
+const buildSeamLengthMismatchProposal: ProposalBuilder = ({
+  id,
+  diagnostic,
+  resolveTarget,
+  resolveSeamPair
+}) => {
   const lengths = readSeamLengths(diagnostic.actual);
   if (!lengths) {
     return {
@@ -246,22 +309,63 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({ id, diagnostic, reso
     };
   }
 
-  // Anchor on the pair's "from" edge (resolveTarget resolves it). This addresses the
-  // proposal for display only; it does NOT decide which edge absorbs Δ (T6).
-  //
-  // targetDigest therefore covers ONLY the anchor edge, not the partner edge. That is
-  // intentional for this preview-only card: pair-aware target modelling (a second edge +
-  // its digest, and which side absorbs Δ) is deferred to task B, together with the apply
-  // write target (.val vs DXF) — digesting a DXF partner edge now would bake in an
-  // assumption B has not made. Until then a partner-edge change is still caught safely by
-  // the whole-file `source.sourceDigest` gate (T3 checks source digest AND target digest,
-  // so any edit to the DXF invalidates the proposal). A future apply MUST NOT relax to an
-  // edge-only digest check for seam pairs without first recording the partner digest.
-  const resolved = resolveTargetOrSkip(diagnostic, resolveTarget);
-  if ("skip" in resolved) return resolved;
-
   const diffMm = Math.abs(lengths.lengthDiffMm);
   const confidence: IntentConfidence = diffMm <= LENGTH_ADJUST_CANDIDATE_MAX_MM ? "medium" : "low";
+
+  // Pair-aware path: resolve BOTH edges so the proposal records the whole pair (each
+  // edge's own digest) and models decision 2 (conform-to-reference: reference / adjust /
+  // Δ). Recording the partner digest closes the anchor-only-digest gap — a future apply
+  // can gate on both edges. Still preview-only: the apply write target (.val vs DXF) is
+  // OPEN, so `changes` stays empty and no line is drawn. `target` keeps addressing the
+  // "from" edge; the pair truth lives in seamReconciliation. When no reference is
+  // designated, direction stays undecided and both directions are presented (T6).
+  if (resolveSeamPair) {
+    const pair = resolveSeamPair(diagnostic);
+    if (pair.status === "not-found") {
+      return {
+        skip: {
+          code: SKIP_TARGET_NOT_FOUND,
+          message: `対象 BLOCK/edge (${diagnostic.target ?? "unknown"}) が DXF 内に見つかりません。`
+        }
+      };
+    }
+    if (pair.status === "ambiguous") {
+      return {
+        skip: {
+          code: SKIP_AMBIGUOUS_TARGET,
+          message: `対象 BLOCK/edge (${diagnostic.target ?? "unknown"}) の候補が複数あり、一意に定まりません。`
+        }
+      };
+    }
+
+    const seamReconciliation: SeamReconciliation = {
+      fromEdge: buildSeamEdge(pair.fromEdge),
+      toEdge: buildSeamEdge(pair.toEdge),
+      deltaMm: diffMm,
+      ...(pair.reference !== undefined ? { reference: pair.reference } : {})
+    };
+
+    return {
+      proposal: {
+        id,
+        status: "proposed",
+        mode: "preview-only",
+        target: buildTarget(pair.fromEdge),
+        sourceDiagnostic: toSourceDiagnostic(diagnostic),
+        intent: { kind: "reconcile-seam-length", confidence, reviewRequired: true },
+        changes: [],
+        preview: {},
+        notes: seamNotes(diffMm, lengths, pair.reference),
+        seamReconciliation
+      }
+    };
+  }
+
+  // Fallback (no pair resolver supplied yet): single-anchor preview-only, no pair model.
+  // Backward compatible; the whole-file source.sourceDigest gate (T3) still catches any
+  // edit to the partner edge until resolveSeamPair is wired.
+  const resolved = resolveTargetOrSkip(diagnostic, resolveTarget);
+  if ("skip" in resolved) return resolved;
 
   return {
     proposal: {
@@ -270,14 +374,8 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({ id, diagnostic, reso
       mode: "preview-only",
       target: buildTarget(resolved.target),
       sourceDiagnostic: toSourceDiagnostic(diagnostic),
-      intent: {
-        kind: "reconcile-seam-length",
-        confidence,
-        reviewRequired: true
-      },
+      intent: { kind: "reconcile-seam-length", confidence, reviewRequired: true },
       changes: [],
-      // No single diagnostic point for a length mismatch; the length overlay is a later
-      // preview-rendering milestone. The numbers live in sourceDiagnostic.actual.
       preview: {},
       notes: [
         `縫い合わせる2辺の長さが ${formatMm(diffMm)} mm 食い違っています (${formatMm(lengths.fromLengthMm)} / ${formatMm(lengths.toLengthMm)} mm)。`,
@@ -332,7 +430,8 @@ export function createProposalFile(input: CreateProposalFileInput): ProposalFile
     const result = builder({
       id: proposalId(proposals.length + 1),
       diagnostic,
-      resolveTarget: input.resolveTarget
+      resolveTarget: input.resolveTarget,
+      resolveSeamPair: input.resolveSeamPair
     });
 
     if ("skip" in result) {
