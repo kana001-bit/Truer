@@ -9,6 +9,7 @@ import type {
 } from "../src/core/proposal/createProposalFile.ts";
 import { PROPOSAL_SCHEMA_V0, validateProposalFile } from "../src/core/proposal/proposalSchema.ts";
 import {
+  digestEdgePoints,
   digestPathData,
   digestText,
   normalizePathData
@@ -77,7 +78,19 @@ function seamLengthMismatch(fromLengthMm: number, toLengthMm: number): Diagnosti
 // The "to" (partner) edge of the seam pair, distinct block/geometry from the "from" edge.
 const SEAM_TO_BLOCK = "FRONT";
 const SEAM_TO_EDGE = "outseam";
-const SEAM_TO_GEOMETRY = "polyline 5,0 5,110 5,215";
+
+// The DXF adapter resolves each edge to its net-line points (from Seamlint `slnt edges`).
+// The pair stub supplies these directly; edgeGeometry strings are gone (points are canonical).
+const SEAM_POINTS = [
+  { x: 0, y: 0 },
+  { x: 0, y: 120 },
+  { x: 0, y: 240 }
+];
+const SEAM_TO_POINTS = [
+  { x: 5, y: 0 },
+  { x: 5, y: 110 },
+  { x: 5, y: 215 }
+];
 
 // Pair resolver stub: resolves BOTH edges, with lengths read from the diagnostic so the
 // seamReconciliation lengths match. `reference` designates the fixed edge (or undefined).
@@ -93,13 +106,13 @@ function resolveSeamPairStub(
       fromEdge: {
         blockName: SEAM_BLOCK,
         edgeId: SEAM_EDGE,
-        edgeGeometry: SEAM_GEOMETRY,
+        points: SEAM_POINTS,
         lengthMm: typeof fromRaw === "number" ? fromRaw : 0
       },
       toEdge: {
         blockName: SEAM_TO_BLOCK,
         edgeId: SEAM_TO_EDGE,
-        edgeGeometry: SEAM_TO_GEOMETRY,
+        points: SEAM_TO_POINTS,
         lengthMm: typeof toRaw === "number" ? toRaw : 0
       },
       ...(reference !== undefined ? { reference } : {})
@@ -194,7 +207,7 @@ test("target with neither edgeId nor arcRange is rejected by validation", () => 
 });
 
 test("arcRange that is swapped or out of [0,1] is rejected by validation", () => {
-  // 守る仕様: arcRange は 0..1 正規化・start<end（原点をまたがない, docs/seamlint-requests.md）。
+  // 守る仕様: arcRange は 0..1 正規化・start<end（原点をまたがない。Seamlint structuralEdges 由来）。
   //           [0.9,0.1] や [2,-1] のような不正 addressing を保存させない（後段の edge 解決 /
   //           digest 照合の破綻を防ぐ）。
   function withArcRange(arcRange: unknown) {
@@ -392,8 +405,8 @@ test("seam pair records BOTH edges' digests and the gap (Codex Finding 2)", () =
   const proposal = file.proposals[0]!;
   const seam = proposal.seamReconciliation!;
   assert.ok(seam, "seamReconciliation is present");
-  assert.equal(seam.fromEdge.edgeDigest, digestPathData(SEAM_GEOMETRY));
-  assert.equal(seam.toEdge.edgeDigest, digestPathData(SEAM_TO_GEOMETRY));
+  assert.equal(seam.fromEdge.edgeDigest, digestEdgePoints(SEAM_POINTS));
+  assert.equal(seam.toEdge.edgeDigest, digestEdgePoints(SEAM_TO_POINTS));
   assert.notEqual(seam.fromEdge.edgeDigest, seam.toEdge.edgeDigest);
   assert.equal(seam.fromEdge.lengthMm, 2415.778);
   assert.equal(seam.toEdge.lengthMm, 2167.495);
@@ -401,9 +414,41 @@ test("seam pair records BOTH edges' digests and the gap (Codex Finding 2)", () =
   // 決定1 (apply 先) が OPEN なので依然 preview-only。
   assert.equal(proposal.mode, "preview-only");
   assert.equal(proposal.changes.length, 0);
-  // target は from 辺アンカーのまま。
+  // target は from 辺アンカーのまま。digest は from 辺の points digest と一致。
   assert.equal(proposal.target.blockName, SEAM_BLOCK);
-  assert.equal(proposal.target.targetDigest, digestPathData(SEAM_GEOMETRY));
+  assert.equal(proposal.target.targetDigest, digestEdgePoints(SEAM_POINTS));
+});
+
+test("seam pair proposal is self-contained: preview.edges carries points, digest matches", () => {
+  // 守る仕様: proposal は self-contained。preview.edges に両辺の net-line points を載せ、
+  //           digestEdgePoints(points) が seamReconciliation の対応 edgeDigest と一致する。
+  //           これで overlay は proposal 単体（DXF / Seamlint 再呼び出し無し）から再描画できる。
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(2415.778, 2167.495)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from")
+  });
+
+  assert.deepEqual(validateProposalFile(file), []);
+  const proposal = file.proposals[0]!;
+  const edges = proposal.preview.edges!;
+  assert.ok(Array.isArray(edges) && edges.length === 2, "preview carries both edges");
+
+  const fromEdge = edges.find((edge) => edge.role === "from")!;
+  const toEdge = edges.find((edge) => edge.role === "to")!;
+  assert.deepEqual(fromEdge.points, SEAM_POINTS);
+  assert.deepEqual(toEdge.points, SEAM_TO_POINTS);
+
+  // 自給自足の要: 描画に使う points を digest すると、住所側の edgeDigest に一致する。
+  const seam = proposal.seamReconciliation!;
+  assert.equal(digestEdgePoints(fromEdge.points), seam.fromEdge.edgeDigest);
+  assert.equal(digestEdgePoints(toEdge.points), seam.toEdge.edgeDigest);
+
+  // 依然 preview-only（補正線は無い）。
+  assert.equal(proposal.mode, "preview-only");
+  assert.equal(proposal.changes.length, 0);
 });
 
 test("seam pair with no designated reference stays undecided (both directions, T6)", () => {

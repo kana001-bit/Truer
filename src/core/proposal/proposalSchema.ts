@@ -99,9 +99,23 @@ export interface MovedPoint {
   to: Point;
 }
 
+// One edge of a seam pair drawn in the preview overlay. Present on seam_length_mismatch
+// proposals (paired with seamReconciliation). `points` is the edge's net-line polyline
+// from Seamlint `structuralEdges`; the overlay draws it directly. The proposal is
+// self-contained: `digestEdgePoints(points)` equals the matching seamReconciliation edge's
+// `edgeDigest`, so the overlay is reproducible from the proposal alone (no DXF / Seamlint
+// re-call at preview time). Render geometry lives here; addressing/identity lives in
+// seamReconciliation — the two are kept separate on purpose.
+export interface PreviewEdge {
+  role: "from" | "to";
+  points: Point[];
+}
+
 export interface ProposalPreview {
   diagnosticPoint?: Point;
   movedPoints?: MovedPoint[];
+  // Render geometry for the seam overlay (the two mismatched edges). Optional/additive.
+  edges?: PreviewEdge[];
 }
 
 export interface ProposalTarget {
@@ -200,7 +214,7 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 // Seamlint arcRange: a normalized [start, end] slice of the piece loop, origin at the
-// first corner, values in 0..1 (docs/seamlint-requests.md). Edges are corner-bounded and
+// first corner, values in 0..1 (Seamlint structuralEdges convention). Edges are corner-bounded and
 // never wrap the origin, so start < end. Reject swapped / out-of-[0,1] ranges here so a
 // malformed addressing (e.g. [0.9, 0.1] or [2, -1]) never reaches a saved proposal and
 // breaks later edge resolution or digest matching.
@@ -231,6 +245,28 @@ function isSeamEdge(value: unknown): value is SeamEdge {
   // Addressing needs at least one of edgeId / arcRange (T6: never guess the edge).
   if (!isNonEmptyString(edge.edgeId) && !isArcRange(edge.arcRange)) return false;
   return true;
+}
+
+function isFinitePoint(value: unknown): value is Point {
+  if (typeof value !== "object" || value === null) return false;
+  const point = value as Record<string, unknown>;
+  return (
+    typeof point.x === "number" &&
+    Number.isFinite(point.x) &&
+    typeof point.y === "number" &&
+    Number.isFinite(point.y)
+  );
+}
+
+// A preview edge needs a from/to role and at least two finite net-line points (an edge is a
+// polyline: two corners minimum). The digest==edgeDigest invariant is pinned by tests, not
+// here, so validation stays free of the digest module.
+function isPreviewEdge(value: unknown): value is PreviewEdge {
+  if (typeof value !== "object" || value === null) return false;
+  const edge = value as Record<string, unknown>;
+  if (edge.role !== "from" && edge.role !== "to") return false;
+  if (!Array.isArray(edge.points) || edge.points.length < 2) return false;
+  return edge.points.every(isFinitePoint);
 }
 
 function validateProposal(candidate: unknown, index: number, errors: string[]): void {
@@ -305,6 +341,21 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
       if (seam.reference !== undefined && seam.reference !== "from" && seam.reference !== "to") {
         errors.push(`${at}.seamReconciliation.reference must be "from", "to", or omitted`);
       }
+    }
+  }
+
+  // preview.edges (seam overlay render geometry) is optional/additive; validate shape only
+  // when present.
+  const preview = proposal.preview as Record<string, unknown> | undefined;
+  if (preview && preview.edges !== undefined) {
+    if (!Array.isArray(preview.edges)) {
+      errors.push(`${at}.preview.edges must be an array when present`);
+    } else {
+      preview.edges.forEach((edge, edgeIndex) => {
+        if (!isPreviewEdge(edge)) {
+          errors.push(`${at}.preview.edges[${edgeIndex}] is not a valid preview edge`);
+        }
+      });
     }
   }
 }

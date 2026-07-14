@@ -32,6 +32,7 @@ import {
 import type {
   IntentConfidence,
   Point,
+  PreviewEdge,
   Proposal,
   ProposalFile,
   ProposalSource,
@@ -41,7 +42,7 @@ import type {
   SkippedDiagnostic,
   SourceDiagnostic
 } from "./proposalSchema.ts";
-import { digestPathData, digestText } from "./proposalDigest.ts";
+import { digestEdgePoints, digestPathData, digestText } from "./proposalDigest.ts";
 
 // The subset of a Seamlint diagnostic Truer reads. The Seamlint adapter
 // (Milestone 3) is responsible for producing this shape; core does not depend on
@@ -86,13 +87,17 @@ export type ResolveTargetResult =
   | { status: "not-found" }
   | { status: "ambiguous" };
 
-// A resolved edge of a seam pair: ResolvedTarget plus this edge's measured length. The
-// DXF adapter (Milestone 2, not yet wired) resolves both edges of a seam_length_mismatch.
+// A resolved edge of a seam pair: DXF addressing + this edge's net-line points and measured
+// length. The DXF adapter resolves both edges of a seam_length_mismatch by calling Seamlint's
+// `slnt edges` and reading `edges[edgeId]` (points come from `structuralEdges`). `points` is
+// the canonical geometry: it is digested into `edgeDigest` AND stored verbatim in
+// `preview.edges`, so the overlay is reproducible from the proposal alone (self-contained).
+// `edgeId` is already coerced to string by the adapter (Seamlint emits it as a number).
 export interface ResolvedSeamEdge {
   blockName: string;
   edgeId?: string;
   arcRange?: [number, number];
-  edgeGeometry: string;
+  points: Point[];
   lengthMm: number;
 }
 
@@ -192,7 +197,7 @@ function buildSeamEdge(edge: ResolvedSeamEdge): SeamEdge {
     blockName: edge.blockName,
     ...(edge.edgeId !== undefined ? { edgeId: edge.edgeId } : {}),
     ...(edge.arcRange !== undefined ? { arcRange: edge.arcRange } : {}),
-    edgeDigest: digestPathData(edge.edgeGeometry),
+    edgeDigest: digestEdgePoints(edge.points),
     lengthMm: edge.lengthMm
   };
 }
@@ -338,23 +343,44 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
       };
     }
 
+    const fromSeamEdge = buildSeamEdge(pair.fromEdge);
+    const toSeamEdge = buildSeamEdge(pair.toEdge);
     const seamReconciliation: SeamReconciliation = {
-      fromEdge: buildSeamEdge(pair.fromEdge),
-      toEdge: buildSeamEdge(pair.toEdge),
+      fromEdge: fromSeamEdge,
+      toEdge: toSeamEdge,
       deltaMm: diffMm,
       ...(pair.reference !== undefined ? { reference: pair.reference } : {})
     };
+
+    // target still addresses the "from" edge (display anchor, not a claim about which side to
+    // change). Its digest is the from edge's own points digest, so target and seamReconciliation
+    // agree.
+    const target: ProposalTarget = {
+      blockName: pair.fromEdge.blockName,
+      ...(pair.fromEdge.edgeId !== undefined ? { edgeId: pair.fromEdge.edgeId } : {}),
+      ...(pair.fromEdge.arcRange !== undefined ? { arcRange: pair.fromEdge.arcRange } : {}),
+      targetDigest: fromSeamEdge.edgeDigest
+    };
+
+    // Render geometry for the overlay: both edges' net-line points, stored verbatim so the
+    // preview is a pure function of the proposal (self-contained; no DXF / Seamlint re-call).
+    // digestEdgePoints(points) === the matching seamReconciliation edge's edgeDigest by
+    // construction (both come from the same points). Still preview-only: no corrected line.
+    const previewEdges: PreviewEdge[] = [
+      { role: "from", points: pair.fromEdge.points },
+      { role: "to", points: pair.toEdge.points }
+    ];
 
     return {
       proposal: {
         id,
         status: "proposed",
         mode: "preview-only",
-        target: buildTarget(pair.fromEdge),
+        target,
         sourceDiagnostic: toSourceDiagnostic(diagnostic),
         intent: { kind: "reconcile-seam-length", confidence, reviewRequired: true },
         changes: [],
-        preview: {},
+        preview: { edges: previewEdges },
         notes: seamNotes(diffMm, lengths, pair.reference),
         seamReconciliation
       }
