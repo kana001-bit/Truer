@@ -4,13 +4,13 @@ proposal JSON、preview、apply、CLI output、fixtures を追加または変更
 Truer は write tool なので、test の主目的は「補正が正しいこと」より前に、**source を壊さない・
 preview と apply が一致する・採用と digest のゲートが効く** ことの回帰固定です。
 
-> **Geometry source は DXF (ASTM)**（2026-07-11 pivot）。fixture は DXF ベース、addressing は
-> BLOCK 名 + `edgeId`/`arcRange`。proposal `target` は DXF addressing（`blockName` + `edgeId` +
-> `targetDigest`、`arcRange` は optional）へ **再設計済み**（`proposalSchema.ts` /
-> `createProposalFile.ts`、v0 in-place の schema break）。`changes[].kind` の `replace-path-data` は
-> **legacy SVG** として残し、DXF 用 change kind は editing surface が OPEN のため未新設（first slice は
-> preview-only）。テスト観点（source 不変 / preview==apply / accept・digest ゲート / preview-only）は
-> format 非依存で不変。
+> **pivot 前提（geometry source = DXF/ASTM、addressing）は `AGENTS.md` を正とする**（複製しない）。この doc
+> 固有の点だけ書く: fixture は DXF ベース。proposal `target` は DXF addressing（`blockName` + `edgeId` +
+> `targetDigest`、`arcRange` は optional）へ **再設計済み**（`proposalSchema.ts` / `createProposalFile.ts`、
+> v0 in-place の schema break）。seam ペアは `seamReconciliation`（両辺 `edgeDigest`）+ 描画用 `preview.edges`。
+> `changes[].kind` の `replace-path-data` は **legacy SVG** として残し、DXF 用 change kind は editing surface が
+> OPEN のため未新設（first slice は preview-only）。テスト観点（source 不変 / preview==apply / accept・digest
+> ゲート / preview-only / digest(points)==edgeDigest）は format 非依存で不変。
 
 ## Test Comments
 

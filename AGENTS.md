@@ -11,9 +11,10 @@ Seamlint が見つけた geometry diagnostic から「小さく説明できる�
 before / after を見せる preview を出し、**人間が明示的に採用した変更だけ** を新しいファイルへ
 適用する write tool。検査は Seamlint、書き込みは Truer、と役割を分ける。
 
-> **Geometry source は DXF (ASTM)**（2026-07-11 pivot、`docs/seamlint-requests.md`）。addressing は
-> BLOCK 名 + `edgeId`/`arcRange`。SVG は legacy。DXF net line は制御点の無い flattened polyline のため、
-> curve_kink の editing surface と **apply の書き先（Loomit 合意待ち）** は未確定（OPEN）。
+> **Geometry source は DXF (ASTM)**（2026-07-11 pivot、`docs/design-history.md`）。addressing は
+> BLOCK 名 + `edgeId`/`arcRange`（Seamlint の `structuralEdges`。辺ジオメトリは `slnt edges` 経由 = A1）。
+> SVG は legacy。DXF net line は制御点の無い flattened polyline のため、curve_kink の editing surface と
+> **apply の書き先（Loomit 合意待ち）** は未確定（OPEN）。**この pivot 前提の正本はここ**（reference には複製しない）。
 
 ## 行動原則
 
@@ -24,10 +25,8 @@ before / after を見せる preview を出し、**人間が明示的に採用し
 
 - 指示された修正のみを実施する。
 - 明示的に依頼されていない調査・追加修正・改善提案・リファクタは行わない。
-- lint / typecheck / build / test は、ユーザーが明示的に依頼した場合のみ実行する。
-  - 例外: 補正 / preview / apply の挙動を変えたときは、その変更の検証として
-    「確認」節の propose → preview → apply の通し確認を行う。これは変更の一部であり、
-    変更範囲外の lint / build を勝手に回すこととは分けて扱う。
+- 補正 / preview / apply の挙動を変えたときは、その変更の検証として「確認」節の
+  propose → preview → apply の通し確認を行う。検証は変更の一部。
 - 修正完了後は追加作業を始めず、変更内容を簡潔に報告して停止する。
 - 判断に迷う場合は、勝手に進めずユーザーに確認する。
 
@@ -39,6 +38,7 @@ before / after を見せる preview を出し、**人間が明示的に採用し
 | 作業                                                                                                 | 使う skill                             |
 | ---------------------------------------------------------------------------------------------------- | -------------------------------------- |
 | Truer 本体の実装・修正（proposal / geometry-edit / apply / preview / CLI / adapters / tests / 契約） | `skills/truer-implementation/SKILL.md` |
+| マージ前の差分 / PR レビュー（書き込み安全・preview==apply・contract・A1 境界・腐ったコメント）      | `skills/code-review/SKILL.md`          |
 | ブランチ単位の plan・progress・handoff の記録                                                        | `skills/branch-progress/SKILL.md`      |
 | 長期タスクの確定仕様・未確認事項・調査・引き継ぎの永続化（確定/未確認を分離）                        | `skills/task-spec-manager/SKILL.md`    |
 
@@ -47,9 +47,16 @@ before / after を見せる preview を出し、**人間が明示的に採用し
 - `src/core/`（proposal / fixes / geometry-edit / apply）を触るとき
 - proposal JSON の schema、field、`changes` の kind を触るとき
 - preview overlay の生成、overlay 表現、`data-proposal-id` などを触るとき
-- `src/adapters/`（seamlint report / dxf / legacy svg path）を触るとき
+- `src/adapters/`（seamlint report / `slnt edges` runner / legacy svg path）を触るとき
 - `tru propose` / `tru apply` CLI、exit code、examples、tests を触るとき
 - Seamlint / Loomit 連携 contract、project docs、`AGENTS.md` を触るとき
+
+### code-review を使う場面
+
+- 作業差分や PR を **マージ前**に安全性でレビューするとき（書くのではなく指摘する）
+- 補正 / preview / apply / digest / accept ゲートに触る変更の、false-positive 耐性のある読みが欲しいとき
+- schema / `changes` kind / contract を触る変更が下流を壊さないか確認するとき
+- 差分が挙動を変えたのに **コメント・docstring が旧挙動のまま**（腐ったコメント）残っていないか掃除するとき
 
 ### branch-progress を使う場面
 
@@ -105,8 +112,9 @@ Truer は Seamlint と違い、**型紙の線を書き換える**。その線は
 
 ## 確認
 
-- 補正 / preview / apply の挙動を変えたら、fixture を使って propose → preview → apply を
-  通しで実行する。
-- source が変更されていないこと、**preview に出る geometry と apply が生成する geometry が
-  一致すること** を確認する。
+- 補正 / preview / apply の挙動を変えたら、fixture を使って propose → preview（→ apply）を
+  通しで実行する。**apply は現状 OPEN（未実装）なので、今は propose → preview まで**。
+- source が変更されていないこと、**preview に出る geometry が proposal だけから決まること**
+  （self-contained。`digest(preview.edges.points) == edgeDigest`）を確認する。apply 実装後は
+  「preview と apply が生成する geometry が一致すること」（T2）を加える。
 - 実行できなかった check があれば理由を明記する。
