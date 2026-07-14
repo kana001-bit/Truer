@@ -4,7 +4,8 @@ import test from "node:test";
 import { createProposalFile } from "../src/core/proposal/createProposalFile.ts";
 import type {
   DiagnosticInput,
-  ResolveTargetResult
+  ResolveTargetResult,
+  SeamPairResolution
 } from "../src/core/proposal/createProposalFile.ts";
 import { PROPOSAL_SCHEMA_V0, validateProposalFile } from "../src/core/proposal/proposalSchema.ts";
 import {
@@ -70,6 +71,39 @@ function seamLengthMismatch(fromLengthMm: number, toLengthMm: number): Diagnosti
       lengthDiffMm: Math.abs(fromLengthMm - toLengthMm)
     },
     suggestion: ["Check whether the difference is intentional ease, gather, or a pattern mismatch."]
+  };
+}
+
+// The "to" (partner) edge of the seam pair, distinct block/geometry from the "from" edge.
+const SEAM_TO_BLOCK = "FRONT";
+const SEAM_TO_EDGE = "outseam";
+const SEAM_TO_GEOMETRY = "polyline 5,0 5,110 5,215";
+
+// Pair resolver stub: resolves BOTH edges, with lengths read from the diagnostic so the
+// seamReconciliation lengths match. `reference` designates the fixed edge (or undefined).
+function resolveSeamPairStub(
+  reference?: "from" | "to"
+): (diagnostic: DiagnosticInput) => SeamPairResolution {
+  return (diagnostic) => {
+    if (diagnostic.target !== SEAM_TARGET) return { status: "not-found" };
+    const fromRaw = diagnostic.actual?.fromLengthMm;
+    const toRaw = diagnostic.actual?.toLengthMm;
+    return {
+      status: "resolved",
+      fromEdge: {
+        blockName: SEAM_BLOCK,
+        edgeId: SEAM_EDGE,
+        edgeGeometry: SEAM_GEOMETRY,
+        lengthMm: typeof fromRaw === "number" ? fromRaw : 0
+      },
+      toEdge: {
+        blockName: SEAM_TO_BLOCK,
+        edgeId: SEAM_TO_EDGE,
+        edgeGeometry: SEAM_TO_GEOMETRY,
+        lengthMm: typeof toRaw === "number" ? toRaw : 0
+      },
+      ...(reference !== undefined ? { reference } : {})
+    };
   };
 }
 
@@ -336,6 +370,178 @@ test("createProposalFile is deterministic for seam_length_mismatch too", () => {
     sourceText: DXF,
     diagnostics: [seamLengthMismatch(2415.778, 2167.495)],
     resolveTarget: resolveSeamFrom
+  };
+  assert.equal(
+    JSON.stringify(createProposalFile(input)),
+    JSON.stringify(createProposalFile(input))
+  );
+});
+
+test("seam pair records BOTH edges' digests and the gap (Codex Finding 2)", () => {
+  // 守る仕様: resolveSeamPair 供給時、seamReconciliation に両辺の digest と長さ、Δ が入る。
+  //           相手辺 digest を持つので将来 apply がペアを守れる。依然 preview-only。
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(2415.778, 2167.495)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub()
+  });
+
+  assert.deepEqual(validateProposalFile(file), []);
+  const proposal = file.proposals[0]!;
+  const seam = proposal.seamReconciliation!;
+  assert.ok(seam, "seamReconciliation is present");
+  assert.equal(seam.fromEdge.edgeDigest, digestPathData(SEAM_GEOMETRY));
+  assert.equal(seam.toEdge.edgeDigest, digestPathData(SEAM_TO_GEOMETRY));
+  assert.notEqual(seam.fromEdge.edgeDigest, seam.toEdge.edgeDigest);
+  assert.equal(seam.fromEdge.lengthMm, 2415.778);
+  assert.equal(seam.toEdge.lengthMm, 2167.495);
+  assert.equal(seam.deltaMm, Math.abs(2415.778 - 2167.495));
+  // 決定1 (apply 先) が OPEN なので依然 preview-only。
+  assert.equal(proposal.mode, "preview-only");
+  assert.equal(proposal.changes.length, 0);
+  // target は from 辺アンカーのまま。
+  assert.equal(proposal.target.blockName, SEAM_BLOCK);
+  assert.equal(proposal.target.targetDigest, digestPathData(SEAM_GEOMETRY));
+});
+
+test("seam pair with no designated reference stays undecided (both directions, T6)", () => {
+  // 守る仕様: 基準未指定なら reference は undefined。どちらを直すか推測しない。
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(500, 505)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub()
+  });
+  assert.deepEqual(validateProposalFile(file), []);
+  assert.equal(file.proposals[0]!.seamReconciliation!.reference, undefined);
+});
+
+test("seam pair keeps a designated reference; still preview-only", () => {
+  // 守る仕様: 基準 (from) を渡すと保持される。決定2 のモデル化。まだ線は引かない (changes:[])。
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(2415.778, 2167.495)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from")
+  });
+  assert.deepEqual(validateProposalFile(file), []);
+  const proposal = file.proposals[0]!;
+  assert.equal(proposal.seamReconciliation!.reference, "from");
+  assert.equal(proposal.mode, "preview-only");
+  assert.equal(proposal.changes.length, 0);
+});
+
+test("seam pair not-found / ambiguous are skipped, not guessed (T6)", () => {
+  // 守る仕様: ペア解決が not-found / ambiguous なら推測せず、区別して skip。
+  const notFound = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(500, 505)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: () => ({ status: "not-found" })
+  });
+  assert.equal(notFound.proposals.length, 0);
+  assert.equal(notFound.skipped[0]!.code, "proposal.target_not_found");
+
+  const ambiguous = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(500, 505)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: () => ({ status: "ambiguous" })
+  });
+  assert.equal(ambiguous.proposals.length, 0);
+  assert.equal(ambiguous.skipped[0]!.code, "proposal.ambiguous_target");
+});
+
+test("seam without resolveSeamPair falls back to single-anchor (no seamReconciliation)", () => {
+  // 守る仕様 (後方互換): pair resolver 未供給なら従来の単辺 preview-only。seamReconciliation は付かない。
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(500, 505)],
+    resolveTarget: resolveSeamFrom
+  });
+  assert.deepEqual(validateProposalFile(file), []);
+  assert.equal(file.proposals[0]!.seamReconciliation, undefined);
+  assert.equal(file.proposals[0]!.mode, "preview-only");
+});
+
+test("malformed seamReconciliation is rejected by validation", () => {
+  // 守る仕様: seamReconciliation が present なら両辺 (blockName+edgeDigest+edgeId/arcRange+lengthMm)、
+  //           deltaMm finite、reference は from/to のみ。
+  function withSeam(seamReconciliation: unknown) {
+    return {
+      schema: PROPOSAL_SCHEMA_V0,
+      source: { file: "x.dxf", sourceDigest: "sha256:0", createdBy: "tru propose" },
+      proposals: [
+        {
+          id: "prop_001",
+          status: "proposed",
+          mode: "preview-only",
+          target: { blockName: "BACK", edgeId: "outseam", targetDigest: "sha256:0" },
+          sourceDiagnostic: { code: "geometry.seam_length_mismatch" },
+          intent: { kind: "reconcile-seam-length", confidence: "low", reviewRequired: true },
+          changes: [],
+          preview: {},
+          notes: [],
+          seamReconciliation
+        }
+      ],
+      skipped: []
+    };
+  }
+  const fromEdge = { blockName: "BACK", edgeId: "outseam", edgeDigest: "sha256:1", lengthMm: 100 };
+  const toEdge = { blockName: "FRONT", edgeId: "outseam", edgeDigest: "sha256:2", lengthMm: 95 };
+
+  // valid
+  assert.deepEqual(validateProposalFile(withSeam({ fromEdge, toEdge, deltaMm: 5 })), []);
+  // an edge missing its digest
+  assert.ok(
+    validateProposalFile(
+      withSeam({
+        fromEdge: { blockName: "BACK", edgeId: "outseam", lengthMm: 100 },
+        toEdge,
+        deltaMm: 5
+      })
+    ).some((error) => error.includes("fromEdge"))
+  );
+  // an edge with neither edgeId nor arcRange (T6)
+  assert.ok(
+    validateProposalFile(
+      withSeam({
+        fromEdge: { blockName: "BACK", edgeDigest: "sha256:1", lengthMm: 100 },
+        toEdge,
+        deltaMm: 5
+      })
+    ).some((error) => error.includes("fromEdge"))
+  );
+  // non-finite deltaMm
+  assert.ok(
+    validateProposalFile(withSeam({ fromEdge, toEdge, deltaMm: Number.NaN })).some((error) =>
+      error.includes("deltaMm")
+    )
+  );
+  // reference must be "from" | "to"
+  assert.ok(
+    validateProposalFile(withSeam({ fromEdge, toEdge, deltaMm: 5, reference: "left" })).some(
+      (error) => error.includes("reference")
+    )
+  );
+});
+
+test("createProposalFile is deterministic with the seam pair model", () => {
+  // 守る仕様 (T10): ペアモデルでも同じ入力から byte 一致。
+  const input = {
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(2415.778, 2167.495)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from")
   };
   assert.equal(
     JSON.stringify(createProposalFile(input)),
