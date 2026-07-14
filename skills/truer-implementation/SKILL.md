@@ -13,10 +13,8 @@ Truer は Seamlint（read-only linter）と違い、**型紙の線を書き換�
 **人間が本当は見ていない補正を、見たつもりで適用してしまうこと** に移ります。skill 全体の
 背骨はここにあります。
 
-> **Geometry source は DXF (ASTM)**（2026-07-11 pivot、`docs/seamlint-requests.md`）。addressing は
-> BLOCK 名 + `structuralEdges` の `edgeId`/`arcRange`。SVG adapter は legacy。DXF net line は制御点の
-> 無い flattened polyline なので、curve_kink の直し方（editing surface）と apply の書き先は未確定
-> （OPEN）。未確定を確定ルールとして書かない。詳細は各 reference / docs 冒頭の注記を参照。
+> **geometry source（DXF/ASTM）・addressing・OPEN 事項の pivot 前提は `AGENTS.md` を正とする**
+> （ここに複製しない）。未確定を確定ルールとして書かない。impl 具体は下の各 reference を読む。
 
 ## まず切り分ける
 
