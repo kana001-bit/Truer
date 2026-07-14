@@ -18,7 +18,13 @@ export {
 } from "./core/proposal/proposalSchema.ts";
 export type * from "./core/proposal/proposalSchema.ts";
 
-export { digestText, digestPathData, normalizePathData } from "./core/proposal/proposalDigest.ts";
+export {
+  digestText,
+  digestPathData,
+  normalizePathData,
+  serializeEdgePoints,
+  digestEdgePoints
+} from "./core/proposal/proposalDigest.ts";
 
 export {
   readSvgPaths,
@@ -29,3 +35,20 @@ export {
   SVG_DUPLICATE_PATH_ID
 } from "./adapters/svg/index.ts";
 export type { SvgPath } from "./adapters/svg/index.ts";
+
+export {
+  parseSeamlintReport,
+  SeamlintReportError,
+  SEAMLINT_REPORT_INVALID,
+  buildResolveSeamPair
+} from "./adapters/seamlint/index.ts";
+export type { SlntEdge, SlntEdgesResult, SlntEdgesRunner } from "./adapters/seamlint/index.ts";
+export {
+  createSlntEdgesRunner,
+  resolveSlntCommand,
+  tokenizeCommand,
+  SlntRunError,
+  SLNT_RUN_FAILED
+} from "./adapters/seamlint/slntRunner.ts";
+
+export { renderProposalPreview } from "./preview/index.ts";

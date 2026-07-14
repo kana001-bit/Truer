@@ -1,0 +1,4 @@
+interface:
+  display_name: "Truer Code Review"
+  short_description: "Truer の差分 / PR をマージ前に安全性でレビューする（指摘に徹する）"
+  default_prompt: "$code-review を使って、Truer の作業差分または PR を、書き込み安全（source 非破壊・accept/digest ゲート）・preview==apply・self-contained proposal・contract・A1 境界・腐ったコメントの観点でレビューする。指摘に徹し、コードは書かない。"
