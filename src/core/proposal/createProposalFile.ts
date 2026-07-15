@@ -1,23 +1,24 @@
 // Assembles a validated `truer.proposal.v0` file from Seamlint-style diagnostics.
 //
-// This is the Milestone 1 proposal *model*. It has no geometry solver and no file
-// IO: geometry (Milestone 4) will upgrade some proposals from `preview-only` to
-// `local-adjustment`, and the DXF adapter (Milestone 2) provides `resolveTarget`.
-// Until then every supported, mappable diagnostic becomes a `preview-only`
-// proposal, which is exactly the first-slice stance: show the problem, do not invent
-// a correction (docs/truer-first-slice.md).
+// The proposal *model*. No file IO and no DXF parsing: the DXF adapter resolves each edge's
+// net-line points via Seamlint `slnt edges` and passes them in through `resolveTarget` /
+// `resolveSeamPair`. Correction geometry lives in the fixes (`src/core/fixes/`), which return the
+// minimal `changes`; apply and preview replay those through applyChanges (T2 / T4).
 //
-// Two diagnostic codes are supported, one builder each (registry-lite; the full
-// `src/core/fixes/` registry in references/extensibility.md E1 is deferred):
-//   - geometry.curve_kink: single edge + `actual.point`.
-//   - geometry.seam_length_mismatch: a *pair* diagnostic (no point; from/to/diff mm),
-//     addressed by anchoring on the pair's "from" edge. Anchoring is for display /
-//     addressing only, never a claim about which edge to change (T6). Which side
-//     absorbs Δ, and the apply write target, are OPEN, so it is preview-only too.
+// Two diagnostic codes are supported, one builder each (registry-lite; the full `src/core/fixes/`
+// registry in references/extensibility.md E1 is deferred):
+//   - geometry.curve_kink: single edge + `actual.point`. The curveKink fix smooths a confidently
+//     mapped interior vertex (move-vertex, chord projection) as a `local-adjustment`, and falls
+//     back to `preview-only` for endpoint / unmappable / degenerate cases (T7 / T8). apply writes
+//     the corrected edge into a Truer-owned DXF at `--out` (M3, 2026-07-16).
+//   - geometry.seam_length_mismatch: a *pair* diagnostic (no point; from/to/diff mm), addressed by
+//     anchoring on the pair's "from" edge. Anchoring is for display / addressing only, never a claim
+//     about which edge to change (T6). Which side absorbs Δ is OPEN (needs a human/Loomit reference
+//     token), so it stays preview-only for now.
 //
 // Pure: same input -> same output. No time, randomness, or filesystem access here
-// (references/critical-invariants.md T10). Callers (the CLI) do the file IO and
-// pass in `sourceText` and a `resolveTarget` callback.
+// (references/critical-invariants.md T10). Callers (the CLI) do the file IO and pass in
+// `sourceText` and the `resolveTarget` / `resolveSeamPair` callbacks.
 
 import {
   PROPOSAL_SCHEMA_V0,
@@ -42,7 +43,8 @@ import type {
   SkippedDiagnostic,
   SourceDiagnostic
 } from "./proposalSchema.ts";
-import { digestEdgePoints, digestPathData, digestText } from "./proposalDigest.ts";
+import { digestEdgePoints, digestText } from "./proposalDigest.ts";
+import { buildCurveKinkFix } from "../fixes/curveKink.ts";
 
 // The subset of a Seamlint diagnostic Truer reads. The Seamlint adapter
 // (Milestone 3) is responsible for producing this shape; core does not depend on
@@ -61,19 +63,21 @@ export interface DiagnosticInput {
   message?: string;
 }
 
-// The resolved target edge for a diagnostic. DXF addressing: BLOCK name + edge on
-// the Seamlint `structuralEdges` primitive. `edgeGeometry` is the addressed edge's
-// canonical net-line text, digested into `targetDigest`. Supplied by the DXF adapter
-// (Milestone 2, not yet wired) via `resolveTarget`.
+// The resolved target edge for a diagnostic. DXF addressing: BLOCK name + edge on the Seamlint
+// `structuralEdges` primitive, plus the edge's net-line `points` (from `slnt edges`, canonical).
+// `points` are digested into `targetDigest` (digestEdgePoints) AND handed to the curve_kink fix for
+// chord projection and to the overlay via `preview.edge`, so the proposal is self-contained.
+// Supplied by the DXF adapter via `resolveTarget` (wired in the CLI).
 //
-// For a pair diagnostic (seam_length_mismatch) the adapter resolves the pair's "from"
-// edge as the addressing anchor; core stays agnostic to the split.
+// For a pair diagnostic (seam_length_mismatch) the adapter resolves the pair's "from" edge as the
+// addressing anchor; core stays agnostic to the split.
 export interface ResolvedTarget {
   blockName: string;
   // At least one of edgeId / arcRange must be present (mirrors ProposalTarget).
   edgeId?: string;
   arcRange?: [number, number];
-  edgeGeometry: string;
+  // The addressed edge's net-line vertices (canonical points from Seamlint `slnt edges`).
+  points: Point[];
 }
 
 // The outcome of locating a diagnostic's target edge in the source. "not-found" and
@@ -188,7 +192,8 @@ function buildTarget(target: ResolvedTarget): ProposalTarget {
     blockName: target.blockName,
     ...(target.edgeId !== undefined ? { edgeId: target.edgeId } : {}),
     ...(target.arcRange !== undefined ? { arcRange: target.arcRange } : {}),
-    targetDigest: digestPathData(target.edgeGeometry)
+    // Same canonical points digest as seam edges; matches digestEdgePoints(preview.edge.points).
+    targetDigest: digestEdgePoints(target.points)
   };
 }
 
@@ -274,26 +279,29 @@ const buildCurveKinkProposal: ProposalBuilder = ({ id, diagnostic, resolveTarget
 
   const resolved = resolveTargetOrSkip(diagnostic, resolveTarget);
   if ("skip" in resolved) return resolved;
+  const target = resolved.target;
+
+  // The fix decides mode: a confidently-mapped interior vertex becomes a local-adjustment
+  // (move-vertex, chord projection); an endpoint / unmappable / degenerate case stays preview-only
+  // (T7 / T8). Either way the overlay draws the edge's net-line points, and — for local-adjustment
+  // — derives the corrected line by replaying `changes` through applyChanges (T2). The corrected
+  // geometry is NOT computed here twice: `preview.edge.points` + `changes` are the single source.
+  const fix = buildCurveKinkFix({ points: target.points, diagnosticPoint: point });
 
   return {
     proposal: {
       id,
       status: "proposed",
-      mode: "preview-only",
-      target: buildTarget(resolved.target),
+      mode: fix.mode,
+      target: buildTarget(target),
       sourceDiagnostic: toSourceDiagnostic(diagnostic),
-      intent: {
-        kind: "inspect-local-kink",
-        confidence: "low",
-        reviewRequired: true
-      },
-      changes: [],
+      intent: fix.intent,
+      changes: fix.changes,
       preview: {
-        diagnosticPoint: { x: point.x, y: point.y }
+        diagnosticPoint: { x: point.x, y: point.y },
+        edge: { points: target.points }
       },
-      notes: [
-        "診断点を確認用に強調表示します。安全な自動補正はまだ提案していません (preview-only)。"
-      ]
+      notes: fix.notes
     }
   };
 };

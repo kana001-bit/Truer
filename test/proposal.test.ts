@@ -15,19 +15,26 @@ import {
   normalizePathData
 } from "../src/core/proposal/proposalDigest.ts";
 
-// DXF addressing: a BLOCK + edge, with the edge's flattened net-line as canonical
-// geometry text (digested into target.targetDigest). The DXF source text is only
-// digested here (not parsed), so a minimal placeholder stands in for a real file.
+// DXF addressing: a BLOCK + edge, with the edge's net-line vertices as canonical points (from
+// Seamlint `slnt edges`), digested into target.targetDigest via digestEdgePoints. The DXF source
+// text is only digested here (not parsed), so a minimal placeholder stands in for a real file.
 const BLOCK_NAME = "body-armhole";
 const EDGE_ID = "edge3";
-const EDGE_GEOMETRY = "polyline 40,140 88,60 120,72 124,130 70,154";
-const DXF = `0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\n14\n${EDGE_GEOMETRY}\n0\nENDSEC\n0\nEOF\n`;
+// The kink at index 3 (124,130) is an interior vertex, so it becomes a local-adjustment.
+const CURVE_KINK_POINTS = [
+  { x: 40, y: 140 },
+  { x: 88, y: 60 },
+  { x: 120, y: 72 },
+  { x: 124, y: 130 },
+  { x: 70, y: 154 }
+];
+const DXF = `0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\n14\npolyline\n0\nENDSEC\n0\nEOF\n`;
 
 function resolveArmhole(diagnostic: DiagnosticInput): ResolveTargetResult {
   if (diagnostic.target === BLOCK_NAME) {
     return {
       status: "resolved",
-      target: { blockName: BLOCK_NAME, edgeId: EDGE_ID, edgeGeometry: EDGE_GEOMETRY }
+      target: { blockName: BLOCK_NAME, edgeId: EDGE_ID, points: CURVE_KINK_POINTS }
     };
   }
   return { status: "not-found" };
@@ -48,13 +55,12 @@ function curveKink(point: { x: number; y: number }): DiagnosticInput {
 const SEAM_TARGET = "back.outseam/front.outseam";
 const SEAM_BLOCK = "BACK";
 const SEAM_EDGE = "outseam";
-const SEAM_GEOMETRY = "polyline 0,0 0,120 0,240";
 
 function resolveSeamFrom(diagnostic: DiagnosticInput): ResolveTargetResult {
   if (diagnostic.target === SEAM_TARGET) {
     return {
       status: "resolved",
-      target: { blockName: SEAM_BLOCK, edgeId: SEAM_EDGE, edgeGeometry: SEAM_GEOMETRY }
+      target: { blockName: SEAM_BLOCK, edgeId: SEAM_EDGE, points: SEAM_POINTS }
     };
   }
   return { status: "not-found" };
@@ -120,9 +126,10 @@ function resolveSeamPairStub(
   };
 }
 
-test("supported curve_kink diagnostic becomes a preview-only proposal with required fields", () => {
-  // 守る仕様: geometry.curve_kink + 有効な point は proposal になり、schema-required field を満たす。
-  //           geometry 未実装の Milestone 1 では必ず preview-only (changes:[])。
+test("curve_kink at an interior vertex becomes a local-adjustment with a move-vertex change", () => {
+  // 守る仕様: 内部頂点に一意に対応づく curve_kink は local-adjustment になり、move-vertex を 1 つ持つ。
+  //           target は BLOCK+edge、digest は辺 points の digestEdgePoints。preview に辺 points を載せ、
+  //           digestEdgePoints(preview.edge.points) === target.targetDigest（self-contained）。
   const file = createProposalFile({
     sourceFile: "armhole-kink.dxf",
     sourceText: DXF,
@@ -138,12 +145,18 @@ test("supported curve_kink diagnostic becomes a preview-only proposal with requi
   const proposal = file.proposals[0]!;
   assert.equal(proposal.id, "prop_001");
   assert.equal(proposal.status, "proposed");
-  assert.equal(proposal.mode, "preview-only");
-  assert.equal(proposal.changes.length, 0);
+  assert.equal(proposal.mode, "local-adjustment");
+  assert.equal(proposal.changes.length, 1);
+  const change = proposal.changes[0]!;
+  assert.equal(change.kind, "move-vertex");
+  assert.equal((change as { vertexIndex: number }).vertexIndex, 3);
   assert.equal(proposal.intent.reviewRequired, true);
   assert.equal(proposal.target.blockName, BLOCK_NAME);
   assert.equal(proposal.target.edgeId, EDGE_ID);
-  assert.equal(proposal.target.targetDigest, digestPathData(EDGE_GEOMETRY));
+  assert.equal(proposal.target.targetDigest, digestEdgePoints(CURVE_KINK_POINTS));
+  // preview carries the edge's net-line points; digest matches target (self-contained).
+  assert.deepEqual(proposal.preview.edge!.points, CURVE_KINK_POINTS);
+  assert.equal(digestEdgePoints(proposal.preview.edge!.points), proposal.target.targetDigest);
   assert.deepEqual(proposal.preview.diagnosticPoint, { x: 124, y: 130 });
   assert.equal(proposal.sourceDiagnostic.code, "geometry.curve_kink");
 });
@@ -171,7 +184,7 @@ test("edge addressed by arcRange alone (no edgeId) is a valid proposal", () => {
     diagnostics: [curveKink({ x: 124, y: 130 })],
     resolveTarget: () => ({
       status: "resolved",
-      target: { blockName: BLOCK_NAME, arcRange: [0.25, 0.5], edgeGeometry: EDGE_GEOMETRY }
+      target: { blockName: BLOCK_NAME, arcRange: [0.25, 0.5], points: CURVE_KINK_POINTS }
     })
   });
   assert.deepEqual(validateProposalFile(file), []);
@@ -179,7 +192,7 @@ test("edge addressed by arcRange alone (no edgeId) is a valid proposal", () => {
   assert.equal(target.blockName, BLOCK_NAME);
   assert.equal(target.edgeId, undefined);
   assert.deepEqual(target.arcRange, [0.25, 0.5]);
-  assert.equal(target.targetDigest, digestPathData(EDGE_GEOMETRY));
+  assert.equal(target.targetDigest, digestEdgePoints(CURVE_KINK_POINTS));
 });
 
 test("target with neither edgeId nor arcRange is rejected by validation", () => {
@@ -331,7 +344,7 @@ test("seam_length_mismatch becomes an intent-carrying preview-only proposal", ()
   // from 辺がアンカー（表示・特定用。直す辺の決定ではない）。
   assert.equal(proposal.target.blockName, SEAM_BLOCK);
   assert.equal(proposal.target.edgeId, SEAM_EDGE);
-  assert.equal(proposal.target.targetDigest, digestPathData(SEAM_GEOMETRY));
+  assert.equal(proposal.target.targetDigest, digestEdgePoints(SEAM_POINTS));
   // 元診断（ペア target と長さ）を保持（T8 / traceability）。
   assert.equal(proposal.sourceDiagnostic.code, "geometry.seam_length_mismatch");
   assert.equal(proposal.sourceDiagnostic.target, SEAM_TARGET);
@@ -640,6 +653,68 @@ test("preview-only proposal with changes is rejected by validation", () => {
   };
   const errors = validateProposalFile(bad);
   assert.ok(errors.some((error) => error.includes("preview-only")));
+});
+
+// Builds a curve_kink local-adjustment proposal object with the given changes/preview so validation
+// can be exercised on hand-built (not createProposalFile) input.
+function kinkAdjustment(changes: unknown, preview: unknown) {
+  return {
+    schema: PROPOSAL_SCHEMA_V0,
+    source: { file: "x.dxf", sourceDigest: "sha256:0", createdBy: "tru propose" },
+    proposals: [
+      {
+        id: "prop_001",
+        status: "proposed",
+        mode: "local-adjustment",
+        target: { blockName: "BODY", edgeId: "2", targetDigest: "sha256:0" },
+        sourceDiagnostic: { code: "geometry.curve_kink" },
+        intent: { kind: "smooth-curve-kink", confidence: "medium", reviewRequired: true },
+        changes,
+        preview,
+        notes: []
+      }
+    ],
+    skipped: []
+  };
+}
+
+test("a move-vertex proposal without preview.edge is rejected (must be previewable)", () => {
+  // 守る仕様: move-vertex を apply できるのに preview に何も出ない proposal を通さない。overlay 用の
+  //           preview.edge を必須にし、「人が見ていない補正を適用」を validation でも塞ぐ。
+  const errors = validateProposalFile(
+    kinkAdjustment([{ kind: "move-vertex", vertexIndex: 1, to: { x: 1, y: 1 } }], {})
+  );
+  assert.ok(errors.some((error) => error.includes("preview.edge")));
+});
+
+test("a move-vertex targeting an endpoint is rejected by validation (T7)", () => {
+  // 守る仕様 (T7): 端点 (index 0 / last) を動かす move-vertex は contract として不正。
+  const points = [
+    { x: 0, y: 0 },
+    { x: 1, y: 1 },
+    { x: 2, y: 0 }
+  ];
+  const errors = validateProposalFile(
+    kinkAdjustment([{ kind: "move-vertex", vertexIndex: 0, to: { x: 1, y: 1 } }], {
+      edge: { points }
+    })
+  );
+  assert.ok(errors.some((error) => error.includes("endpoint")));
+});
+
+test("a valid interior move-vertex proposal with preview.edge passes validation", () => {
+  // 守る仕様: 内部頂点 (1..length-2) ＋ preview.edge があれば通る（false positive を出さない）。
+  const points = [
+    { x: 0, y: 0 },
+    { x: 1, y: 1 },
+    { x: 2, y: 0 }
+  ];
+  const errors = validateProposalFile(
+    kinkAdjustment([{ kind: "move-vertex", vertexIndex: 1, to: { x: 1, y: 0.5 } }], {
+      edge: { points }
+    })
+  );
+  assert.deepEqual(errors, []);
 });
 
 test("digest is deterministic and path-data whitespace-insensitive", () => {
