@@ -161,6 +161,106 @@ test("curve_kink at an interior vertex becomes a local-adjustment with a move-ve
   assert.equal(proposal.sourceDiagnostic.code, "geometry.curve_kink");
 });
 
+function resolveArmholeWith(
+  target: Partial<{ vertexIndex: number }>
+): (d: DiagnosticInput) => ResolveTargetResult {
+  return (diagnostic) =>
+    diagnostic.target === BLOCK_NAME
+      ? {
+          status: "resolved",
+          target: { blockName: BLOCK_NAME, edgeId: EDGE_ID, points: CURVE_KINK_POINTS, ...target }
+        }
+      : { status: "not-found" };
+}
+
+test("an inconsistent vertexIndex (point nowhere near that vertex) stays preview-only (T8)", () => {
+  // 守る仕様 (T8, レビュー P1): stale / 別 revision の report が actual.edge.vertexIndex を持っていても、
+  //   その index の頂点が diagnosticPoint と食い違うなら信用しない。従来の座標マッチと同じく preview-only へ
+  //   倒し、人が見ていない頂点を confidently-wrong に動かさない。
+  const file = createProposalFile({
+    sourceFile: "armhole-kink.dxf",
+    sourceText: DXF,
+    diagnostics: [curveKink({ x: 999, y: 999 })], // どの頂点でもない点
+    resolveTarget: resolveArmholeWith({ vertexIndex: 3 }) // 頂点3=(124,130) を指すが点と無関係
+  });
+
+  assert.deepEqual(validateProposalFile(file), []);
+  assert.equal(file.proposals[0]!.mode, "preview-only");
+  assert.equal(file.proposals[0]!.changes.length, 0);
+});
+
+test("vertexIndex breaks a coordinate-match tie the point alone cannot resolve", () => {
+  // vertexIndex の残る価値: 診断点が 2 頂点の許容内に等しく入る（near-coincident）と座標マッチは一意性で
+  //   undefined を返し preview-only になる。整合する vertexIndex は「どちらの頂点か」を解いて local-adjustment
+  //   にできる。整合前提なので confidently-wrong にはならない。
+  const TIE_POINTS = [
+    { x: 0, y: 0 }, // 0 endpoint
+    { x: 30, y: 30 }, // 1 interior kink（これを選ぶ）
+    { x: 30, y: 29.994 }, // 2 interior・頂点1と 0.006mm の near-coincident
+    { x: 60, y: 0 } // 3 endpoint
+  ];
+  const TIE_DIAG = { x: 30, y: 29.997 }; // 頂点1・頂点2 の双方から 0.003mm（許容 0.01mm 内の同点）
+  const resolveTie =
+    (target: Partial<{ vertexIndex: number }>) =>
+    (diagnostic: DiagnosticInput): ResolveTargetResult =>
+      diagnostic.target === BLOCK_NAME
+        ? {
+            status: "resolved",
+            target: { blockName: BLOCK_NAME, edgeId: EDGE_ID, points: TIE_POINTS, ...target }
+          }
+        : { status: "not-found" };
+
+  // Without vertexIndex: the point is within tolerance of two vertices -> ambiguous -> preview-only.
+  const ambiguous = createProposalFile({
+    sourceFile: "armhole-kink.dxf",
+    sourceText: DXF,
+    diagnostics: [curveKink(TIE_DIAG)],
+    resolveTarget: resolveTie({})
+  });
+  assert.equal(ambiguous.proposals[0]!.mode, "preview-only");
+
+  // With a consistent vertexIndex: the tie is broken -> local-adjustment on vertex 1.
+  const resolved = createProposalFile({
+    sourceFile: "armhole-kink.dxf",
+    sourceText: DXF,
+    diagnostics: [curveKink(TIE_DIAG)],
+    resolveTarget: resolveTie({ vertexIndex: 1 })
+  });
+  assert.deepEqual(validateProposalFile(resolved), []);
+  assert.equal(resolved.proposals[0]!.mode, "local-adjustment");
+  assert.equal((resolved.proposals[0]!.changes[0] as { vertexIndex: number }).vertexIndex, 1);
+});
+
+test("an out-of-range vertexIndex is ignored and the coordinate match is used instead", () => {
+  // 守る仕様: 範囲外 index は住所の壊れとして信用せず、座標マッチへフォールバック（誤った頂点を動かさない）。
+  //           診断点は頂点3に一致するので、フォールバックで local-adjustment(vertexIndex 3) になる。
+  const file = createProposalFile({
+    sourceFile: "armhole-kink.dxf",
+    sourceText: DXF,
+    diagnostics: [curveKink({ x: 124, y: 130 })],
+    resolveTarget: resolveArmholeWith({ vertexIndex: 99 })
+  });
+
+  assert.deepEqual(validateProposalFile(file), []);
+  assert.equal(file.proposals[0]!.mode, "local-adjustment");
+  assert.equal((file.proposals[0]!.changes[0] as { vertexIndex: number }).vertexIndex, 3);
+});
+
+test("a vertexIndex pointing at an endpoint stays preview-only (T7 backstop)", () => {
+  // 守る仕様 (T7): 住所が端点 index を指しても、端点は縫い合わせ・閉じの意味を持つので動かさない。
+  //               vertexIndex 経路でも endpoint ガードは効き、preview-only へ倒れる。
+  const file = createProposalFile({
+    sourceFile: "armhole-kink.dxf",
+    sourceText: DXF,
+    diagnostics: [curveKink({ x: 40, y: 140 })],
+    resolveTarget: resolveArmholeWith({ vertexIndex: 0 })
+  });
+
+  assert.deepEqual(validateProposalFile(file), []);
+  assert.equal(file.proposals[0]!.mode, "preview-only");
+  assert.equal(file.proposals[0]!.changes.length, 0);
+});
+
 test("multiple supported diagnostics get stable sequential ids", () => {
   // 守る仕様: proposal id は propose 実行内で安定・連番。
   const file = createProposalFile({

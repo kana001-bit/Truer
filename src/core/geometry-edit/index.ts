@@ -25,6 +25,14 @@ function distanceSq(a: Point, b: Point): number {
   return dx * dx + dy * dy;
 }
 
+// True when `a` and `b` are within `tolerance` mm of each other. Used to confirm a diagnostic point
+// actually sits on a claimed vertex before trusting an externally-supplied vertex index (T8
+// consistency guard): the index and the point come from the same report, so in a valid report they
+// agree; a gross disagreement means the report is stale / from another revision.
+export function pointsWithin(a: Point, b: Point, tolerance: number): boolean {
+  return distanceSq(a, b) <= tolerance * tolerance;
+}
+
 // Index of the vertex nearest `target`, but only if it is within `tolerance` AND unambiguous (no
 // other vertex within tolerance). Returns undefined otherwise: the diagnostic point does not land
 // cleanly on exactly one net-line vertex, so the caller must not guess which vertex to move (T8).

@@ -78,6 +78,11 @@ export interface ResolvedTarget {
   arcRange?: [number, number];
   // The addressed edge's net-line vertices (canonical points from Seamlint `slnt edges`).
   points: Point[];
+  // OPTIONAL exact index of the kink vertex within `points` (curve_kink only), when Seamlint carries
+  // it on actual.edge.vertexIndex. Lets the curve_kink fix skip the rounding-sensitive coordinate
+  // match; addressing-only, so it is NOT recorded on ProposalTarget (the move-vertex change already
+  // carries the concrete index). Absent for seam pairs and older reports.
+  vertexIndex?: number;
 }
 
 // The outcome of locating a diagnostic's target edge in the source. "not-found" and
@@ -286,7 +291,12 @@ const buildCurveKinkProposal: ProposalBuilder = ({ id, diagnostic, resolveTarget
   // (T7 / T8). Either way the overlay draws the edge's net-line points, and — for local-adjustment
   // — derives the corrected line by replaying `changes` through applyChanges (T2). The corrected
   // geometry is NOT computed here twice: `preview.edge.points` + `changes` are the single source.
-  const fix = buildCurveKinkFix({ points: target.points, diagnosticPoint: point });
+  // When Seamlint carried an exact vertexIndex, the fix uses it and skips the coordinate match.
+  const fix = buildCurveKinkFix({
+    points: target.points,
+    diagnosticPoint: point,
+    ...(target.vertexIndex !== undefined ? { vertexIndex: target.vertexIndex } : {})
+  });
 
   return {
     proposal: {
