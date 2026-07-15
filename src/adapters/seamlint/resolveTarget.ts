@@ -57,6 +57,9 @@ export function buildResolveTarget(
       blockName: address.blockName,
       edgeId: String(address.edgeId),
       ...(address.arcRange ? { arcRange: address.arcRange } : {}),
+      // Carry Seamlint's exact vertex index (curve_kink only) so the fix can skip the coordinate
+      // match. Absent for seam pairs / older reports; the fix then falls back to matching by point.
+      ...(address.vertexIndex !== undefined ? { vertexIndex: address.vertexIndex } : {}),
       points
     };
     return { status: "resolved", target };

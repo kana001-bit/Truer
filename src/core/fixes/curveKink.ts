@@ -10,7 +10,12 @@
 // `changes` are replayed verbatim by applyChanges for both preview and apply (T2 / T4).
 
 import type { Change, IntentConfidence, Point } from "../proposal/proposalSchema.ts";
-import { nearestVertexIndex, projectOntoLine, roundPoint } from "../geometry-edit/index.ts";
+import {
+  nearestVertexIndex,
+  pointsWithin,
+  projectOntoLine,
+  roundPoint
+} from "../geometry-edit/index.ts";
 
 // How close (mm) the diagnostic point must sit to a net-line vertex to count as "this vertex". The
 // kink point comes from Seamlint's sampled points (rounded); on a flattened polyline those are the
@@ -23,6 +28,12 @@ export interface CurveKinkFixInput {
   points: readonly Point[];
   // Seamlint `actual.point` — where the sharp turn is.
   diagnosticPoint: Point;
+  // OPTIONAL exact index of the kink vertex within `points`, when Seamlint carried it on
+  // actual.edge.vertexIndex. Used to break ties the coordinate match rejects for non-uniqueness, but
+  // only when it is consistent with `diagnosticPoint` (see resolveVertexIndex): an index that
+  // disagrees with the point means a stale report, so it is ignored rather than trusted (T8). Absent
+  // for older reports; the fix then matches by point as before.
+  vertexIndex?: number;
 }
 
 export interface CurveKinkFix {
@@ -41,8 +52,31 @@ function previewOnly(note: string): CurveKinkFix {
   };
 }
 
+// Which vertex the kink sits on. Prefer Seamlint's exact `vertexIndex`, but ONLY when it is
+// consistent with the diagnostic point: both come from the same report, so in a valid report
+// `points[vertexIndex]` sits at `actual.point`. A stale / wrong-revision report can carry a
+// vertexIndex that no longer matches the point; trusting it blindly would move a vertex the human
+// never saw flagged — a confidently-wrong edit (T8). So the index's only job is to break ties the
+// coordinate match rejects for non-uniqueness (near-coincident vertices); it never overrides a gross
+// mismatch. When the index is absent / out of range / inconsistent, fall back to the coordinate
+// match, which itself returns undefined (-> preview-only) when the point maps to no single vertex —
+// exactly the pre-vertexIndex safe behaviour. The caller's endpoint guard (T7) still applies either way.
+function resolveVertexIndex(input: CurveKinkFixInput): number | undefined {
+  const { points, diagnosticPoint, vertexIndex } = input;
+  if (
+    vertexIndex !== undefined &&
+    Number.isInteger(vertexIndex) &&
+    vertexIndex >= 0 &&
+    vertexIndex < points.length &&
+    pointsWithin(points[vertexIndex]!, diagnosticPoint, VERTEX_MATCH_TOLERANCE_MM)
+  ) {
+    return vertexIndex;
+  }
+  return nearestVertexIndex(points, diagnosticPoint, VERTEX_MATCH_TOLERANCE_MM);
+}
+
 export function buildCurveKinkFix(input: CurveKinkFixInput): CurveKinkFix {
-  const { points, diagnosticPoint } = input;
+  const { points } = input;
 
   // Need at least one interior vertex (>= 3 points) to have two neighbours to smooth between.
   if (points.length < 3) {
@@ -51,7 +85,7 @@ export function buildCurveKinkFix(input: CurveKinkFixInput): CurveKinkFix {
     );
   }
 
-  const index = nearestVertexIndex(points, diagnosticPoint, VERTEX_MATCH_TOLERANCE_MM);
+  const index = resolveVertexIndex(input);
   if (index === undefined) {
     return previewOnly(
       "診断点が辺の net-line 頂点に一意に対応づきません。推測で線を引かず確認のみ (preview-only)。"
