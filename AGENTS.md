@@ -13,8 +13,9 @@ before / after を見せる preview を出し、**人間が明示的に採用し
 
 > **Geometry source は DXF (ASTM)**（2026-07-11 pivot、`docs/design-history.md`）。addressing は
 > BLOCK 名 + `edgeId`/`arcRange`（Seamlint の `structuralEdges`。辺ジオメトリは `slnt edges` 経由 = A1）。
-> SVG は legacy。DXF net line は制御点の無い flattened polyline のため、curve_kink の editing surface と
-> **apply の書き先（Loomit 合意待ち）** は未確定（OPEN）。**この pivot 前提の正本はここ**（reference には複製しない）。
+> SVG は legacy。**apply の書き先は「Truer 所有の補正済み DXF を `--out`」に決着**（2026-07-16、M3。`.val`/Loomit
+> master は却下＝Valentina 連携も handshake も不要、preview==apply とも整合）。**DXF 上の curve_kink 補正は内部 1 頂点を
+> 隣接 2 点の弦上へ寄せる**（first slice）。**この pivot 前提の正本はここ**（reference には複製しない）。
 
 ## 行動原則
 
@@ -88,8 +89,10 @@ Truer は Seamlint と違い、**型紙の線を書き換える**。その線は
 流れる。だからこの道具のいちばん重い失敗は crash ではなく、**人間が本当は見ていない補正を、
 見たつもりで適用してしまうこと**。以下は挙動を変える前に必ず守る。
 
-- **propose は source を絶対に書き換えない。** `apply` は `--out` にだけ書く。MVP で in-place
-  write はしない。**apply の書き先は未確定（Loomit 合意待ち）**なので、書き側の実装は contract 確定後。
+- **propose は source を絶対に書き換えない。** `apply` は `--out` にだけ書く（in-place はしない。
+  `--out` == source は error）。**apply の書き先は「Truer 所有の補正済み DXF」に決着**（2026-07-16、M3）。
+  幾何の読みは `slnt edges`（A1）のまま、書きは対象辺の頂点座標だけを差し替える外科的エディタ
+  （`src/adapters/dxf/`）に限る＝他は 1 バイトも変えない（T6）。
 - **preview は嘘をつかない。** preview に出る「補正後の線」は、`apply` が実際に生成する
   geometry と同一でなければならない。両者は proposal の同じ `changes` から、同じ適用関数で作る。
 - **採用なしに適用しない。** `apply` は明示的に accept された proposal id だけを当てる。

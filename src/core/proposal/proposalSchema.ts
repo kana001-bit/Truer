@@ -25,13 +25,18 @@ export type IntentConfidence = "low" | "medium" | "high";
 // Change kinds. `apply` dispatches on `kind`; unknown kinds are an explicit error,
 // never a silent skip (T9). New kinds are added in references/extensibility.md.
 //
-// `replace-path-data` is a *legacy SVG* kind (operates on a path `d` string). DXF
-// layer-14 net line is a flattened polyline with no Bezier control points, so a DXF
-// `local-adjustment` change kind is deliberately NOT added here: the DXF edit surface
-// is OPEN (references/implementation-rules.md, docs/truer-first-slice.md). First-slice
-// DXF proposals stay `preview-only` with `changes: []`; a DXF kind is added later,
-// three-point synced across propose/preview/apply (references/extensibility.md E2).
-export type ChangeKind = "replace-path-data";
+// `move-vertex` is the DXF net-line kind: it moves one interior vertex of the addressed
+// edge's flattened polyline to a new point (curve_kink smoothing). Minimal and local — one
+// vertex (T6) — and recorded self-contained so apply never re-solves (T4). Added three-point
+// synced across propose/preview/apply (references/extensibility.md E2): the fix computes it
+// (src/core/fixes/), applyChanges dispatches it (src/core/apply/), and the overlay draws
+// applyChanges' output so preview follows automatically (T2). The apply write target is a
+// Truer-owned corrected DXF (`--out`), not `.val`/Loomit master (M3, 2026-07-16).
+//
+// `replace-path-data` is a *legacy SVG* kind (operates on a path `d` string), kept for the
+// pre-pivot svg adapter path. It is not a net-line point operation, so applyChanges (which
+// works on DXF net-line points) does not handle it.
+export type ChangeKind = "replace-path-data" | "move-vertex";
 
 // Seamlint diagnostic codes Truer currently produces correction proposals for.
 // Everything else becomes a `skipped` entry, not a dropped diagnostic (T8).
@@ -71,7 +76,18 @@ export interface ReplacePathDataChange {
   to: string;
 }
 
-export type Change = ReplacePathDataChange;
+// Moves one vertex of the addressed edge's net-line polyline to `to`. `vertexIndex` is the
+// 0-based index into the edge's `points` (the same canonical net-line points digested into
+// targetDigest), so apply/preview both reconstruct the corrected edge via applyChanges — the
+// one function — and preview never diverges from apply (T2). Interior vertices only: the fix
+// keeps endpoints untouched (T7) and never emits a move that touches an endpoint.
+export interface MoveVertexChange {
+  kind: "move-vertex";
+  vertexIndex: number;
+  to: Point;
+}
+
+export type Change = ReplacePathDataChange | MoveVertexChange;
 
 export interface SourceDiagnostic {
   code: string;
@@ -116,6 +132,11 @@ export interface ProposalPreview {
   movedPoints?: MovedPoint[];
   // Render geometry for the seam overlay (the two mismatched edges). Optional/additive.
   edges?: PreviewEdge[];
+  // Render geometry for a single addressed edge (curve_kink): the edge's net-line points. The
+  // overlay draws these as the original line and derives the corrected line via applyChanges (so
+  // preview == apply, T2). Self-contained: digestEdgePoints(edge.points) === target.targetDigest,
+  // pinned by tests. Optional/additive.
+  edge?: { points: Point[] };
 }
 
 export interface ProposalTarget {
@@ -269,6 +290,34 @@ function isPreviewEdge(value: unknown): value is PreviewEdge {
   return edge.points.every(isFinitePoint);
 }
 
+// Validates one change's recorded shape. A malformed change would make apply write garbage or
+// crash, so it must never reach a saved proposal. Returns a problem string, or undefined if the
+// shape is valid. (Whether apply *supports* the kind at run time is applyChanges' concern — T9;
+// here we check the shape of the kinds this v0 model can emit, and reject unknown kinds so a
+// mis-built file never passes the contract guard.)
+function changeError(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return "must be an object";
+  const change = value as Record<string, unknown>;
+  if (change.kind === "move-vertex") {
+    if (
+      typeof change.vertexIndex !== "number" ||
+      !Number.isInteger(change.vertexIndex) ||
+      change.vertexIndex < 0
+    ) {
+      return "move-vertex vertexIndex must be a non-negative integer";
+    }
+    if (!isFinitePoint(change.to)) return "move-vertex to must be a finite point";
+    return undefined;
+  }
+  if (change.kind === "replace-path-data") {
+    if (!isNonEmptyString(change.from) || typeof change.to !== "string") {
+      return "replace-path-data must carry a non-empty from and a string to";
+    }
+    return undefined;
+  }
+  return `has unknown kind ${JSON.stringify(change.kind)}`;
+}
+
 function validateProposal(candidate: unknown, index: number, errors: string[]): void {
   const at = `proposals[${index}]`;
   if (typeof candidate !== "object" || candidate === null) {
@@ -321,6 +370,13 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
   } else if (proposal.mode === "preview-only" && proposal.changes.length !== 0) {
     // T2: a preview-only proposal shows nothing to apply.
     errors.push(`${at} is preview-only but carries changes`);
+  } else {
+    // local-adjustment carries changes; validate each one's shape so a malformed change never
+    // reaches apply (T9). preview-only has [] and this loop is a no-op.
+    proposal.changes.forEach((change, changeIndex) => {
+      const problem = changeError(change);
+      if (problem !== undefined) errors.push(`${at}.changes[${changeIndex}] ${problem}`);
+    });
   }
 
   // seamReconciliation is optional/additive; validate only when present.
@@ -356,6 +412,54 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
           errors.push(`${at}.preview.edges[${edgeIndex}] is not a valid preview edge`);
         }
       });
+    }
+  }
+
+  // preview.edge (single addressed edge render geometry, curve_kink) is optional/additive; validate
+  // shape only when present. An edge is a polyline: two finite net-line points minimum.
+  if (preview && preview.edge !== undefined) {
+    const edge = preview.edge as Record<string, unknown>;
+    if (
+      typeof edge !== "object" ||
+      edge === null ||
+      !Array.isArray(edge.points) ||
+      edge.points.length < 2 ||
+      !edge.points.every(isFinitePoint)
+    ) {
+      errors.push(`${at}.preview.edge must carry at least two finite net-line points when present`);
+    }
+  }
+
+  // A move-vertex change edits one vertex of the addressed edge's net line, so the proposal MUST
+  // carry that edge's render geometry (preview.edge). Without it, the correction is applyable but the
+  // overlay shows nothing — a human could accept a line they never saw, breaking "don't apply what
+  // wasn't seen". And the moved vertex must be INTERIOR (never an endpoint, T7). Cross-check here so a
+  // hand-edited proposal that omits preview.edge or points at an endpoint fails the contract.
+  const changeList: unknown[] = Array.isArray(proposal.changes) ? proposal.changes : [];
+  const moveVertexChanges = changeList.filter(
+    (change): change is Record<string, unknown> =>
+      typeof change === "object" &&
+      change !== null &&
+      (change as Record<string, unknown>).kind === "move-vertex"
+  );
+  if (moveVertexChanges.length > 0) {
+    const edgePoints =
+      preview && typeof preview.edge === "object" && preview.edge !== null
+        ? (preview.edge as Record<string, unknown>).points
+        : undefined;
+    if (!Array.isArray(edgePoints) || edgePoints.length < 3) {
+      errors.push(
+        `${at} has a move-vertex change but no preview.edge with at least 3 net-line points to preview and apply it`
+      );
+    } else {
+      for (const change of moveVertexChanges) {
+        const index = change.vertexIndex;
+        if (typeof index === "number" && (index <= 0 || index >= edgePoints.length - 1)) {
+          errors.push(
+            `${at} move-vertex targets vertex ${index}, an endpoint of the ${edgePoints.length}-point edge (T7: never move an endpoint)`
+          );
+        }
+      }
     }
   }
 }
