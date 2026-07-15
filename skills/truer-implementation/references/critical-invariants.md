@@ -14,9 +14,9 @@ invariant です。破ると silent に間違った線を出し、下流（人�
 括弧内は想定する実装場所です。
 
 > 以下の invariant の安全保証（source を壊さない / preview==apply / accept+digest / 端点・不確実は
-> preview-only）は **format 非依存で不変**。geometry source（DXF/ASTM）・addressing・editing surface・OPEN
-> 事項（apply の書き先 / DXF 上の curve_kink 補正法）の pivot 前提は `AGENTS.md` を正とする。確信を持って
-> 対応づけられないものは preview-only に倒す原則が DXF でこそ効く。
+> preview-only）は **format 非依存で不変**。geometry source（DXF/ASTM）・addressing・apply の書き先（=Truer 所有の
+> 補正済み DXF、M3 で決着）・DXF 上の curve_kink 補正法（内部頂点を弦上へ）の pivot 前提は `AGENTS.md` を正とする。
+> 確信を持って対応づけられないものは preview-only に倒す原則が DXF でこそ効く。
 
 ---
 
@@ -30,9 +30,9 @@ invariant です。破ると silent に間違った線を出し、下流（人�
 - 守ること:
   - `propose` は source（DXF）、Seamlint report、既存ファイルを **一切書き換えない**。生成物は
     `--out`（proposal JSON）と `--preview`（overlay SVG）だけ。
-  - `apply` は `--out` にだけ書く。MVP で in-place write（source/master 上書き）はしない。`--out` が
-    source と同じパスなら error で止める。**なお apply の書き先自体が未確定（Loomit 合意待ち）**な
-    ので、書き側を実装するのは contract 確定後。
+  - `apply` は `--out` にだけ書く。in-place write（source/master 上書き）はしない。`--out` が source と
+    同じパスなら error で止める。**apply の書き先は「Truer 所有の補正済み DXF」に決着**（2026-07-16、M3）。
+    書きは対象辺の頂点座標だけを差し替える外科的エディタ（`src/adapters/dxf/`）で、他は 1 バイトも変えない（T6）。
   - source-of-truth になる出力は、temp ファイルに書いてから同一ボリューム上で `rename` する
     atomic write helper を通す（Loomit の R1 と同じ発想）。command の中で直接 `writeFile`
     しない（共有 `writeFileAtomic`）。

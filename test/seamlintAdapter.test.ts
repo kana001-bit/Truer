@@ -4,9 +4,11 @@ import test from "node:test";
 import {
   parseSeamlintReport,
   SeamlintReportError,
-  buildResolveSeamPair
+  buildResolveSeamPair,
+  buildResolveTarget
 } from "../src/adapters/seamlint/index.ts";
 import type { SlntEdgesRunner, SlntEdgesResult } from "../src/adapters/seamlint/index.ts";
+import { readEdgeAddress } from "../src/adapters/seamlint/edgeAddress.ts";
 import { createProposalFile } from "../src/core/proposal/createProposalFile.ts";
 import { validateProposalFile } from "../src/core/proposal/proposalSchema.ts";
 import { digestEdgePoints } from "../src/core/proposal/proposalDigest.ts";
@@ -184,6 +186,81 @@ test("buildResolveSeamPair resolves an address with edgeId but no arcRange (edge
   assert.equal(file.proposals.length, 1);
   assert.equal(file.proposals[0]!.target.arcRange, undefined);
   assert.equal(file.proposals[0]!.target.edgeId, "1");
+});
+
+// curve_kink single-edge address (DXF closed-loop): the interior kink at (50,112) on edge 2 of BODY,
+// with Seamlint's exact vertexIndex (index into the same edge points Truer fetches from `slnt edges`).
+const KINK_EDGE_POINTS = [
+  { x: 100, y: 100 },
+  { x: 50, y: 112 },
+  { x: 0, y: 100 }
+];
+
+function kinkRunner(): SlntEdgesRunner {
+  return (blockName): SlntEdgesResult => {
+    if (blockName === "BODY") {
+      return { blockName, edges: [{ edgeId: 2, points: KINK_EDGE_POINTS }] };
+    }
+    throw new Error(`unexpected block ${blockName}`);
+  };
+}
+
+function kinkDiagnostic(edge: Record<string, unknown>) {
+  return {
+    code: "geometry.curve_kink",
+    target: "BODY",
+    actual: { point: { x: 50, y: 112 }, angleDeg: 26.991, edge }
+  };
+}
+
+test("readEdgeAddress reads an optional curve_kink vertexIndex and drops a malformed one", () => {
+  // 守る仕様: 住所の shape を知る唯一の場所が vertexIndex を optional で読む。整数でない/負値は落とし、
+  //           edgeId で辺は解決できる（住所は edgeId で成立）。
+  const ok = readEdgeAddress({
+    blockName: "BODY",
+    edgeId: 2,
+    arcRange: [0.4, 0.7],
+    vertexIndex: 1
+  });
+  assert.equal(ok?.vertexIndex, 1);
+
+  const nonInteger = readEdgeAddress({ blockName: "BODY", edgeId: 2, vertexIndex: 1.5 });
+  assert.equal(nonInteger?.vertexIndex, undefined);
+  assert.equal(nonInteger?.edgeId, 2);
+
+  const negative = readEdgeAddress({ blockName: "BODY", edgeId: 2, vertexIndex: -1 });
+  assert.equal(negative?.vertexIndex, undefined);
+
+  const absent = readEdgeAddress({ blockName: "BODY", edgeId: 2 });
+  assert.equal(absent?.vertexIndex, undefined);
+});
+
+test("buildResolveTarget carries the curve_kink vertexIndex into the ResolvedTarget", () => {
+  // 守る仕様 (playbook §3): actual.edge.vertexIndex を ResolvedTarget まで通し、fix が座標マッチを飛ばせる。
+  const resolve = buildResolveTarget(kinkRunner());
+  const result = resolve(
+    kinkDiagnostic({ blockName: "BODY", edgeId: 2, arcRange: [0.496, 0.752], vertexIndex: 1 })
+  );
+
+  assert.equal(result.status, "resolved");
+  if (result.status !== "resolved") return;
+  assert.equal(result.target.blockName, "BODY");
+  assert.equal(result.target.edgeId, "2");
+  assert.equal(result.target.vertexIndex, 1);
+  assert.deepEqual(result.target.points, KINK_EDGE_POINTS);
+});
+
+test("buildResolveTarget omits vertexIndex when the address has none (older Seamlint reports)", () => {
+  // 守る仕様: 住所に vertexIndex が無ければ通さない（undefined のまま）。fix は従来の座標マッチにフォールバック。
+  const resolve = buildResolveTarget(kinkRunner());
+  const result = resolve(
+    kinkDiagnostic({ blockName: "BODY", edgeId: 2, arcRange: [0.496, 0.752] })
+  );
+
+  assert.equal(result.status, "resolved");
+  if (result.status !== "resolved") return;
+  assert.equal(result.target.vertexIndex, undefined);
+  assert.deepEqual(result.target.points, KINK_EDGE_POINTS);
 });
 
 test("buildResolveSeamPair queries each BLOCK at most once per run", () => {

@@ -1,34 +1,51 @@
 #!/usr/bin/env node
 // Truer CLI entry. The CLI layer owns argument parsing, file IO, stdout/stderr, and exit status;
-// core stays pure. `propose` reads a Seamlint report + a DXF, builds a proposal file (and,
-// with --preview, a seam overlay SVG). `apply` is not implemented yet (write target OPEN).
+// core stays pure. `propose` reads a Seamlint report + a DXF, builds a proposal file (and, with
+// --preview, an overlay SVG). `apply` writes the accepted proposals' corrected geometry into a
+// Truer-owned DXF at --out (M3: the write target is a corrected DXF for this cut, not .val/Loomit).
 
 import { readFile, writeFile } from "node:fs/promises";
 
 import { createProposalFile } from "../core/proposal/createProposalFile.ts";
-import type { ResolveTargetResult } from "../core/proposal/createProposalFile.ts";
-import { parseSeamlintReport, buildResolveSeamPair } from "../adapters/seamlint/index.ts";
+import { validateProposalFile } from "../core/proposal/proposalSchema.ts";
+import type { ProposalFile } from "../core/proposal/proposalSchema.ts";
+import { planApply } from "../core/apply/applyProposal.ts";
+import {
+  parseSeamlintReport,
+  buildResolveSeamPair,
+  buildResolveTarget,
+  buildEdgePointsLookup
+} from "../adapters/seamlint/index.ts";
 import {
   createSlntEdgesRunner,
   resolveSlntCommand,
   tokenizeCommand
 } from "../adapters/seamlint/slntRunner.ts";
+import { DxfEditError, editNetLineVertex } from "../adapters/dxf/editNetLineVertex.ts";
 import { renderProposalPreview } from "../preview/index.ts";
+import { writeFileAtomic } from "./writeFileAtomic.ts";
+import { isSameFilePath } from "./samePath.ts";
 
 const USAGE = `tru — Truer CLI (MVP)
 
 Usage:
   tru propose <pattern.dxf> --diagnostic <report.json> --out <proposal.json> [--preview <preview.svg>] [--slnt <cmd>]
-  tru apply   <pattern.dxf> --proposal <proposal.json> --accepted <id...> --out <out>
+  tru apply   <pattern.dxf> --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
 
 Commands:
   propose   Seamlint 診断 (DXF) から補正案 (proposal) と preview を作る。source は書き換えない。
-  apply     採用された proposal だけを --out に適用する (書き先は Loomit と未確定 / OPEN)。
+  apply     採用された proposal の補正を --out の DXF に書く。source は不変・書き込みは atomic。
 
 propose options:
   --diagnostic <file>   Seamlint report JSON (CheckReport or GeometryRequestReport).
   --out <file>          Where to write the proposal JSON.
-  --preview <file>      Optional: write a seam-overlay SVG (両辺 + Δ) for seam_length_mismatch.
+  --preview <file>      Optional: overlay SVG (seam Δ / curve_kink before+after).
+  --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
+
+apply options:
+  --proposal <file>     The proposal JSON written by propose.
+  --accepted <id...>    Proposal ids to apply (one or more). Nothing else is written (T3).
+  --out <file>          Where to write the corrected DXF (must not be the source path).
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
 Options:
@@ -66,18 +83,49 @@ function parseProposeArgs(args: string[]): ProposeOptions {
   return options;
 }
 
+interface ApplyOptions {
+  dxfFile?: string;
+  proposal?: string;
+  out?: string;
+  accepted: string[];
+  slnt?: string;
+}
+
+function parseApplyArgs(args: string[]): ApplyOptions {
+  const options: ApplyOptions = { accepted: [] };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--proposal") {
+      options.proposal = requireValue(arg, args[++index]);
+    } else if (arg === "--out") {
+      options.out = requireValue(arg, args[++index]);
+    } else if (arg === "--slnt") {
+      options.slnt = requireValue(arg, args[++index]);
+    } else if (arg === "--accepted") {
+      // Consume following non-flag tokens as proposal ids.
+      while (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
+        options.accepted.push(args[++index]!);
+      }
+      if (options.accepted.length === 0) {
+        throw new Error("--accepted requires at least one proposal id.");
+      }
+    } else if (arg.startsWith("--")) {
+      throw new Error(`Unknown option: ${arg}`);
+    } else if (options.dxfFile !== undefined) {
+      throw new Error("Expected a single <pattern.dxf> path.");
+    } else {
+      options.dxfFile = arg;
+    }
+  }
+  return options;
+}
+
 function requireValue(optionName: string, value: string | undefined): string {
   if (value === undefined || value.startsWith("--")) {
     throw new Error(`${optionName} requires a value.`);
   }
   return value;
 }
-
-// curve_kink point->edge resolution is not wired yet (Seamlint does not emit that address, and
-// Truer does not project points onto net lines). Such diagnostics resolve to not-found and are
-// recorded as skipped — never silently dropped, never guessed. The seam pair path uses
-// resolveSeamPair, not this.
-const resolveTargetNotWired = (): ResolveTargetResult => ({ status: "not-found" });
 
 async function runPropose(args: string[]): Promise<number> {
   let options: ProposeOptions;
@@ -113,7 +161,10 @@ async function runPropose(args: string[]): Promise<number> {
     sourceFile: options.dxfFile,
     sourceText: dxfText,
     diagnostics,
-    resolveTarget: resolveTargetNotWired,
+    // curve_kink resolves its single edge from the diagnostic's actual.edge address (Seamlint
+    // edge-addressing bridge). Absent an address, it returns not-found and the diagnostic is
+    // skipped, never guessed (T6 / T8).
+    resolveTarget: buildResolveTarget(runEdges),
     resolveSeamPair: buildResolveSeamPair(runEdges)
   });
 
@@ -124,9 +175,102 @@ async function runPropose(args: string[]): Promise<number> {
 
   if (options.preview) {
     await writeFile(options.preview, renderProposalPreview(file), "utf8");
-    process.stdout.write(`preview: seam overlay -> ${options.preview}\n`);
+    process.stdout.write(`preview: overlay -> ${options.preview}\n`);
   }
 
+  return 0;
+}
+
+async function runApply(args: string[]): Promise<number> {
+  let options: ApplyOptions;
+  try {
+    options = parseApplyArgs(args);
+  } catch (error) {
+    process.stderr.write(`tru apply: ${errorMessage(error)}\n\n${USAGE}`);
+    return 2;
+  }
+
+  if (!options.dxfFile || !options.proposal || !options.out) {
+    process.stderr.write(
+      "tru apply: <pattern.dxf>, --proposal, and --out are required.\n\n" + USAGE
+    );
+    return 2;
+  }
+
+  // Never write over the source: apply is --out only, in-place is forbidden (T1). Case-insensitive
+  // on Windows so a case-only difference (C:\Foo vs c:\foo = same file) still trips the guard.
+  if (isSameFilePath(options.out, options.dxfFile)) {
+    process.stderr.write(
+      "tru apply: apply.out_overwrites_source: --out must not be the source DXF path.\n"
+    );
+    return 1;
+  }
+
+  const dxfText = await readFile(options.dxfFile, "utf8");
+  const proposalText = await readFile(options.proposal, "utf8");
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(proposalText);
+  } catch (error) {
+    process.stderr.write(`tru apply: could not read proposal JSON: ${errorMessage(error)}\n`);
+    return 1;
+  }
+  const validationErrors = validateProposalFile(parsed);
+  if (validationErrors.length > 0) {
+    process.stderr.write(`tru apply: invalid proposal file: ${validationErrors.join("; ")}\n`);
+    return 1;
+  }
+  const file = parsed as ProposalFile;
+
+  const slntCommand = options.slnt ? tokenizeCommand(options.slnt) : resolveSlntCommand();
+  const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile: options.dxfFile });
+  const getCurrentPoints = buildEdgePointsLookup(runEdges);
+
+  let plan;
+  try {
+    plan = planApply({
+      file,
+      sourceText: dxfText,
+      acceptedIds: options.accepted,
+      getCurrentPoints
+    });
+  } catch (error) {
+    // e.g. the slnt subprocess failed to run (systemic). Fail before writing anything.
+    process.stderr.write(`tru apply: ${errorMessage(error)}\n`);
+    return 1;
+  }
+
+  if (plan.status === "error") {
+    process.stderr.write(`tru apply: ${plan.code}: ${plan.message}\n`);
+    return 1;
+  }
+
+  // Splice each vertex edit into the DXF, preserving every other byte (T6).
+  let resultText = dxfText;
+  try {
+    for (const edit of plan.edits) {
+      resultText = editNetLineVertex(resultText, edit.blockName, edit.from, edit.to);
+    }
+  } catch (error) {
+    if (error instanceof DxfEditError) {
+      process.stderr.write(`tru apply: ${error.code}: ${error.message}\n`);
+      return 1;
+    }
+    throw error;
+  }
+
+  if (plan.appliedIds.length === 0) {
+    process.stdout.write(
+      "apply: 0 proposal(s) applied (nothing accepted, or all preview-only); nothing written.\n"
+    );
+    return 0;
+  }
+
+  await writeFileAtomic(options.out, resultText);
+  process.stdout.write(
+    `apply: ${plan.appliedIds.length} proposal(s) applied (${plan.appliedIds.join(", ")}) -> ${options.out}\n`
+  );
   return 0;
 }
 
@@ -143,8 +287,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === "apply") {
-    process.stderr.write("tru apply: まだ実装されていません (書き先が Loomit と未確定 / OPEN)。\n");
-    return 1;
+    return await runApply(argv.slice(1));
   }
 
   process.stderr.write(`Unknown command: ${command}\n\n${USAGE}`);
