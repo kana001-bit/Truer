@@ -140,8 +140,9 @@ proposal JSON は Truer で最も重要な contract。geometry を育てる前�
   前提が検証できない箇所は補正可能変更の対象にしない。
 - Truer が触る DXF ファイルは「source テキストを読んで `sourceDigest` を取る」「その path を `slnt edges` に
   渡す」だけ（source は非破壊）。
-- **書き戻し先は未確定**（apply 節・`docs/truer-mvp-spec.md` の "apply write target" を参照）。
-  DXF export への書き戻しは Loomit と握るまで実装しない。
+- **書き戻し先は決着**（apply 節・M3）: apply は Truer 所有の補正済み DXF を `--out` に書く。**読みは `slnt edges`
+  のまま**（自前 parse しない）だが、**書きは対象辺の頂点座標だけを差し替える外科的エディタ**（`src/adapters/dxf/`。
+  full parser ではない）に限る。`.val`/Loomit master は書かない。
 - slnt の位置は deployment 事項: CLI が `SEAMLINT_CLI`（quote 対応でトークン化）/ `--slnt` で渡す。core は
   純粋なまま（`SlntEdgesRunner` を注入）。
 
@@ -175,10 +176,11 @@ transform / 非等倍 `viewBox` は補正対象にしない、path command は `
 - source は触らず、`--out` に atomic write する。`--out` == source パスは error。
 - `--report` があれば apply report JSON（source / out / accepted ids / skipped ids と理由 /
   errors）を出す。
-- **書き先は未確定（OPEN / Loomit 合意待ち）。** DXF/SVG は `.val`/`.loom` の lossy な export
-  （袋小路）。「apply が何を・どこに書くか」は Loomit の source-of-truth 判断と握ってから決める。
-  accept + digest + atomic の各ゲートは format 非依存なので先に設計してよいが、DXF export への
-  具体的な書き戻しは contract 確定まで実装しない。
+- **書き先は決着（2026-07-16、M3）: Truer 所有の補正済み DXF を `--out` に書く。** `.val`/Loomit master は
+  却下（Valentina 連携も handshake も不要・preview==apply とも整合）。補正済み DXF はこの 1 着分で `.val` master
+  には伝播しない割り切り。書きは対象辺の頂点座標だけを差し替える外科的エディタ
+  （`src/adapters/dxf/editNetLineVertex.ts`。頂点は **現在座標で一意特定**、他は 1 バイトも変えない=T6）に限り、
+  全 DXF を再シリアライズしない。gate（accept/digest/schema）は `src/core/apply/applyProposal.ts`（pure）。
 
 ## Dependencies
 
