@@ -1,36 +1,34 @@
-// Reads the `<path>` elements Truer can target from raw SVG text.
+// 生の SVG text から、Truer が対象にできる `<path>` element を読む。
 //
-// This is a deliberately narrow reader, not a full XML parser (same stance as
-// Seamlint). It locates `<path ...>` opening tags by regex and pulls out `id` and
-// `d`, keeping the exact character span of the `d` value so writeSvgPathData can
-// splice a replacement in without re-serializing (and thus without disturbing
-// other paths, attributes, comments, or formatting — references/critical-invariants.md T6).
+// これは意図的に狭い reader で、完全な XML parser ではない（Seamlint と同じ姿勢）。`<path ...>` の
+// 開きタグを regex で特定し `id` と `d` を取り出し、`d` 値の正確な文字 span を保つので、
+// writeSvgPathData は再 serialize せず置換を差し込める（よって他の path・属性・コメント・整形を
+// 乱さない — references/critical-invariants.md T6）。
 //
-// Note on coordinate systems: unlike Seamlint's extractPathDataById, this reader
-// does NOT throw on a `transform` or a non-unit viewBox. Truer still needs to read
-// such a path to show it as a preview-only proposal. Deciding a path is unsafe to
-// auto-correct (T5) is the fix rule's job (Milestone 4), which will add a soft
-// coordinate-trust check here when it has a consumer.
+// 座標系についての注意: Seamlint の extractPathDataById と違い、この reader は `transform` や
+// 非 unit の viewBox で throw しない。Truer はそういう path でも preview-only proposal として見せる
+// ために読む必要がある。path が auto-correct するには危険（T5）と判断するのは fix rule の仕事
+//（Milestone 4）で、消費者ができたときここに soft な coordinate-trust check を足す。
 
 import { SVG_DUPLICATE_PATH_ID, SVG_PATH_NOT_FOUND, SvgAdapterError } from "./svgAdapterError.ts";
 
 export interface SvgPath {
   id: string;
   d: string;
-  // The quote character delimiting the `d` value ('"' or "'").
+  // `d` 値を区切る quote 文字（'"' か "'"）。
   quote: string;
-  // Absolute [start, end) span of the `d` VALUE (between the quotes) in the SVG text.
+  // SVG text 内での `d` 値（quote の間）の絶対的な [start, end) span。
   dValueStart: number;
   dValueEnd: number;
 }
 
-// `[^>]*` spans newlines, so multi-line path tags are matched. `d` values never
-// contain `>` in well-formed SVG, so the tag boundary is safe.
+// `[^>]*` は改行をまたぐので、複数行の path タグも一致する。整形式の SVG では `d` 値に `>` は
+// 含まれないので、タグ境界は安全。
 const PATH_TAG = /<path\b[^>]*>/gi;
 const ID_ATTR = /\bid\s*=\s*(["'])([^"']*)\1/i;
 const D_ATTR = /(\bd\s*=\s*)(["'])([^"']*)\2/i;
 
-// Returns every `<path>` that has both an `id` (so it can be targeted) and a `d`.
+// `id`（対象にできる）と `d` の両方を持つ `<path>` をすべて返す。
 export function readSvgPaths(svgText: string): SvgPath[] {
   const paths: SvgPath[] = [];
   PATH_TAG.lastIndex = 0;
@@ -49,7 +47,7 @@ export function readSvgPaths(svgText: string): SvgPath[] {
       continue;
     }
 
-    // dMatch[1] = "d=" prefix (with any spaces), dMatch[2] = quote, dMatch[3] = value.
+    // dMatch[1] = "d=" prefix（space を含む）、dMatch[2] = quote、dMatch[3] = value。
     const value = dMatch[3];
     const valueStartInTag = dMatch.index + dMatch[1].length + 1;
 
@@ -65,8 +63,7 @@ export function readSvgPaths(svgText: string): SvgPath[] {
   return paths;
 }
 
-// Resolves exactly one path by id. Missing or duplicate ids are explicit errors,
-// never a guess (T6).
+// id でちょうど 1 本の path を解決する。id が無い / 重複は明示的な error で、推測はしない（T6）。
 export function findSvgPathById(svgText: string, id: string): SvgPath {
   const matches = readSvgPaths(svgText).filter((path) => path.id === id);
 

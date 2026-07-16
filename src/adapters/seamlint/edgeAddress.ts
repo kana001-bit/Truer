@@ -1,22 +1,22 @@
-// Shared reader for a Seamlint edge address `{ blockName, edgeId, arcRange? }`, carried on a
-// diagnostic's `actual.edge` (curve_kink) or `actual.fromEdge` / `actual.toEdge` (seam pair). This
-// is the ONE place that knows the address shape, so the seam-pair resolver and the single-edge
-// (curve_kink) resolver agree.
+// Seamlint の edge address `{ blockName, edgeId, arcRange? }` の共有 reader。diagnostic の
+// `actual.edge`（curve_kink）や `actual.fromEdge` / `actual.toEdge`（seam pair）に載る。ここが
+// address の shape を知る唯一の場所なので、seam-pair resolver と単一 edge（curve_kink）resolver が
+// 一致する。
 
 export interface EdgeAddress {
   blockName: string;
   edgeId: number;
   arcRange?: [number, number];
-  // OPTIONAL exact vertex index Seamlint may emit for a curve_kink (index into the addressed edge's
-  // `slnt edges` points — the same array Truer fetches, since both come from `structuralEdges`). When
-  // present it lets the curve_kink fix skip the rounding-sensitive coordinate match. Absent for seam
-  // pairs and for older Seamlint reports; the fix then falls back to the coordinate match.
+  // Seamlint が curve_kink 用に emit しうる正確な vertex index（任意。addressing した edge の
+  // `slnt edges` points への index — 両方 `structuralEdges` 由来なので Truer が取るのと同じ配列）。
+  // あれば curve_kink fix が丸めに敏感な座標一致を省ける。seam pair や古い Seamlint report には無い;
+  // その場合 fix は座標一致に戻る。
   vertexIndex?: number;
 }
 
-// A carried arcRange must be a valid normalized range (origin at the first corner, 0..1,
-// start < end — same rule as proposalSchema.isArcRange). An absent or malformed arcRange is dropped
-// rather than passed into a proposal that would then fail validation; edgeId still addresses the edge.
+// 載っている arcRange は正規化された妥当な range（原点は最初の corner、0..1、start < end —
+// proposalSchema.isArcRange と同じルール）でなければならない。無い / 壊れた arcRange は、validation を
+// 落とすことになる proposal へ渡さず捨てる; edge は edgeId が依然 addressing する。
 export function readArcRange(value: unknown): [number, number] | undefined {
   if (!Array.isArray(value) || value.length !== 2) return undefined;
   const [start, end] = value;
@@ -26,11 +26,11 @@ export function readArcRange(value: unknown): [number, number] | undefined {
   return [start, end];
 }
 
-// Reads a `{ blockName, edgeId, arcRange? }` address. edgeId is required: it is the join key into
-// `slnt edges` (indexed by loop-order edgeId) and Seamlint always emits it on addressed diagnostics.
-// arcRange is OPTIONAL — the proposal address contract is "edgeId or arcRange", and edgeId already
-// satisfies it. Returns undefined when the address is absent or has no usable edgeId (e.g. a
-// whole-path mismatch carries no edge address, so it simply does not resolve — skipped, never guessed).
+// `{ blockName, edgeId, arcRange? }` address を読む。edgeId は必須: `slnt edges`（loop 順の edgeId で
+// index 付け）への join key であり、Seamlint は addressing された diagnostic には常に emit する。
+// arcRange は任意 — proposal の address contract は「edgeId または arcRange」で、edgeId が既に満たす。
+// address が無い、または使える edgeId が無いときは undefined を返す（例: whole-path mismatch は edge
+// address を持たないので、単に解決されない — skip され、推測はしない）。
 export function readEdgeAddress(value: unknown): EdgeAddress | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const address = value as Record<string, unknown>;
@@ -46,9 +46,8 @@ export function readEdgeAddress(value: unknown): EdgeAddress | undefined {
   };
 }
 
-// An optional vertexIndex must be a non-negative integer (an index into the edge's points). A
-// non-integer / negative / malformed value is dropped rather than trusted; the fix then falls back
-// to the coordinate match instead of indexing the wrong vertex.
+// 任意の vertexIndex は非負整数（edge の points への index）でなければならない。非整数 / 負 / 壊れた
+// 値は信頼せず捨てる; その場合 fix は誤った vertex を index せず座標一致に戻る。
 export function readVertexIndex(value: unknown): number | undefined {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return undefined;
   return value;

@@ -1,18 +1,17 @@
-// Pure apply planner: verify the safety gates and compute the vertex edits, WITHOUT doing any IO or
-// touching the DXF. The CLI supplies the source text and a function to fetch each target edge's
-// current points (via `slnt edges`), runs this planner, then splices the edits into the DXF
-// (adapters/dxf/editNetLineVertex) and writes `--out` atomically. Keeping the gates here — pure —
-// lets tests pin "refuse before any write" without a filesystem (references/critical-invariants.md
-// T1 / T3 / T4).
+// pure な apply planner: safety gate を検証し vertex edit を計算する。IO も DXF への操作も一切しない。
+// CLI が source text と、各 target edge の現在の points を取る関数（`slnt edges` 経由）を供給し、この
+// planner を走らせ、その後 edit を DXF に差し込み（adapters/dxf/editNetLineVertex）、`--out` を atomic に
+// 書く。gate をここに — pure に — 置くことで、test が filesystem 無しで「書く前に拒否する」を固定できる
+//（references/critical-invariants.md T1 / T3 / T4）。
 //
-// Gates, in order (any failure returns an error and the CLI writes nothing):
-//   1. schema — unknown proposal schema is an explicit error, never mis-parsed (T9).
-//   2. whole-file digest — the source must be the one propose digested (T3 backstop).
-//   3. accept — only proposals named in `--accepted` OR already marked `status: "accepted"` are
-//      applied; unknown `--accepted` ids are named, not ignored (T3).
-//   4. edge digest — each addressed edge must be byte-identical to propose time (T3).
-// The corrected geometry comes from applyChanges — the SAME function preview uses (T2) — and apply
-// never re-runs a fix solver (T4).
+// gate（順番。どれかが失敗したら error を返し CLI は何も書かない）:
+//   1. schema — 未知の proposal schema は明示的な error、決して mis-parse しない（T9）。
+//   2. file 全体の digest — source は propose が digest したものでなければならない（T3 の backstop）。
+//   3. accept — `--accepted` に名指しされた、または既に `status: "accepted"` の proposal だけを
+//      適用する; 未知の `--accepted` id は無視せず名指しで報告する（T3）。
+//   4. edge digest — addressing した各 edge は propose 時と byte 単位で一致していなければならない（T3）。
+// 補正後 geometry は applyChanges から来る — preview が使うのと同じ関数（T2）— し、apply は fix solver を
+// 再実行しない（T4）。
 
 import { PROPOSAL_SCHEMA_V0 } from "../proposal/proposalSchema.ts";
 import type { Point, ProposalFile } from "../proposal/proposalSchema.ts";
@@ -23,8 +22,8 @@ export const APPLY_UNSUPPORTED_SCHEMA = "apply.unsupported_schema";
 export const APPLY_DIGEST_MISMATCH = "apply.digest_mismatch";
 export const APPLY_NOT_ACCEPTED = "apply.not_accepted";
 
-// One vertex edit the CLI will splice into the DXF (adapters/dxf/editNetLineVertex): move the vertex
-// currently at `from` to `to` in `blockName`'s layer-14 net line.
+// CLI が DXF に差し込む 1 つの vertex edit（adapters/dxf/editNetLineVertex）: `blockName` の layer-14
+// net line で、現在 `from` にある vertex を `to` へ動かす。
 export interface VertexEdit {
   blockName: string;
   from: Point;
@@ -44,8 +43,8 @@ export interface PlanApplyInput {
   file: ProposalFile;
   sourceText: string;
   acceptedIds: readonly string[];
-  // Fetches the CURRENT net-line points of a target edge (blockName, edgeId) from the source, so the
-  // edge digest can be verified before writing. Supplied by the CLI (Seamlint `slnt edges`).
+  // target edge（blockName, edgeId）の現在の net-line points を source から取る。書き込み前に edge
+  // digest を検証できるように。CLI が供給する（Seamlint `slnt edges`）。
   getCurrentPoints: (blockName: string, edgeId: string | undefined) => Point[] | undefined;
 }
 
@@ -84,15 +83,15 @@ export function planApply(input: PlanApplyInput): ApplyPlan {
   const skipped: { id: string; reason: string }[] = [];
 
   for (const proposal of file.proposals) {
-    // Accepted = named in --accepted, OR already marked accepted in the file (e.g. by a Studio).
-    // Both are explicit human acceptance; the contract honors either (T3).
+    // accept 済み = --accepted に名指しされた、または file 内で既に accepted 済み（例: Studio による）。
+    // どちらも明示的な人間の accept; contract はどちらも認める（T3）。
     const isAccepted = accepted.has(proposal.id) || proposal.status === "accepted";
     if (!isAccepted) {
       skipped.push({ id: proposal.id, reason: "not accepted" });
       continue;
     }
     if (proposal.mode === "preview-only" || proposal.changes.length === 0) {
-      // Accepted but there is no line to write (preview-only shows nothing to apply, T2).
+      // accept 済みだが書く line が無い（preview-only は apply するものを何も見せない、T2）。
       skipped.push({ id: proposal.id, reason: "preview-only (nothing to apply)" });
       continue;
     }
@@ -118,8 +117,8 @@ export function planApply(input: PlanApplyInput): ApplyPlan {
     try {
       corrected = applyChanges(current, proposal.changes);
     } catch (error) {
-      // A change apply refuses to execute (unknown kind, T9 / endpoint move, T7): fail the whole run
-      // before writing anything, naming the reason. Never a silent skip.
+      // apply が実行を拒否する change（未知 kind、T9 / endpoint move、T7）: 何か書く前に理由を名指しで
+      // 挙げて run 全体を失敗させる。silent skip は決してしない。
       if (error instanceof UnsupportedChangeKindError || error instanceof EndpointMoveError) {
         return { status: "error", code: error.code, message: error.message };
       }
@@ -133,8 +132,8 @@ export function planApply(input: PlanApplyInput): ApplyPlan {
   return { status: "ok", edits, appliedIds, skipped };
 }
 
-// The vertices that moved, as (from -> to) edits. Deterministic order (by index). apply introduces
-// no new rounding — `to` is the value the fix already emitted.
+// 動いた vertex を (from -> to) の edit として返す。決定的な順序（index 順）。apply は新たな丸めを
+// 持ち込まない — `to` は fix が既に emit した値。
 function diffVertices(
   before: readonly Point[],
   after: readonly Point[],

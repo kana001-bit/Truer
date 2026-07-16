@@ -57,8 +57,8 @@ test("replacing one path's d preserves every other byte of the SVG", () => {
   assert.match(out, /stroke="blue"/);
   assert.match(out, /viewBox="0 0 220 180"/);
 
-  // Strongest form: masking the changed d region on both sides yields identical text,
-  // i.e. exactly one span differs and nothing else moved.
+  // 最も強い形: 変わった d 領域を両側でマスクすると同一の text になる、
+  // つまりちょうど 1 span だけが異なり、他は何も動いていない。
   assert.equal(out.replace(NEW_D, "<D>"), FIXTURE.replace(ARMHOLE_D, "<D>"));
 });
 

@@ -1,6 +1,6 @@
-// Errors the SVG adapter raises when a target path cannot be resolved to exactly
-// one element. Codes are stable and match references/testing-proposals.md "Codes".
-// We never guess which path was meant (references/critical-invariants.md T6).
+// target path をちょうど 1 element に解決できないとき SVG adapter が投げる error。code は安定で、
+// references/testing-proposals.md の "Codes" と一致する。どの path が意図されたかは決して推測しない
+//（references/critical-invariants.md T6）。
 
 export const SVG_PATH_NOT_FOUND = "proposal.path_not_found";
 export const SVG_DUPLICATE_PATH_ID = "proposal.duplicate_path_id";

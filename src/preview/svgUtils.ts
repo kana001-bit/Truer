@@ -1,14 +1,13 @@
-// Shared SVG helpers for the proposal overlays (seam length + curve_kink). Pure string builders:
-// an overlay is a function of the proposal file alone (self-contained), with no IO, no DXF re-read,
-// and no Seamlint re-call. Pattern coordinates are y-up; SVG is y-down, so y is flipped when
-// projecting.
+// proposal overlay（seam length + curve_kink）のための共有 SVG helper。pure な文字列ビルダー:
+// overlay は proposal file だけの関数（self-contained）で、IO も DXF 再読込も Seamlint 再呼び出しも
+// ない。型紙座標は y-up、SVG は y-down なので、射影時に y を反転する。
 
 import type { Point } from "../core/proposal/proposalSchema.ts";
 
 export const INK = "#111827"; // original / net line
-export const MUTED = "#6b7280"; // secondary text
-export const CORRECTED_COLOR = "#2563eb"; // blue: the "after" (corrected) line
-export const DIAGNOSTIC_COLOR = "#dc2626"; // red: the diagnostic point
+export const MUTED = "#6b7280"; // 補助テキスト
+export const CORRECTED_COLOR = "#2563eb"; // 青: 「after」（補正後）の line
+export const DIAGNOSTIC_COLOR = "#dc2626"; // 赤: 診断点
 export const PAD = 16;
 export const PANEL_GAP = 20;
 
@@ -51,10 +50,9 @@ export function svgDocument(width: number, height: number, body: string): string
   ].join("\n");
 }
 
-// A projector that fits `refPoints` into a w x h box (preserve aspect, center, flip y). Returns a
-// function mapping a pattern point to SVG coords. All layers of a curve_kink panel — original,
-// corrected, diagnostic point — share ONE projector built from the original edge, so they overlay
-// in the same frame.
+// `refPoints` を w x h の box に収める projector（アスペクト比保持、中央寄せ、y 反転）。型紙の点を
+// SVG 座標へ写す関数を返す。curve_kink panel のすべての layer — original、補正後、診断点 — は original
+// edge から作った単一の projector を共有するので、同じ frame に重なる。
 export function fitProjector(
   refPoints: readonly Point[],
   w: number,
