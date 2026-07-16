@@ -10,8 +10,8 @@ invariant です。破ると silent に間違った線を出し、下流（人�
 気づけません。各項目は「なぜシビア」「守ること」「検証」で書きます。迷ったら
 **線を勝手に直すより、直せないと言え** を優先します。
 
-まだ code がない段階なので、各項目は「最初に実装する人が守る設計ルール」として書きます。
-括弧内は想定する実装場所です。
+実装は済んでおり（`src/` + `test/`）、各項目は実装が守り続ける不変則として書きます。
+括弧内は対応する実装場所です。
 
 > 以下の invariant の安全保証（source を壊さない / preview==apply / accept+digest / 端点・不確実は
 > preview-only）は **format 非依存で不変**。geometry source（DXF/ASTM）・addressing・apply の書き先（=Truer 所有の
@@ -120,8 +120,8 @@ invariant です。破ると silent に間違った線を出し、下流（人�
 - 守ること:
   - fix は diagnostic point 近傍の **vertex neighborhood だけ** を触る。無関係な頂点の
     数値・表現を変えない。変わるのは対象箇所のみになるよう最小化する。
-  - （書き側は未実装・OPEN。実装される段階では）対象辺以外の DXF 内容（他 BLOCK、TEXT、layer、整形）を
-    **可能な限りそのまま保存** する。素朴な full 再シリアライズで無関係要素を消さない。legacy SVG 経路では
+  - 書き側（`src/adapters/dxf/editNetLineVertex.ts`）は対象辺以外の DXF 内容（他 BLOCK、TEXT、layer、整形）を
+    **そのまま保存** する。素朴な full 再シリアライズで無関係要素を消さない。legacy SVG 経路では
     対象 path の `d` 以外を同様に保存する。（読み側の辺ジオメトリは Seamlint の `slnt edges` から得る, A1。）
   - 対象が BLOCK/edge で一意に定まらない（不在 / 曖昧）なら、推測で 1 辺選ばず error にする。
 - 検証: 1 辺を書き換えても、他の BLOCK・TEXT・要素数が preview/apply 後も保たれることを test で
@@ -149,8 +149,8 @@ invariant です。破ると silent に間違った線を出し、下流（人�
 
 - なぜシビア: 補正点を net line の頂点に確信を持って対応づけられないのに `local-adjustment` を出すと、
   的外れな線を「補正候補です」と見せることになる。人間は preview を信じるので、自信ありげな
-  間違いは false positive よりたちが悪い。**DXF flattened polyline には制御点が無く、そもそも直し方が
-  OPEN** なので、この原則は DXF でこそ効く。
+  間違いは false positive よりたちが悪い。**DXF flattened polyline には制御点が無い**ぶん、確信を持って
+  net line の頂点に対応づけられない補正は外しやすい。この原則は DXF でこそ効く。
 - 守ること:
   - diagnostic point を最寄り segment / vertex neighborhood に map する信頼度を評価し、低ければ
     `mode: "preview-only"`、`changes: []`、`intent.confidence: "low"` にして理由を `notes` に残す。

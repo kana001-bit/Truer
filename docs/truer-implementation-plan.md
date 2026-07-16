@@ -80,7 +80,7 @@ addressing は DXF 化済み（`blockName` + `edgeId` + `arcRange?` + `targetDig
 **完了**（決定。design-history に節を足す）。
 
 ### 🟡 M4 — change kind を propose/preview/apply 三点同時で追加（① 完了 / ② 次）
-「B」で実際に書く「補正後の線」を、diagnostic ごとに作る。[extensibility.md](../skills/truer-implementation/references/extensibility.md) に従い
+「B」で実際に書く「補正後の線」を、diagnostic ごとに作る。[extensibility.md](../.claude/skills/truer-implementation/references/extensibility.md) に従い
 **propose・preview・apply の 3 箇所を同時に**対応させる。順序は「正解が一意な方から」:
 
 - **✅ ① curve_kink（完了・2026-07-16）** — 辺の**内側**の kink（飛び出た 1 頂点）を、**隣り合う 2 点を結ぶ

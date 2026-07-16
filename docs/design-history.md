@@ -238,5 +238,5 @@ Seamlint は自信の持てない住所を一切出さず、Truer は住所が�
 - `../AGENTS.md` — エージェント向け規約の**正本**（常に守る境界 / 行動原則）。
 - `README-public-draft.md` / `README.ja-public-draft.md` — 公開 README ドラフト（安全モデルの
   読み物版）。
-- `../skills/truer-implementation/references/critical-invariants.md` — invariant の実装ルール。
+- `../.claude/skills/truer-implementation/references/critical-invariants.md` — invariant の実装ルール。
 - `loomit-status-message.md` — Loomit からの source-of-truth 共有（apply 書き先の背景）。

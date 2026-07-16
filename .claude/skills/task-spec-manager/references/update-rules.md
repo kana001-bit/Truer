@@ -41,11 +41,11 @@ spec のいちばんの役割は「後から読む人が、何を信じてよい
 - 確定仕様と未確認事項を同じ箇条書きに混ぜる。
 - 証拠のない断定を「確定仕様」に書く。
 - Truer の実装作法・invariant をここに複製する（正本は AGENTS.md と
-  `skills/truer-implementation/references/`。spec からは参照するに留める）。
+  `.claude/skills/truer-implementation/references/`。spec からは参照するに留める）。
 - 完了後に spec を削除する。履歴として残す。
 
 ## branch memo との使い分け
 
-- ブランチ単位の作業ログ・handoff は `docs/branch/<branch>.md`（`skills/branch-progress/`）。
+- ブランチ単位の作業ログ・handoff は `docs/branch/<branch>.md`（`.claude/skills/branch-worklog/`）。
 - 複数ブランチ・複数セッションにまたがるタスクの「確定した仕様書」は task spec。
 - 片方に書いたことをもう片方へ機械的にコピーしない。長期の確定仕様は task spec を正とする。

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Truer Test Writing"
+  short_description: "Truer の node:test テストと fixture を、write-safety の回帰ネットとして追加・更新する。"
+  default_prompt: "$test-writing を使って、Truer の proposal/preview/apply 変更を test/ の node:test で固定する（source 非破壊・preview==apply・accept/digest ゲート）。正は testing-proposals.md。"
