@@ -1,13 +1,13 @@
-// Single-edge target resolution via Seamlint `slnt edges` (A1 subprocess). Two builders:
+// Seamlint `slnt edges`（A1 subprocess）による単一 edge の target 解決。builder は 2 つ:
 //
-//   - buildResolveTarget: for propose. A curve_kink diagnostic carries its edge address on
-//     `actual.edge = { blockName, edgeId, arcRange? }` (Seamlint edge-addressing bridge, S0). This
-//     reads that address and pulls the edge's net-line `points`, so the proposal is self-contained.
-//   - buildEdgePointsLookup: for apply. Given a proposal target's (blockName, edgeId), re-fetch the
-//     source edge's CURRENT points so apply can verify the edge digest before writing (T3).
+//   - buildResolveTarget: propose 用。curve_kink diagnostic は edge address を
+//     `actual.edge = { blockName, edgeId, arcRange? }` に持つ（Seamlint edge-addressing bridge、S0）。
+//     この address を読んで edge の net-line `points` を取り、proposal を self-contained にする。
+//   - buildEdgePointsLookup: apply 用。proposal target の (blockName, edgeId) を受け、source edge の
+//     現在の points を取り直し、apply が書く前に edge digest を検証できるようにする（T3）。
 //
-// Both go through `slnt edges` — Truer never parses DXF itself. edgeId is number in Seamlint and
-// string in Truer's schema, coerced at this boundary.
+// どちらも `slnt edges` を通る — Truer は自分で DXF を parse しない。edgeId は Seamlint では number、
+// Truer の schema では string で、この境界で変換する。
 
 import type {
   DiagnosticInput,
@@ -18,8 +18,8 @@ import type { Point } from "../../core/proposal/proposalSchema.ts";
 import { readEdgeAddress } from "./edgeAddress.ts";
 import type { SlntEdgesRunner } from "./resolveSeamPair.ts";
 
-// Queries each BLOCK's edges at most once per run (keeps propose/apply deterministic and avoids
-// redundant subprocess spawns when several diagnostics touch the same block).
+// 各 BLOCK の edges を run ごとに高々 1 回だけ問い合わせる（propose/apply を決定的に保ち、複数の
+// diagnostic が同じ block に触れるときの冗長な subprocess 起動を避ける）。
 function cachingRunner(runEdges: SlntEdgesRunner): SlntEdgesRunner {
   const cache = new Map<string, ReturnType<SlntEdgesRunner>>();
   return (blockName) => {
@@ -48,8 +48,8 @@ export function buildResolveTarget(
   const run = cachingRunner(runEdges);
   return (diagnostic) => {
     const address = readEdgeAddress(diagnostic.actual?.edge);
-    // No edge address (e.g. Seamlint has not emitted one for this diagnostic) -> not resolvable.
-    // Never guessed: the diagnostic is recorded as skipped, not silently corrected (T6 / T8).
+    // edge address が無い（例: Seamlint がこの diagnostic に emit していない）-> 解決不能。
+    // 推測はしない: diagnostic は silent に補正せず skip として記録する（T6 / T8）。
     if (!address) return { status: "not-found" };
     const points = fetchEdgePoints(run, address.blockName, address.edgeId);
     if (!points) return { status: "not-found" };
@@ -57,8 +57,8 @@ export function buildResolveTarget(
       blockName: address.blockName,
       edgeId: String(address.edgeId),
       ...(address.arcRange ? { arcRange: address.arcRange } : {}),
-      // Carry Seamlint's exact vertex index (curve_kink only) so the fix can skip the coordinate
-      // match. Absent for seam pairs / older reports; the fix then falls back to matching by point.
+      // Seamlint の正確な vertex index（curve_kink のみ）を運び、fix が座標一致を省けるようにする。
+      // seam pair / 古い report には無い; その場合 fix は点での一致に戻る。
       ...(address.vertexIndex !== undefined ? { vertexIndex: address.vertexIndex } : {}),
       points
     };

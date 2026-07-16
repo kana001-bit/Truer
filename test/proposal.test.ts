@@ -15,12 +15,12 @@ import {
   normalizePathData
 } from "../src/core/proposal/proposalDigest.ts";
 
-// DXF addressing: a BLOCK + edge, with the edge's net-line vertices as canonical points (from
-// Seamlint `slnt edges`), digested into target.targetDigest via digestEdgePoints. The DXF source
-// text is only digested here (not parsed), so a minimal placeholder stands in for a real file.
+// DXF addressing: BLOCK + edge。edge の net-line 頂点を canonical points（Seamlint `slnt edges` 由来）
+// として持ち、digestEdgePoints で target.targetDigest に digest する。DXF source text はここでは digest
+// されるだけ（parse しない）ので、実 file の代わりに最小の placeholder を置く。
 const BLOCK_NAME = "body-armhole";
 const EDGE_ID = "edge3";
-// The kink at index 3 (124,130) is an interior vertex, so it becomes a local-adjustment.
+// index 3（124,130）の kink は内部 vertex なので、local-adjustment になる。
 const CURVE_KINK_POINTS = [
   { x: 40, y: 140 },
   { x: 88, y: 60 },
@@ -49,9 +49,8 @@ function curveKink(point: { x: number; y: number }): DiagnosticInput {
   };
 }
 
-// seam_length_mismatch is a *pair* diagnostic: target is "from/to", no actual.point,
-// carries the two edge lengths. The adapter (stubbed here) resolves the pair's "from"
-// side as the addressing anchor.
+// seam_length_mismatch は *ペア* の diagnostic: target は "from/to"、actual.point は無く、
+// 2 edge の長さを持つ。adapter（ここでは stub）はペアの "from" 側を addressing anchor として解決する。
 const SEAM_TARGET = "back.outseam/front.outseam";
 const SEAM_BLOCK = "BACK";
 const SEAM_EDGE = "outseam";
@@ -81,12 +80,12 @@ function seamLengthMismatch(fromLengthMm: number, toLengthMm: number): Diagnosti
   };
 }
 
-// The "to" (partner) edge of the seam pair, distinct block/geometry from the "from" edge.
+// seam ペアの "to"（相方）edge。"from" edge とは別の block/geometry。
 const SEAM_TO_BLOCK = "FRONT";
 const SEAM_TO_EDGE = "outseam";
 
-// The DXF adapter resolves each edge to its net-line points (from Seamlint `slnt edges`).
-// The pair stub supplies these directly; edgeGeometry strings are gone (points are canonical).
+// DXF adapter は各 edge を net-line points に解決する（Seamlint `slnt edges` 由来）。
+// pair stub はこれを直接供給する; edgeGeometry 文字列は廃止（points が canonical）。
 const SEAM_POINTS = [
   { x: 0, y: 0 },
   { x: 0, y: 120 },
@@ -98,8 +97,8 @@ const SEAM_TO_POINTS = [
   { x: 5, y: 215 }
 ];
 
-// Pair resolver stub: resolves BOTH edges, with lengths read from the diagnostic so the
-// seamReconciliation lengths match. `reference` designates the fixed edge (or undefined).
+// Pair resolver の stub: 両 edge を解決し、長さは diagnostic から読むので seamReconciliation の
+// 長さが一致する。`reference` は固定 edge を指定する（または undefined）。
 function resolveSeamPairStub(
   reference?: "from" | "to"
 ): (diagnostic: DiagnosticInput) => SeamPairResolution {
@@ -154,7 +153,7 @@ test("curve_kink at an interior vertex becomes a local-adjustment with a move-ve
   assert.equal(proposal.target.blockName, BLOCK_NAME);
   assert.equal(proposal.target.edgeId, EDGE_ID);
   assert.equal(proposal.target.targetDigest, digestEdgePoints(CURVE_KINK_POINTS));
-  // preview carries the edge's net-line points; digest matches target (self-contained).
+  // preview は edge の net-line points を持つ; digest は target と一致する（self-contained）。
   assert.deepEqual(proposal.preview.edge!.points, CURVE_KINK_POINTS);
   assert.equal(digestEdgePoints(proposal.preview.edge!.points), proposal.target.targetDigest);
   assert.deepEqual(proposal.preview.diagnosticPoint, { x: 124, y: 130 });
@@ -210,7 +209,7 @@ test("vertexIndex breaks a coordinate-match tie the point alone cannot resolve",
           }
         : { status: "not-found" };
 
-  // Without vertexIndex: the point is within tolerance of two vertices -> ambiguous -> preview-only.
+  // vertexIndex 無し: 点が 2 つの vertex の tolerance 内 -> ambiguous -> preview-only。
   const ambiguous = createProposalFile({
     sourceFile: "armhole-kink.dxf",
     sourceText: DXF,
@@ -219,7 +218,7 @@ test("vertexIndex breaks a coordinate-match tie the point alone cannot resolve",
   });
   assert.equal(ambiguous.proposals[0]!.mode, "preview-only");
 
-  // With a consistent vertexIndex: the tie is broken -> local-adjustment on vertex 1.
+  // 整合する vertexIndex 付き: tie が解ける -> vertex 1 で local-adjustment。
   const resolved = createProposalFile({
     sourceFile: "armhole-kink.dxf",
     sourceText: DXF,
@@ -656,9 +655,9 @@ test("malformed seamReconciliation is rejected by validation", () => {
   const fromEdge = { blockName: "BACK", edgeId: "outseam", edgeDigest: "sha256:1", lengthMm: 100 };
   const toEdge = { blockName: "FRONT", edgeId: "outseam", edgeDigest: "sha256:2", lengthMm: 95 };
 
-  // valid
+  // 妥当
   assert.deepEqual(validateProposalFile(withSeam({ fromEdge, toEdge, deltaMm: 5 })), []);
-  // an edge missing its digest
+  // digest を欠く edge
   assert.ok(
     validateProposalFile(
       withSeam({
@@ -668,7 +667,7 @@ test("malformed seamReconciliation is rejected by validation", () => {
       })
     ).some((error) => error.includes("fromEdge"))
   );
-  // an edge with neither edgeId nor arcRange (T6)
+  // edgeId も arcRange も無い edge（T6）
   assert.ok(
     validateProposalFile(
       withSeam({
@@ -678,13 +677,13 @@ test("malformed seamReconciliation is rejected by validation", () => {
       })
     ).some((error) => error.includes("fromEdge"))
   );
-  // non-finite deltaMm
+  // 非有限の deltaMm
   assert.ok(
     validateProposalFile(withSeam({ fromEdge, toEdge, deltaMm: Number.NaN })).some((error) =>
       error.includes("deltaMm")
     )
   );
-  // reference must be "from" | "to"
+  // reference は "from" | "to" でなければならない
   assert.ok(
     validateProposalFile(withSeam({ fromEdge, toEdge, deltaMm: 5, reference: "left" })).some(
       (error) => error.includes("reference")
@@ -716,7 +715,7 @@ test("missing required field is caught by validateProposalFile", () => {
       {
         id: "prop_001",
         status: "proposed",
-        // mode is intentionally missing
+        // mode を意図的に欠落させている
         target: { blockName: "body-armhole", edgeId: "edge3", targetDigest: "sha256:0" },
         sourceDiagnostic: { code: "geometry.curve_kink" },
         intent: { kind: "inspect-local-kink", confidence: "low", reviewRequired: true },
@@ -755,8 +754,8 @@ test("preview-only proposal with changes is rejected by validation", () => {
   assert.ok(errors.some((error) => error.includes("preview-only")));
 });
 
-// Builds a curve_kink local-adjustment proposal object with the given changes/preview so validation
-// can be exercised on hand-built (not createProposalFile) input.
+// 指定した changes/preview で curve_kink の local-adjustment proposal オブジェクトを組み立てる。
+// createProposalFile ではなく手組みの入力で validation を試せるように。
 function kinkAdjustment(changes: unknown, preview: unknown) {
   return {
     schema: PROPOSAL_SCHEMA_V0,

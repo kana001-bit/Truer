@@ -1,8 +1,7 @@
-// Preview overlay generation. Pure: the SVG is a function of the proposal file alone (the render
-// geometry lives in proposal.preview.*). No IO, no DXF re-read, no Seamlint re-call. This module
-// picks the right panel per proposal (seam length vs curve_kink), stacks them, and wraps them in
-// one document. Panel drawing lives in ./seamOverlay.ts and ./kinkOverlay.ts; shared helpers in
-// ./svgUtils.ts.
+// Preview overlay の生成。pure: SVG は proposal file だけの関数（render geometry は proposal.preview.*
+// にある）。IO も DXF 再読込も Seamlint 再呼び出しもない。このモジュールは proposal ごとに正しい panel
+//（seam length か curve_kink か）を選び、積み重ね、1 つの document に包む。panel の描画は
+// ./seamOverlay.ts と ./kinkOverlay.ts に、共有 helper は ./svgUtils.ts にある。
 
 import type { ProposalFile } from "../core/proposal/proposalSchema.ts";
 import { MUTED, PAD, PANEL_GAP, svgDocument } from "./svgUtils.ts";
@@ -34,7 +33,7 @@ export function renderProposalPreview(file: ProposalFile): string {
   }
 
   if (panels.length === 0) {
-    // Honest: nothing to show. Keep the seam panel width so the placeholder reads at a sensible size.
+    // 正直に: 見せるものが無い。placeholder が妥当なサイズで読めるよう seam panel の幅を保つ。
     return svgDocument(
       SEAM_PANEL_W,
       64,

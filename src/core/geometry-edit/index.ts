@@ -1,13 +1,13 @@
-// Pure geometry helpers for edge/vertex edits: nearest-vertex mapping, chord projection, and the
-// single emit-rounding boundary. No IO, no domain knowledge — just points in, points out
-// (references/implementation-rules.md Module Boundaries). Rounding lives HERE and only here so
-// preview and apply emit identical coordinates and proposals stay byte-stable (T10).
+// edge/vertex 編集のための pure な geometry helper: nearest-vertex 対応づけ、弦への射影、そして
+// 唯一の emit 丸め境界。IO なし、domain 知識なし — points を入れて points を出すだけ
+//（references/implementation-rules.md の Module Boundaries）。丸めはここに、ここだけにあるので、
+// preview と apply は同一座標を emit し proposal は byte 安定を保つ（T10）。
 
 import type { Point } from "../proposal/proposalSchema.ts";
 
-// Decimal places at the geometry emit boundary. Corrected coordinates are rounded here and only
-// here (T10). 3 places mirrors Seamlint's point rounding — sub-micron at mm scale, far below any
-// cut precision — so it never changes the pattern in a way a human could see.
+// geometry emit 境界での小数桁。補正後座標はここで、ここだけで丸める（T10）。3 桁は Seamlint の
+// 点丸めに倣う — mm スケールで sub-micron、あらゆる裁断精度を大きく下回る — ので、人間に見える形で
+// 型紙を変えることは決してない。
 export const EMIT_DECIMALS = 3;
 
 export function roundCoord(value: number): number {
@@ -25,17 +25,16 @@ function distanceSq(a: Point, b: Point): number {
   return dx * dx + dy * dy;
 }
 
-// True when `a` and `b` are within `tolerance` mm of each other. Used to confirm a diagnostic point
-// actually sits on a claimed vertex before trusting an externally-supplied vertex index (T8
-// consistency guard): the index and the point come from the same report, so in a valid report they
-// agree; a gross disagreement means the report is stale / from another revision.
+// `a` と `b` が互いに `tolerance` mm 以内なら true。外部供給の vertex index を信頼する前に、診断点が
+// 主張された vertex に実際に乗っているか確認するのに使う（T8 の整合 guard）: index と点は同じ report
+// 由来なので、正しい report では一致する; 大きな不一致は report が stale / 別リビジョンであることを意味する。
 export function pointsWithin(a: Point, b: Point, tolerance: number): boolean {
   return distanceSq(a, b) <= tolerance * tolerance;
 }
 
-// Index of the vertex nearest `target`, but only if it is within `tolerance` AND unambiguous (no
-// other vertex within tolerance). Returns undefined otherwise: the diagnostic point does not land
-// cleanly on exactly one net-line vertex, so the caller must not guess which vertex to move (T8).
+// `target` に最も近い vertex の index。ただし `tolerance` 以内、かつ一意（tolerance 以内に他の vertex が
+// 無い）なときだけ。それ以外は undefined を返す: 診断点がちょうど 1 つの net-line vertex に綺麗に
+// 乗っていないので、呼び出し側はどの vertex を動かすか推測してはならない（T8）。
 export function nearestVertexIndex(
   points: readonly Point[],
   target: Point,
@@ -57,10 +56,9 @@ export function nearestVertexIndex(
   return best;
 }
 
-// Foot of the perpendicular from `p` onto the infinite line through `a` and `b`. Placing the kink
-// vertex here makes it collinear with its two neighbours, so the sharp turn is removed. Full
-// precision (rounding happens once, at the emit boundary). Returns undefined when a and b coincide
-// (no line to project onto).
+// `p` から `a` と `b` を通る無限直線へ下ろした垂線の足。kink vertex をここに置くと両隣と共線になり、
+// 鋭い折れが消える。full precision（丸めは emit 境界で 1 度だけ）。a と b が一致するとき（射影する線が
+// 無い）は undefined を返す。
 export function projectOntoLine(p: Point, a: Point, b: Point): Point | undefined {
   const abx = b.x - a.x;
   const aby = b.y - a.y;

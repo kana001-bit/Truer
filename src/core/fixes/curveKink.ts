@@ -1,13 +1,12 @@
-// curve_kink fix rule (first slice of M4 ①): given the addressed edge's net-line points and the
-// Seamlint kink point, decide whether Truer can confidently smooth the kink, and if so produce the
-// minimal change that does it.
+// curve_kink fix rule（M4 ① の first slice）: addressing した edge の net-line points と Seamlint の
+// kink point を受け取り、Truer が確信を持って kink を滑らかにできるか判断し、できるならそれを行う
+// 最小の change を作る。
 //
-// Correction (decision (i), 2026-07-16): move the ONE interior vertex the kink sits on onto the
-// straight line between its two neighbours (chord projection), making the three points collinear so
-// the sharp turn disappears. One vertex only — minimal and local (T6); endpoints are never moved
-// (T7); anything Truer cannot map with confidence falls back to preview-only (T8). Pure and
-// deterministic: same input -> same output, rounding only at the emit boundary (T10). The returned
-// `changes` are replayed verbatim by applyChanges for both preview and apply (T2 / T4).
+// 補正（decision (i)、2026-07-16）: kink が乗っている内部 vertex 1 つを、その両隣を結ぶ直線上へ
+// 動かし（弦への射影）、3 点を共線にして鋭い折れを消す。vertex は 1 つだけ — 最小・局所（T6）;
+// endpoint は決して動かさない（T7）; Truer が確信を持って対応づけられないものは preview-only に
+// 落とす（T8）。pure かつ決定的: 同じ入力 -> 同じ出力、丸めは emit 境界のみ（T10）。返す `changes` は
+// preview でも apply でも applyChanges がそのまま再生する（T2 / T4）。
 
 import type { Change, IntentConfidence, Point } from "../proposal/proposalSchema.ts";
 import {
@@ -17,22 +16,20 @@ import {
   roundPoint
 } from "../geometry-edit/index.ts";
 
-// How close (mm) the diagnostic point must sit to a net-line vertex to count as "this vertex". The
-// kink point comes from Seamlint's sampled points (rounded); on a flattened polyline those are the
-// net-line vertices, so a real match is ~0. Anything farther means the point does not land on a
-// vertex we can move — fall back to preview-only rather than guess (T8).
+// 診断点が net-line vertex に「この vertex」と見なせるほど近い距離（mm）。kink point は Seamlint の
+// サンプル点（丸め済み）由来; flattened polyline ではそれらが net-line vertex なので、本当の一致は
+// ~0。それより遠ければ、点は動かせる vertex に乗っていない — 推測せず preview-only に落とす（T8）。
 const VERTEX_MATCH_TOLERANCE_MM = 0.01;
 
 export interface CurveKinkFixInput {
-  // Addressed edge's net-line vertices (from Seamlint `slnt edges`, canonical points).
+  // addressing した edge の net-line 頂点（Seamlint `slnt edges` 由来、canonical points）。
   points: readonly Point[];
-  // Seamlint `actual.point` — where the sharp turn is.
+  // Seamlint `actual.point` — 鋭い折れがある位置。
   diagnosticPoint: Point;
-  // OPTIONAL exact index of the kink vertex within `points`, when Seamlint carried it on
-  // actual.edge.vertexIndex. Used to break ties the coordinate match rejects for non-uniqueness, but
-  // only when it is consistent with `diagnosticPoint` (see resolveVertexIndex): an index that
-  // disagrees with the point means a stale report, so it is ignored rather than trusted (T8). Absent
-  // for older reports; the fix then matches by point as before.
+  // `points` 内の kink vertex の正確な index（任意）。Seamlint が actual.edge.vertexIndex に載せて
+  // いるときに使う。座標一致が非一意で弾いた tie を解くために使うが、`diagnosticPoint` と整合する
+  // ときだけ（resolveVertexIndex 参照）: 点と食い違う index は stale な report を意味するので、信頼せず
+  // 無視する（T8）。古い report には無い; その場合 fix は従来どおり点で一致させる。
   vertexIndex?: number;
 }
 
@@ -52,15 +49,14 @@ function previewOnly(note: string): CurveKinkFix {
   };
 }
 
-// Which vertex the kink sits on. Prefer Seamlint's exact `vertexIndex`, but ONLY when it is
-// consistent with the diagnostic point: both come from the same report, so in a valid report
-// `points[vertexIndex]` sits at `actual.point`. A stale / wrong-revision report can carry a
-// vertexIndex that no longer matches the point; trusting it blindly would move a vertex the human
-// never saw flagged — a confidently-wrong edit (T8). So the index's only job is to break ties the
-// coordinate match rejects for non-uniqueness (near-coincident vertices); it never overrides a gross
-// mismatch. When the index is absent / out of range / inconsistent, fall back to the coordinate
-// match, which itself returns undefined (-> preview-only) when the point maps to no single vertex —
-// exactly the pre-vertexIndex safe behaviour. The caller's endpoint guard (T7) still applies either way.
+// kink がどの vertex に乗っているか。Seamlint の正確な `vertexIndex` を優先するが、診断点と整合する
+// ときだけ: 両方とも同じ report 由来なので、正しい report では `points[vertexIndex]` は `actual.point` に
+// ある。stale / 別リビジョンの report は、もう点と一致しない vertexIndex を持ちうる; それを盲信すると
+// 人間が flag されたのを見ていない vertex を動かす — confidently-wrong な編集（T8）。だから index の
+// 唯一の役目は、座標一致が非一意（ほぼ重なる vertex）で弾いた tie を解くこと; 大きな不一致を上書き
+// することは決してない。index が無い / 範囲外 / 不整合なら座標一致に戻り、それ自身も点が単一 vertex に
+// 対応しないとき undefined を返す（-> preview-only）— まさに vertexIndex 導入前の安全な挙動。呼び出し側の
+// endpoint guard（T7）はどちらでも依然として効く。
 function resolveVertexIndex(input: CurveKinkFixInput): number | undefined {
   const { points, diagnosticPoint, vertexIndex } = input;
   if (
@@ -78,7 +74,7 @@ function resolveVertexIndex(input: CurveKinkFixInput): number | undefined {
 export function buildCurveKinkFix(input: CurveKinkFixInput): CurveKinkFix {
   const { points } = input;
 
-  // Need at least one interior vertex (>= 3 points) to have two neighbours to smooth between.
+  // 間を滑らかにする両隣を持つには、内部 vertex が最低 1 つ（3 点以上）要る。
   if (points.length < 3) {
     return previewOnly(
       "辺の頂点が少なく（3 点未満）、内部の頂点を滑らかに戻せません。確認のみ (preview-only)。"
@@ -92,7 +88,7 @@ export function buildCurveKinkFix(input: CurveKinkFixInput): CurveKinkFix {
     );
   }
 
-  // T7: endpoints carry seam / notch / closure meaning; never move them in the first slice.
+  // T7: endpoint は seam / notch / 閉じ線の意味を持つ; first slice では決して動かさない。
   if (index === 0 || index === points.length - 1) {
     return previewOnly(
       "kink が辺の端点に対応します。端点は縫い合わせ・閉じの意味を持つため動かさず確認のみ (preview-only)。"
@@ -107,7 +103,7 @@ export function buildCurveKinkFix(input: CurveKinkFixInput): CurveKinkFix {
 
   const to = roundPoint(projected);
   const roundedOriginal = roundPoint(original);
-  // Already on the chord (after emit rounding): nothing to move. Do not emit a no-op change.
+  // 既に弦上にある（emit 丸め後）: 動かすものは無い。no-op の change を emit しない。
   if (to.x === roundedOriginal.x && to.y === roundedOriginal.y) {
     return previewOnly(
       "頂点は既に滑らかな線上にあり、動かす補正はありません。確認のみ (preview-only)。"

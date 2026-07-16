@@ -1,22 +1,20 @@
-// Minimal, surgical DXF net-line editor: replace ONE vertex of a target BLOCK's layer-14 POLYLINE,
-// matching by the vertex's current coordinates, and return the edited DXF with every other byte
-// preserved (references/critical-invariants.md T6).
+// 最小・外科的な DXF net-line editor: target BLOCK の layer-14 POLYLINE の vertex を 1 つだけ、その
+// vertex の現在座標で一致させて置き換え、他のすべての byte を保ったまま編集後 DXF を返す
+//（references/critical-invariants.md T6）。
 //
-// Truer reads DXF geometry via Seamlint `slnt edges` and never parses DXF itself (A1). But WRITING
-// the corrected net line is Truer's job — Seamlint is read-only — so apply owns this one narrow edit
-// (M3: apply writes a Truer-owned corrected DXF). We do NOT re-serialize the file: we locate the two
-// coordinate value lines (group 10 = x, 20 = y) of the matched VERTEX and splice in the new values,
-// leaving separators, other entities, TEXT, notches, and formatting untouched.
+// Truer は DXF geometry を Seamlint `slnt edges` 経由で読み、自分では DXF を parse しない（A1）。だが
+// 補正後 net line を書くのは Truer の仕事 — Seamlint は read-only — なので apply がこの狭い 1 編集を
+// 持つ（M3: apply は Truer 所有の補正済み DXF を書く）。file を再 serialize はしない: 一致した VERTEX の
+// 2 つの座標値行（group 10 = x、20 = y）を特定して新しい値を差し込み、区切り・他の entity・TEXT・
+// notch・整形はそのまま残す。
 //
-// The vertex is matched by its current coordinates (which the caller knows exactly from `slnt
-// edges`), not by index: Seamlint's edge `points` are the dart-reduced loop, so their indices do not
-// line up with the raw POLYLINE, but every reduced point IS a raw POLYLINE vertex, so its coordinates
-// are present verbatim. If the coordinates match zero or more than one vertex, we refuse rather than
-// edit the wrong line (T6 / T8).
+// vertex は index ではなく現在座標で一致させる（呼び出し側は `slnt edges` から正確に知っている）:
+// Seamlint の edge `points` は dart 削減後の loop なので、その index は生の POLYLINE と揃わないが、
+// 削減後の各点は生の POLYLINE vertex そのものなので、座標はそのまま存在する。座標が 0 個または 2 個
+// 以上の vertex に一致したら、誤った line を編集せず拒否する（T6 / T8）。
 //
-// The net line lives in an old-style POLYLINE (group 0 = POLYLINE, layer via group 8, then VERTEX
-// entities each with 10/20, ending at SEQEND) inside a BLOCKS-section BLOCK — the exact shape
-// Seamlint's dxfPath.ts reads.
+// net line は BLOCKS section の BLOCK 内の旧式 POLYLINE（group 0 = POLYLINE、layer は group 8、続いて
+// 各 10/20 を持つ VERTEX entity、SEQEND で終わる）にある — Seamlint の dxfPath.ts が読むのと同じ形。
 
 import type { Point } from "../../core/proposal/proposalSchema.ts";
 
@@ -33,14 +31,14 @@ export class DxfEditError extends Error {
   }
 }
 
-// Formats a corrected coordinate for the DXF. The value is a NEW number (the fix already rounded it
-// at the emit boundary), so we do not preserve the original line's bytes here — just emit a plain,
-// locale-independent decimal (no exponent for pattern-scale mm values).
+// 補正後座標を DXF 用に整形する。値は新しい数（fix が既に emit 境界で丸めた）なので、ここでは元の
+// 行の byte を保たない — locale 非依存の素の 10 進数を emit するだけ（型紙スケールの mm 値に指数表記は
+// 使わない）。
 function formatCoord(value: number): string {
   return String(value);
 }
 
-// A DXF code line, minus a leading BOM (Seamlint strips it too) and surrounding whitespace.
+// DXF の code 行から、先頭 BOM（Seamlint も剥がす）と前後の whitespace を除いたもの。
 function codeOf(part: string): string {
   const withoutBom = part.charCodeAt(0) === 0xfeff ? part.slice(1) : part;
   return withoutBom.trim();
@@ -59,12 +57,12 @@ export function editNetLineVertex(
   from: Point,
   to: Point
 ): string {
-  // Keep separators (odd indices) so join("") reproduces the file byte-for-byte apart from our edit.
+  // 区切り（奇数 index）を保つので、join("") は自分の編集以外は file を byte 単位で再現する。
   const parts = dxfText.split(/(\r\n|\r|\n)/);
   const contentIndex: number[] = [];
   for (let i = 0; i < parts.length; i += 2) contentIndex.push(i);
 
-  // Skip leading blank content lines, matching Seamlint's readGroups (which shifts leading blanks).
+  // 先頭の空 content 行を飛ばす。Seamlint の readGroups（先頭の空行を shift する）に合わせる。
   let start = 0;
   while (start < contentIndex.length && codeOf(parts[contentIndex[start]!]!) === "") start += 1;
 
@@ -107,7 +105,7 @@ export function editNetLineVertex(
         keyword === "ENDBLK" ||
         keyword === "ENDSEC"
       ) {
-        // Leaving the current POLYLINE (or block/section): drop its layer-14 tracking.
+        // 現在の POLYLINE（または block/section）を抜ける: layer-14 の追跡を解除する。
         polylineInTargetBlock = false;
         inTargetLayer14 = false;
       }

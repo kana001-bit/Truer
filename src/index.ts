@@ -1,6 +1,5 @@
-// Public core surface. A future Loomit Studio should be able to call Truer core
-// without shelling out to the CLI (docs/truer-mvp-spec.md acceptance criteria),
-// so the CLI stays a thin layer over these exports.
+// 公開する core の surface。将来の Loomit Studio が CLI を shell 呼び出しせずに Truer core を呼べる
+// ように（docs/truer-mvp-spec.md の acceptance criteria）、CLI はこれらの export の上の薄い層に留める。
 
 export { createProposalFile, proposalId } from "./core/proposal/createProposalFile.ts";
 export type {
