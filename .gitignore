@@ -1,9 +1,10 @@
 node_modules/
 dist/
+.tmp/
 *.log
 
 # 個人のエディタ装飾（タイトルバー色など）は各自ローカルに置き、repo では追跡しない
 .vscode/settings.json
 
-# ツール固有のポインタは各自ローカル。クロスツールの正本メタは skills/*/agents/*.yaml が担う
+# ツール固有のポインタは各自ローカル。クロスツールの正本メタは .claude/skills/*/agents/*.yaml が担う
 .codex/

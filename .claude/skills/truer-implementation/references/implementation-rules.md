@@ -39,7 +39,7 @@ test/
 examples/
 ```
 
-この選定を変えるとき（JS へ倒す等）は、`references/testing-proposals.md` の型安全ルールと
+この選定を変えるとき（JS へ倒す等）は、下の Type Hygiene 節と
 併せて docs を先に更新する。
 
 ## Implementation Order
@@ -60,15 +60,15 @@ branch note（`docs/branch/`）と task-spec（`docs/task-specs/`）を正とす
    pre-pivot slice の legacy。
 3. seam_length_mismatch を **self-contained proposal** にする（両辺 points から `edgeDigest` と
    `preview.edges` を作る）。
-4. `geometry.curve_kink`（辺内部 kink）は DXF では preview-only 既定、`local-adjustment` は editing
-   surface 確定後。点→辺の住所解決（Seamlint 側 or 射影）が前提。
+4. `geometry.curve_kink`（辺内部 kink）は、点→辺の住所解決の上、内部頂点を隣接 2 点の弦上へ寄せる
+   `local-adjustment` を出す（M3 で決着・実装済み）。確信を持って対応づけられない場合は preview-only。
 5. preview overlay は `proposal.preview.edges` から。補正線を描くなら apply と同じ適用関数を通す（T2）。
 6. `tru propose [--preview]`（slnt の位置は `SEAMLINT_CLI` / `--slnt` で渡す。core は純粋なまま）。
-7. `tru apply`（accept + digest + atomic）。**書き先は Loomit と握るまで確定させない（OPEN な設計判断）**。
+7. `tru apply`（accept + digest + atomic）。**書き先は Truer 所有の補正済み DXF を `--out`**（M3 で決着、下の Apply 節）。
 
 task が明示しない限り、CAD engine、GUI editor、自動最終修正、端点ペア補正、3D / 布シミュへ先に
-進まない。DXF editing surface と apply の書き先を推測で先に固めない（OPEN のまま preview-only に
-倒す）。「一つの diagnostic を深くやる。多くを浅くやらない」。
+進まない。まだ決まっていない編集面（seam のどちら側に Δ を寄せるか等）は推測で先に固めず preview-only に
+倒す。「一つの diagnostic を深くやる。多くを浅くやらない」。
 
 ## Module Boundaries
 
@@ -76,8 +76,8 @@ task が明示しない限り、CAD engine、GUI editor、自動最終修正、�
   unsupported diagnostic の skipped 表現を担当する。
 - `src/core/fixes/` は diagnostic code ごとの補正ルール。`code` から fix を引く registry を持つ
   （`references/extensibility.md`）。fix は **pure**。
-- `src/core/geometry-edit/` は net line の頂点分解、diagnostic point の近傍 mapping、（editing
-  surface が決まれば）局所補正、geometry の emit を担当する。DXF flattened polyline には Bezier
+- `src/core/geometry-edit/` は net line の頂点分解、diagnostic point の近傍 mapping、局所補正
+  （弦上への vertex 射影）、geometry の emit を担当する。DXF flattened polyline には Bezier
   制御点が無いので制御点操作前提にしない。丸めはここの emit 1 箇所だけ（`critical-invariants.md` T10）。
 - `src/core/apply/` は proposal の `changes` を original geometry（対象辺の net line）に当てる単一
   関数（`applyChanges`）と、accept / digest 検証を含む `applyProposal` を担当する。
@@ -104,6 +104,19 @@ process.stderr.write(text);
 fix rule は file path ではなく、net line geometry と diagnostic（domain object）を受け取る。file を
 読むのは CLI と adapter の責務。**core は CLI / preview 表示 / Studio に依存しない**（acceptance
 criteria: 将来 Loomit Studio が shell を経由せず core を呼べる）。
+
+## Type Hygiene（`any` / `unknown` / `undefined`）
+
+型の緩みは silent なバグの温床。補正が最終的に布を裁つ・縫う工程へ流れる以上、ここも急所です。
+
+- **`any` 型は使わない。** 型が本当に不明なら `unknown` を使い、**使用箇所で必ず絞り込む**。
+- **`unknown` は「信頼できない入力の境界」と「catch した `error`」に限り、コメント無しで可。**
+  現行コードの既定パターン: proposal schema の type-predicate（`isFinitePoint(value: unknown): value is Point`、
+  `validateProposalFile(file: unknown)`）、Seamlint report / `slnt edges` の parse（`parseSeamlintReport(json: unknown)`、
+  `coerceEdgesResult(value: unknown)`）、`catch (error: unknown)`。
+- それ以外の意図的な `unknown` は、理由を 1 行コメントで添える。`T | undefined` のユニオン型は
+  不在を正直に表す型として推奨（コメント不要）。
+- 現状 src の `any` 型はゼロ。この状態を保つ。
 
 ## Proposal Model
 
@@ -162,8 +175,9 @@ transform / 非等倍 `viewBox` は補正対象にしない、path command は `
 - 内部計算は full precision。丸めは geometry emit の 1 箇所だけ。emit 精度（小数桁）を固定する。
 - endpoint / 端頂点に対応づく補正は `local-adjustment` にせず preview-only に落とす
   （first slice, T7）。
-- **DXF flattened polyline には Bezier 制御点が無い。** 制御点移動前提の補正は使わない。DXF 上の
-  `local-adjustment`（vertex 操作等）の是非自体が OPEN なので、決まるまで preview-only を返す。
+- **DXF flattened polyline には Bezier 制御点が無い。** 制御点移動前提の補正は使わない。curve_kink の
+  `local-adjustment` は内部頂点を隣接 2 点の弦上へ寄せる方法で決着（M3）。確信を持って頂点に対応づけ
+  られない補正は preview-only を返す（T8）。
 - zero-length / near-degenerate 近傍は defensive に扱い、`NaN` を出さず preview-only にする。
 
 ## Apply
