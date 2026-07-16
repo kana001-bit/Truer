@@ -1,4 +1,0 @@
-interface:
-  display_name: "Branch Progress"
-  short_description: "Keep a per-branch plan and handoff note."
-  default_prompt: "Use $branch-progress to create or update the current branch note with the latest plan, progress, blockers, and handoff details."

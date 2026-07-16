@@ -14,5 +14,18 @@ export default tseslint.config(
     rules: {
       "@typescript-eslint/no-explicit-any": "error"
     }
+  },
+  {
+    // Skill/tooling scripts are plain ESM run by Node; declare Node globals so
+    // no-undef does not flag them (TS files get this off via tseslint).
+    files: ["**/*.mjs"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        process: "readonly",
+        URL: "readonly",
+        Buffer: "readonly"
+      }
+    }
   }
 );

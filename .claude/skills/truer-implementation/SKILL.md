@@ -1,6 +1,6 @@
 ---
 name: truer-implementation
-description: "Truer の実装変更で使う project skill。AGENTS.md は薄く保ち、proposal contract・geometry edit・preview・apply・CLI・tests・Seamlint/Loomit 境界の実務ルールと拡張方針はここから必要な reference だけ読む。propose/apply の書き込み境界、preview と apply の一致、digest 検証、端点の扱い、fix registry などを確認するとき。ブランチ単位の作業記録は branch-progress、長期タスクの確定/未確認 spec の管理は task-spec-manager の領分なので、コードや契約を触らずメモ/spec を書くだけのときは使わない。"
+description: "Truer の実装変更で使う project skill。AGENTS.md は薄く保ち、proposal contract・geometry edit・preview・apply・CLI・tests・Seamlint/Loomit 境界の実務ルールと拡張方針はここから必要な reference だけ読む。propose/apply の書き込み境界、preview と apply の一致、digest 検証、端点の扱い、fix registry などを確認するとき。ブランチ単位の作業記録は branch-worklog、長期タスクの確定/未確認 spec の管理は task-spec-manager の領分なので、コードや契約を触らずメモ/spec を書くだけのときは使わない。"
 ---
 
 # Truer Implementation

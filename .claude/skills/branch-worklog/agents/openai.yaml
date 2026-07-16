@@ -1,0 +1,4 @@
+interface:
+  display_name: "Branch Worklog"
+  short_description: "Keep a per-branch plan and handoff note."
+  default_prompt: "Use $branch-worklog to create or update the current branch note with the latest plan, progress, blockers, and handoff details."

@@ -6,7 +6,7 @@ Truer は、Seamlint が「この線は少しおかしいかもしれない」�
 実際に直す候補を出して書き込むのは Truer、という分担です。
 
 - 設計と方針: [docs/](docs/) （`docs/README.md` が索引）
-- 実装ルールと守るべき invariant: [skills/truer-implementation/](skills/truer-implementation/)
+- 実装ルールと守るべき invariant: [.claude/skills/truer-implementation/](.claude/skills/truer-implementation/)
 - Agent 向け入口 / 規約の正本: [AGENTS.md](AGENTS.md)（[CLAUDE.md](CLAUDE.md) はここへのポインタ）
 
 ## Status
@@ -27,4 +27,4 @@ node --test          # devDependencies 無しでも test だけは実行でき�
 
 `propose` は source を書き換えません。`apply` は `--out` にだけ書きます。詳細は
 [docs/truer-mvp-spec.md](docs/truer-mvp-spec.md) と
-[skills/truer-implementation/references/critical-invariants.md](skills/truer-implementation/references/critical-invariants.md)。
+[.claude/skills/truer-implementation/references/critical-invariants.md](.claude/skills/truer-implementation/references/critical-invariants.md)。
