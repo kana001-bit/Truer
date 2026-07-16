@@ -14,8 +14,8 @@ crash ではなく **「人間が本当は見ていない補正を、見たつ�
 
 - レビュー対象の差分（`git diff` / PR の変更）。まず変更面を切り分ける:
   proposal model / fixes / geometry-edit / apply / preview / adapters（seamlint · slnt runner）/ CLI / schema / docs。
-- `references/critical-invariants.md`（T1〜T10）。差分がどの不変則に触るかを照合する。
-- schema / `changes` kind / required field を触るなら `references/testing-proposals.md`（field の正）。
+- `../truer-implementation/references/critical-invariants.md`（T1〜T10）。差分がどの不変則に触るかを照合する。
+- schema / `changes` kind / required field を触るなら `../truer-implementation/references/testing-proposals.md`（field の正）。
 
 ## 判断順（安全 > 正直さ > contract > 決定性 > 簡潔さ）
 
@@ -33,7 +33,7 @@ crash ではなく **「人間が本当は見ていない補正を、見たつ�
    **not-found と ambiguous を混ぜていないか**（推測で 1 辺を選ばない, T6）。
 4. **contract（T9）**: `schema` / `id` / `status` / `target.*` / `seamReconciliation.*` / `preview.edges` /
    `sourceDiagnostic.code` / `changes` / `intent.reviewRequired` を、明示的な互換 break なしに rename・削除して
-   いないか（正は `references/testing-proposals.md`）。未知の `changes[].kind` / `schema` version を **silent に
+   いないか（正は `../truer-implementation/references/testing-proposals.md`）。未知の `changes[].kind` / `schema` version を **silent に
    skip せず explicit error** にしているか。表示都合の変更が preview/formatter に閉じているか。
 5. **座標系・単位（T5）**: ASTM 単位（mm）や BLOCK 変換の前提を検証せずに線を作っていないか。検証できない
    箇所を補正対象にしていないか。
@@ -66,5 +66,4 @@ crash ではなく **「人間が本当は見ていない補正を、見たつ�
 ## やらないこと
 
 - 実装の書き換えそのもの（それは `truer-implementation`）。
-- テストの新規作成。Truer に test 専用 skill は無いので、「test が足りない」を指摘し、書き方は
-  `references/testing-proposals.md` に委ねる。
+- テストの新規作成（それは `test-writing`）。ここでは「test が足りない」を指摘するに留める。

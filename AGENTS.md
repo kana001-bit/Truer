@@ -3,7 +3,7 @@
 このファイルはこのリポジトリのエージェント向け規約の**正本**。`CLAUDE.md` はここへの
 ポインタで、内容は複製しない。ここには常時読む入口として、行動原則・作業範囲の制限・
 Project Skills ルーティング・作業メモ運用と、Truer 固有の「常に守る境界」だけを置く。
-詳しい実装ルールは `skills/truer-implementation/` に集約する。
+詳しい実装ルールは `.claude/skills/truer-implementation/` に集約する。
 
 ## Truer とは (1 行)
 
@@ -36,12 +36,13 @@ before / after を見せる preview を出し、**人間が明示的に採用し
 繰り返し発生する作業は、まず対応する skill を読んでから着手する。使い分けの境界は各 skill の
 `description` にも書いてある。
 
-| 作業                                                                                                 | 使う skill                             |
-| ---------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| Truer 本体の実装・修正（proposal / geometry-edit / apply / preview / CLI / adapters / tests / 契約） | `skills/truer-implementation/SKILL.md` |
-| マージ前の差分 / PR レビュー（書き込み安全・preview==apply・contract・A1 境界・腐ったコメント）      | `skills/code-review/SKILL.md`          |
-| ブランチ単位の plan・progress・handoff の記録                                                        | `skills/branch-progress/SKILL.md`      |
-| 長期タスクの確定仕様・未確認事項・調査・引き継ぎの永続化（確定/未確認を分離）                        | `skills/task-spec-manager/SKILL.md`    |
+| 作業                                                                                                 | 使う skill                                     |
+| ---------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Truer 本体の実装・修正（proposal / geometry-edit / apply / preview / CLI / adapters / tests / 契約） | `.claude/skills/truer-implementation/SKILL.md` |
+| マージ前の差分 / PR レビュー（書き込み安全・preview==apply・contract・A1 境界・腐ったコメント）      | `.claude/skills/code-review/SKILL.md`          |
+| ブランチ単位の plan・progress・handoff の記録                                                        | `.claude/skills/branch-worklog/SKILL.md`       |
+| 長期タスクの確定仕様・未確認事項・調査・引き継ぎの永続化（確定/未確認を分離）                        | `.claude/skills/task-spec-manager/SKILL.md`    |
+| テストや fixture の追加・変更（node:test。source 非破壊・preview==apply の回帰固定）                 | `.claude/skills/test-writing/SKILL.md`         |
 
 ### truer-implementation を使う場面
 
@@ -59,7 +60,7 @@ before / after を見せる preview を出し、**人間が明示的に採用し
 - schema / `changes` kind / contract を触る変更が下流を壊さないか確認するとき
 - 差分が挙動を変えたのに **コメント・docstring が旧挙動のまま**（腐ったコメント）残っていないか掃除するとき
 
-### branch-progress を使う場面
+### branch-worklog を使う場面
 
 - `docs/branch/` の md を作る・更新するとき
 - 現在ブランチの plan / progress / handoff を残すとき
@@ -69,17 +70,23 @@ before / after を見せる preview を出し、**人間が明示的に採用し
 
 - 複数セッション / ブランチにまたがる長期タスクの仕様を、チャットではなくファイルに固定するとき
 - 「確定した仕様」と「未確認・確認待ち・仮定」を分けて記録し、証拠（パス / 関数 / 日付）を残すとき
-- ブランチ単位の作業ログではなく、タスク単位の spec が要るとき（ブランチ記録は branch-progress）
+- ブランチ単位の作業ログではなく、タスク単位の spec が要るとき（ブランチ記録は branch-worklog）
+
+### test-writing を使う場面
+
+- `test/` に node:test のテストや fixture を足す・変えるとき
+- proposal / preview / apply の挙動を、source 非破壊・preview==apply・accept/digest ゲートで固定するとき
+- 「鳴るべき / 鳴ってはいけない」の両面を fixture で固定するとき
 
 ## 作業メモ（チャット外に残す）
 
 作業の背景・仕様・調査結果はチャット履歴ではなくファイルに残し、再開・引き継ぎのコストを下げる。
 
 - **ブランチ単位**: `docs/branch/<branch>.md`（`/` は `__` に置換）。plan / progress /
-  decisions / blockers / handoff を記録する。運用は `skills/branch-progress/SKILL.md`。
+  decisions / blockers / handoff を記録する。運用は `.claude/skills/branch-worklog/SKILL.md`。
 - **長期タスク単位**: `docs/task-specs/<slug>/task-spec.md`。確定仕様と未確認事項を分け、
   証拠（ファイルパス / 関数名 / テーブル名 / 回答日）を添える。運用は
-  `skills/task-spec-manager/SKILL.md`、雛形は `docs/task-specs/task-spec-template.md`。
+  `.claude/skills/task-spec-manager/SKILL.md`、雛形は `docs/task-specs/task-spec-template.md`。
 - 推測は「確定仕様」に昇格させず「未確認事項 / 調査結果」に書く。
 - どちらも作業完了後も削除せず履歴として保持する。
 
@@ -106,18 +113,22 @@ Truer は Seamlint と違い、**型紙の線を書き換える**。その線は
   制御点の無い flattened polyline なので、この原則が特に効く。
 - **proposal JSON は下流との contract。** `schema` / `id` / `status` / `target` / `changes` /
   `sourceDiagnostic` を表示都合で rename しない。将来 Loomit Studio がこれを読む。
+- **`any` 型は使わない。** 型が本当に不明なら `unknown` を使い、使用箇所で必ず絞り込む。`unknown` は
+  「信頼できない入力の境界」と catch した `error` に限り無コメント可、それ以外の意図的な `unknown` 使用は
+  理由を 1 行添える。`T | undefined` のユニオン型は不在を正直に表す型として推奨（コメント不要）。詳細:
+  `.claude/skills/truer-implementation/references/implementation-rules.md`。
 
 ## 読み方
 
 - 変更対象を先に切り分け、必要な reference と docs だけ読む。docs は総覧しない。
-- docs と実装が食い違うときの優先順位は `skills/truer-implementation/references/` に従う。
-- どの docs をいつ読むかは `skills/truer-implementation/SKILL.md` の一覧を使う。
+- docs と実装が食い違うときの優先順位は `.claude/skills/truer-implementation/references/` に従う。
+- どの docs をいつ読むかは `.claude/skills/truer-implementation/SKILL.md` の一覧を使う。
 
 ## 確認
 
-- 補正 / preview / apply の挙動を変えたら、fixture を使って propose → preview（→ apply）を
-  通しで実行する。**apply は現状 OPEN（未実装）なので、今は propose → preview まで**。
+- 補正 / preview / apply の挙動を変えたら、fixture を使って propose → preview → apply を
+  通しで実行する（apply は M3 で実装済み。accept + digest 検証の上、補正済み DXF を `--out` に書く）。
 - source が変更されていないこと、**preview に出る geometry が proposal だけから決まること**
-  （self-contained。`digest(preview.edges.points) == edgeDigest`）を確認する。apply 実装後は
-  「preview と apply が生成する geometry が一致すること」（T2）を加える。
+  （self-contained。`digest(preview.edges.points) == edgeDigest`）、および **preview と apply が
+  生成する geometry が一致すること**（T2）を確認する。
 - 実行できなかった check があれば理由を明記する。
