@@ -1,10 +1,10 @@
-// The real `slnt edges` runner: shells out to Seamlint's CLI (A1 subprocess) and parses its
-// JSON into the SlntEdgesResult the resolver consumes. This is IO — it lives in the adapter and
-// is injected into core as a plain SlntEdgesRunner, so core/tests stay pure.
+// 実物の `slnt edges` runner: Seamlint の CLI を shell 呼び出しし（A1 subprocess）、その JSON を
+// resolver が消費する SlntEdgesResult に parse する。これは IO — adapter に置き、core へは素の
+// SlntEdgesRunner として注入するので、core/tests は pure に保たれる。
 //
-// The slnt command itself is configured by the CLI (env SEAMLINT_CLI or a default), so "where
-// does slnt live" is a deployment concern, not baked into core. Seamlint is not published yet,
-// so a typical value is `node <path>/src/cli/slnt.ts`.
+// slnt コマンド自体は CLI が設定する（env SEAMLINT_CLI か既定値）ので、「slnt がどこに在るか」は
+// deployment の関心事で、core には焼き込まない。Seamlint はまだ未公開なので、典型的な値は
+// `node <path>/src/cli/slnt.ts`。
 
 import { spawnSync } from "node:child_process";
 import type { Point } from "../../core/proposal/proposalSchema.ts";
@@ -21,9 +21,9 @@ export class SlntRunError extends Error {
 }
 
 export interface SlntRunnerConfig {
-  // The slnt command as an argv array, e.g. ["slnt"] or ["node", ".../src/cli/slnt.ts"].
+  // argv 配列としての slnt コマンド。例: ["slnt"] や ["node", ".../src/cli/slnt.ts"]。
   slntCommand: string[];
-  // The DXF file passed to `slnt edges <dxf> --block <name> --json`.
+  // `slnt edges <dxf> --block <name> --json` に渡す DXF file。
   dxfFile: string;
 }
 
@@ -94,15 +94,15 @@ export function createSlntEdgesRunner(config: SlntRunnerConfig): SlntEdgesRunner
   };
 }
 
-// Splits a command string into argv, respecting single/double quotes so spaces inside a quote
-// survive. A plain whitespace split shatters paths with spaces — a very common Windows case
-// (Program Files, user names with spaces). Quotes may appear anywhere in a token, so both a
-// fully quoted token (`node "C:\\Program Files\\...\\slnt.ts"`) and an inline-quoted flag
-// (`--loader="C:\\Program Files\\tsx\\loader.mjs"`) tokenize correctly. Unquoted whitespace
-// separates tokens; the delimiting quotes are stripped, their contents kept.
+// command 文字列を argv に分割する。single/double quote を尊重し、quote 内の space が残るようにする。
+// 素の whitespace 分割は space を含む path を壊す — Windows でごく一般的（Program Files、space を含む
+// ユーザー名）。quote は token 内のどこにでも現れうるので、完全に quote された token
+//（`node "C:\\Program Files\\...\\slnt.ts"`）も inline quote の flag
+//（`--loader="C:\\Program Files\\tsx\\loader.mjs"`）も正しく tokenize する。quote されていない
+// whitespace が token を区切る; 区切りの quote は剥がし、中身は残す。
 export function tokenizeCommand(command: string): string[] {
-  // A token = one or more adjacent segments, each a quoted run or a run of non-space, non-quote
-  // characters. This keeps `--flag="a b"` as a single token rather than splitting at the space.
+  // token = 隣接する 1 つ以上の segment。各 segment は quote された run か、space でも quote でもない
+  // 文字の run。これで `--flag="a b"` を space で分割せず単一 token として保つ。
   const wordPattern = /(?:[^\s"']+|"[^"]*"|'[^']*')+/g;
   const stripQuotes = /"([^"]*)"|'([^']*)'/g;
   return (command.match(wordPattern) ?? []).map((word) =>
@@ -113,8 +113,8 @@ export function tokenizeCommand(command: string): string[] {
   );
 }
 
-// Resolves the slnt command from the environment (SEAMLINT_CLI, quote-aware tokenized) or falls
-// back to `slnt` on PATH. Kept here so the CLI stays thin.
+// slnt コマンドを environment（SEAMLINT_CLI、quote を意識して tokenize）から解決するか、PATH 上の
+// `slnt` に fallback する。CLI を薄く保つためここに置く。
 export function resolveSlntCommand(env: NodeJS.ProcessEnv = process.env): string[] {
   const configured = env.SEAMLINT_CLI?.trim();
   if (configured) return tokenizeCommand(configured);

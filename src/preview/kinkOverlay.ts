@@ -1,16 +1,15 @@
-// curve_kink overlay panel: renders one curve_kink proposal to an SVG group showing the addressed
-// edge and, for a local-adjustment, the corrected line.
+// curve_kink overlay panel: 1 つの curve_kink proposal を SVG group に描き、addressing した edge と、
+// local-adjustment のときは補正後の line を見せる。
 //
-// The corrected (blue) line is NOT computed here with a preview-only formula — it is
-// applyChanges(edge.points, changes), the SAME function apply uses to write the corrected DXF. So
-// the blue line a human accepts is byte-for-byte the line apply writes (references/
-// critical-invariants.md T2). A preview-only proposal has changes:[], so applyChanges returns the
-// original points unchanged and no blue line is drawn — we never invent a correction that isn't
-// there (T2, T8).
+// 補正後の（青い）line はここで preview 専用の式で計算しない — applyChanges(edge.points, changes)、
+// つまり apply が補正済み DXF を書くのに使うのと同じ関数。だから人間が accept する青い line は apply が
+// 書く line と byte 単位で一致する（references/critical-invariants.md T2）。preview-only proposal は
+// changes:[] なので、applyChanges は original points をそのまま返し、青い line は描かれない — 存在しない
+// 補正を捏造しない（T2、T8）。
 //
-// All layers (original ink line, corrected blue line, red diagnostic point) share ONE projector
-// built from the original edge, so they overlay in a single frame. Pure and self-contained: the
-// panel is a function of the proposal alone (preview.edge.points), no DXF / Seamlint re-call.
+// すべての layer（original の ink line、補正後の青い line、赤い診断点）は original edge から作った
+// 単一の projector を共有するので、1 つの frame に重なる。pure で self-contained: panel は proposal
+// だけの関数（preview.edge.points）で、DXF / Seamlint を呼び直さない。
 
 import type { Proposal } from "../core/proposal/proposalSchema.ts";
 import { applyChanges } from "../core/apply/applyChanges.ts";
@@ -32,7 +31,7 @@ const LABEL_H = 24;
 export const KINK_PANEL_W = PAD * 2 + FRAME;
 export const KINK_PANEL_H = TITLE_H + FRAME + LABEL_H;
 
-// A proposal gets a curve_kink panel when it carries the single addressed edge's render geometry.
+// proposal は addressing した単一 edge の render geometry を持つとき curve_kink panel を得る。
 export function hasKinkOverlay(proposal: Proposal): boolean {
   return (
     proposal.sourceDiagnostic.code === "geometry.curve_kink" &&
@@ -62,10 +61,10 @@ export function renderKinkPanel(proposal: Proposal, yOffset: number): string {
   if (!edge) return "";
   const original = edge.points;
 
-  // The corrected line comes from apply's function, not a preview-only approximation (T2). For a
-  // preview-only proposal changes is [] and this equals `original`, so nothing extra is drawn. If
-  // applyChanges refuses the change (a corrupted proposal with an unknown kind or an endpoint move),
-  // draw no corrected line rather than crash — we never show a "fixed" line apply would reject.
+  // 補正後の line は preview 専用の近似ではなく apply の関数から来る（T2）。preview-only proposal では
+  // changes は [] でこれは `original` と等しいので、余計なものは描かれない。applyChanges が change を
+  // 拒否したら（未知 kind や endpoint move を持つ壊れた proposal）、crash させず補正後の line を描かない
+  // — apply が拒否する「直った」line は決して見せない。
   let corrected: readonly Point[] | undefined;
   if (proposal.changes.length > 0) {
     try {
@@ -78,7 +77,7 @@ export function renderKinkPanel(proposal: Proposal, yOffset: number): string {
   const project = fitProjector(original, FRAME, FRAME);
 
   const layers: string[] = [
-    // Original net line first (dashed when a corrected line will sit on top, so both read).
+    // まず original の net line（補正後の line が上に乗るときは破線にして、両方読めるように）。
     polyline(original, project, INK, 2, corrected !== undefined)
   ];
   if (corrected !== undefined) {

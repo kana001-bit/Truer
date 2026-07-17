@@ -1,19 +1,18 @@
-// Truer proposal file contract (`truer.proposal.v0`).
+// Truer proposal file の contract（`truer.proposal.v0`）。
 //
-// This module owns the *shape* of the proposal file that `tru propose` writes and
-// `tru apply` (and a future Loomit Studio) reads. It is a compatibility surface:
-// required fields are not renamed or removed without an explicit schema break
-// (see references/critical-invariants.md T9, references/testing-proposals.md).
+// このモジュールは、`tru propose` が書き `tru apply`（と将来の Loomit Studio）が読む
+// proposal file の *shape* を所有する。ここは compatibility surface: required field は
+// 明示的な schema break なしに rename・削除しない
+//（references/critical-invariants.md T9、references/testing-proposals.md を参照）。
 //
-// Geometry source is DXF (ASTM) after the 2026-07-11 pivot. The edge to fix is
-// addressed by BLOCK name + `edgeId`/`arcRange` on the Seamlint `structuralEdges`
-// primitive, not by an SVG path id (docs/truer-mvp-spec.md). This `target` re-design
-// is an explicit, documented v0 schema break: nothing consumes the contract yet
-// (apply/preview/Studio are unimplemented), so v0 is re-done in place rather than
-// bumped to v1.
+// Geometry source は 2026-07-11 pivot 以降 DXF (ASTM)。直す edge は SVG path id ではなく、
+// Seamlint `structuralEdges` primitive 上の BLOCK 名 + `edgeId`/`arcRange` で addressing する
+//（docs/truer-mvp-spec.md）。この `target` 再設計は明示的で文書化された v0 schema break:
+// まだ contract を消費するものが無い（apply/preview/Studio は未実装）ので、v1 に上げず
+// v0 をその場で作り直している。
 //
-// It is pure and has no IO. Digests come from ./proposalDigest.ts; assembly from
-// ./createProposalFile.ts.
+// pure で IO を持たない。Digest は ./proposalDigest.ts から、組み立ては
+// ./createProposalFile.ts から来る。
 
 export const PROPOSAL_SCHEMA_V0 = "truer.proposal.v0";
 export type ProposalSchema = typeof PROPOSAL_SCHEMA_V0;
@@ -22,47 +21,47 @@ export type ProposalStatus = "proposed" | "accepted" | "rejected" | "applied";
 export type ProposalMode = "preview-only" | "local-adjustment";
 export type IntentConfidence = "low" | "medium" | "high";
 
-// Change kinds. `apply` dispatches on `kind`; unknown kinds are an explicit error,
-// never a silent skip (T9). New kinds are added in references/extensibility.md.
+// Change kind。`apply` は `kind` で dispatch する; 未知の kind は明示的な error にし、
+// silent skip はしない（T9）。新しい kind は references/extensibility.md で足す。
 //
-// `move-vertex` is the DXF net-line kind: it moves one interior vertex of the addressed
-// edge's flattened polyline to a new point (curve_kink smoothing). Minimal and local — one
-// vertex (T6) — and recorded self-contained so apply never re-solves (T4). Added three-point
-// synced across propose/preview/apply (references/extensibility.md E2): the fix computes it
-// (src/core/fixes/), applyChanges dispatches it (src/core/apply/), and the overlay draws
-// applyChanges' output so preview follows automatically (T2). The apply write target is a
-// Truer-owned corrected DXF (`--out`), not `.val`/Loomit master (M3, 2026-07-16).
+// `move-vertex` は DXF net-line 用の kind: addressing した edge の flattened polyline の
+// 内部 vertex を 1 つ新しい点へ動かす（curve_kink smoothing）。最小・局所 — vertex 1 つ
+//（T6）— で、apply が再計算しないよう self-contained に記録する（T4）。propose/preview/apply の
+// 三点で同期させて追加した（references/extensibility.md E2）: fix が計算し（src/core/fixes/）、
+// applyChanges が dispatch し（src/core/apply/）、overlay は applyChanges の出力を描くので
+// preview は自動で追従する（T2）。apply の書き先は Truer 所有の補正済み DXF（`--out`）で、
+// `.val`/Loomit master ではない（M3、2026-07-16）。
 //
-// `replace-path-data` is a *legacy SVG* kind (operates on a path `d` string), kept for the
-// pre-pivot svg adapter path. It is not a net-line point operation, so applyChanges (which
-// works on DXF net-line points) does not handle it.
+// `replace-path-data` は *legacy SVG* 用の kind（path の `d` 文字列を操作する）で、pivot 前の
+// svg adapter 経路のために残している。net-line point 操作ではないので、applyChanges
+//（DXF net-line point を扱う）はこれを処理しない。
 export type ChangeKind = "replace-path-data" | "move-vertex";
 
-// Seamlint diagnostic codes Truer currently produces correction proposals for.
-// Everything else becomes a `skipped` entry, not a dropped diagnostic (T8).
+// Truer が現在 correction proposal を作る Seamlint diagnostic code。
+// それ以外は diagnostic を捨てず `skipped` entry にする（T8）。
 //
-//   - geometry.curve_kink: single edge + `actual.point`. First-slice preview-only.
-//   - geometry.seam_length_mismatch: a *pair* diagnostic (`target` is "a/b", no
-//     `actual.point`; carries fromLengthMm/toLengthMm/lengthDiffMm). It is addressed
-//     by anchoring on the pair's "from" edge — an addressing anchor for display, NOT a
-//     claim about which edge to change (T6). Which side absorbs Δ, and the apply write
-//     target, are OPEN, so it stays preview-only (`changes: []`) too.
+//   - geometry.curve_kink: 単一 edge + `actual.point`。first slice は preview-only。
+//   - geometry.seam_length_mismatch: *ペア* の diagnostic（`target` は "a/b"、`actual.point`
+//     は無い; fromLengthMm/toLengthMm/lengthDiffMm を持つ）。ペアの "from" edge を anchor に
+//     して addressing する — これは表示用の addressing anchor であって、どちらの edge を
+//     変えるかの主張ではない（T6）。どちらが Δ を吸収するか、そして apply の書き先は未決なので、
+//     これも preview-only（`changes: []`）のまま。
 export const SUPPORTED_DIAGNOSTIC_CODES = [
   "geometry.curve_kink",
   "geometry.seam_length_mismatch"
 ] as const;
 
-// Truer skip-reason codes (stable, english; wording lives in `message`).
-// See references/testing-proposals.md "Codes".
+// Truer の skip-reason code（安定・英語; 文面は `message` に置く）。
+// references/testing-proposals.md の "Codes" を参照。
 export const SKIP_UNSUPPORTED_DIAGNOSTIC_CODE = "proposal.unsupported_diagnostic_code";
-// curve_kink has no valid `actual.point`.
+// curve_kink に有効な `actual.point` が無い。
 export const SKIP_MISSING_DIAGNOSTIC_POINT = "proposal.missing_diagnostic_point";
-// seam_length_mismatch is missing the finite length fields it needs (from/to/diff mm).
+// seam_length_mismatch に必要な有限の length field（from/to/diff mm）が欠けている。
 export const SKIP_MISSING_LENGTH_FIELDS = "proposal.missing_length_fields";
-// DXF addressing: the target BLOCK/edge is absent from, or not unique in, the source.
+// DXF addressing: target の BLOCK/edge が source に無い、または一意でない。
 export const SKIP_TARGET_NOT_FOUND = "proposal.target_not_found";
 export const SKIP_AMBIGUOUS_TARGET = "proposal.ambiguous_target";
-// Legacy SVG path: kept for the pre-pivot svg adapter path, not used by DXF addressing.
+// Legacy SVG path: pivot 前の svg adapter 経路のために残す。DXF addressing では使わない。
 export const SKIP_PATH_NOT_FOUND = "proposal.path_not_found";
 
 export interface Point {
@@ -76,11 +75,11 @@ export interface ReplacePathDataChange {
   to: string;
 }
 
-// Moves one vertex of the addressed edge's net-line polyline to `to`. `vertexIndex` is the
-// 0-based index into the edge's `points` (the same canonical net-line points digested into
-// targetDigest), so apply/preview both reconstruct the corrected edge via applyChanges — the
-// one function — and preview never diverges from apply (T2). Interior vertices only: the fix
-// keeps endpoints untouched (T7) and never emits a move that touches an endpoint.
+// addressing した edge の net-line polyline の vertex を 1 つ `to` へ動かす。`vertexIndex` は
+// edge の `points`（targetDigest に digest したのと同じ canonical な net-line points）への
+// 0 始まり index。だから apply/preview はどちらも applyChanges という単一関数で補正後 edge を
+// 再構成し、preview は apply と決してずれない（T2）。内部 vertex のみ: fix は endpoint を
+// 触らず（T7）、endpoint に触れる move を絶対に emit しない。
 export interface MoveVertexChange {
   kind: "move-vertex";
   vertexIndex: number;
@@ -106,7 +105,7 @@ export interface SourceDiagnostic {
 export interface Intent {
   kind: string;
   confidence: IntentConfidence;
-  // MVP: always true. Seamlint severity is never treated as apply permission (T3).
+  // MVP: 常に true。Seamlint severity を apply 許可として扱うことは無い（T3）。
   reviewRequired: boolean;
 }
 
@@ -115,13 +114,13 @@ export interface MovedPoint {
   to: Point;
 }
 
-// One edge of a seam pair drawn in the preview overlay. Present on seam_length_mismatch
-// proposals (paired with seamReconciliation). `points` is the edge's net-line polyline
-// from Seamlint `structuralEdges`; the overlay draws it directly. The proposal is
-// self-contained: `digestEdgePoints(points)` equals the matching seamReconciliation edge's
-// `edgeDigest`, so the overlay is reproducible from the proposal alone (no DXF / Seamlint
-// re-call at preview time). Render geometry lives here; addressing/identity lives in
-// seamReconciliation — the two are kept separate on purpose.
+// preview overlay に描く seam ペアの片方の edge。seam_length_mismatch proposal に付く
+//（seamReconciliation と対になる）。`points` は Seamlint `structuralEdges` から来る edge の
+// net-line polyline で、overlay はこれを直接描く。proposal は self-contained:
+// `digestEdgePoints(points)` は対応する seamReconciliation edge の `edgeDigest` と一致するので、
+// overlay は proposal だけから再現できる（preview 時に DXF / Seamlint を呼び直さない）。
+// Render geometry はここに、addressing/identity は seamReconciliation に置く — 両者は
+// 意図的に分けている。
 export interface PreviewEdge {
   role: "from" | "to";
   points: Point[];
@@ -130,56 +129,55 @@ export interface PreviewEdge {
 export interface ProposalPreview {
   diagnosticPoint?: Point;
   movedPoints?: MovedPoint[];
-  // Render geometry for the seam overlay (the two mismatched edges). Optional/additive.
+  // seam overlay 用の render geometry（不一致な 2 edge）。任意・追加的。
   edges?: PreviewEdge[];
-  // Render geometry for a single addressed edge (curve_kink): the edge's net-line points. The
-  // overlay draws these as the original line and derives the corrected line via applyChanges (so
-  // preview == apply, T2). Self-contained: digestEdgePoints(edge.points) === target.targetDigest,
-  // pinned by tests. Optional/additive.
+  // addressing した単一 edge（curve_kink）用の render geometry: その edge の net-line points。
+  // overlay はこれを original line として描き、補正後の line は applyChanges で導く（だから
+  // preview == apply、T2）。self-contained: digestEdgePoints(edge.points) === target.targetDigest、
+  // test で固定。任意・追加的。
   edge?: { points: Point[] };
 }
 
 export interface ProposalTarget {
-  // DXF addressing: BLOCK name + edge on the Seamlint `structuralEdges` primitive.
-  // The edge is addressed by `edgeId`, by `arcRange`, or by both — at least one is
-  // required (docs/truer-mvp-spec.md: "BLOCK name + edgeId/arcRange"). Some edges
-  // are only stably identifiable by arcRange, so edgeId is not mandatory.
+  // DXF addressing: BLOCK 名 + Seamlint `structuralEdges` primitive 上の edge。
+  // edge は `edgeId`、`arcRange`、またはその両方で addressing する — 少なくとも一方が
+  // 必要（docs/truer-mvp-spec.md:「BLOCK name + edgeId/arcRange」）。arcRange でしか安定して
+  // 識別できない edge もあるので、edgeId は必須ではない。
   blockName: string;
   edgeId?: string;
-  // Normalized [start, end] slice of the piece loop (Seamlint arcRange): origin at the
-  // first corner, values in 0..1, and start < end (edges are corner-bounded and never
-  // wrap the origin). May address the edge on its own when no stable edgeId is available.
+  // piece loop の正規化された [start, end] slice（Seamlint arcRange）: 原点は最初の corner、
+  // 値は 0..1、start < end（edge は corner 境界で、原点をまたがない）。安定した edgeId が
+  // 無いとき、これ単体で edge を addressing できる。
   arcRange?: [number, number];
-  // Digest of the addressed edge's net-line geometry, checked before apply writes (T3).
+  // addressing した edge の net-line geometry の digest。apply が書く前に照合する（T3）。
   targetDigest: string;
 }
 
-// One edge of a mismatched seam pair. Same DXF addressing as ProposalTarget, plus this
-// edge's own geometry digest and measured length. A seam_length_mismatch proposal records
-// BOTH edges (not just the anchor), so a future apply can gate on the whole pair
-// (references/critical-invariants.md T3; resolves the anchor-only-digest gap).
+// 不一致な seam ペアの片方の edge。ProposalTarget と同じ DXF addressing に加え、この edge 自身の
+// geometry digest と実測長を持つ。seam_length_mismatch proposal は（anchor だけでなく）両方の
+// edge を記録するので、将来の apply がペア全体で gate できる
+//（references/critical-invariants.md T3; anchor だけ digest していた穴を塞ぐ）。
 export interface SeamEdge {
   blockName: string;
   edgeId?: string;
   arcRange?: [number, number];
-  // Digest of this edge's net-line geometry (via digestPathData).
+  // この edge の net-line geometry の digest（digestPathData 経由）。
   edgeDigest: string;
-  // Measured length of this edge in mm (from the diagnostic).
+  // この edge の実測長 mm（diagnostic から）。
   lengthMm: number;
 }
 
-// Models decision 2 (conform-to-reference) for a seam_length_mismatch: one edge is the
-// authoritative `reference` (fixed), the other is adjusted by ±Δ to match. `reference`
-// is undefined until a reference is designated (Loomit/human token); while undefined the
-// proposal stays preview-only presenting both directions and never guesses which edge to
-// change (T6). Present only on seam_length_mismatch proposals.
+// seam_length_mismatch の decision 2（reference に合わせる）を表す: 一方の edge を正とする
+// `reference`（固定）にし、もう一方を ±Δ 調整して合わせる。reference が指定される
+//（Loomit/人間の token）までは `reference` は undefined。undefined の間、proposal は両方向を
+// 提示する preview-only のままで、どちらの edge を変えるか推測しない（T6）。
+// seam_length_mismatch proposal にのみ付く。
 export interface SeamReconciliation {
   fromEdge: SeamEdge;
   toEdge: SeamEdge;
-  // Absolute length gap |fromLen - toLen| in mm. Direction is derivable from `reference`
-  // and the two edge lengths.
+  // 長さの差の絶対値 |fromLen - toLen| mm。向きは `reference` と 2 edge の長さから導ける。
   deltaMm: number;
-  // Which edge is the fixed reference, or undefined = undecided (both directions).
+  // どちらの edge が固定 reference か、undefined = 未決（両方向）。
   reference?: "from" | "to";
 }
 
@@ -190,12 +188,12 @@ export interface Proposal {
   target: ProposalTarget;
   sourceDiagnostic: SourceDiagnostic;
   intent: Intent;
-  // Minimal operation list apply executes. `preview-only` proposals have `[]` (T2).
+  // apply が実行する最小の操作リスト。`preview-only` proposal は `[]`（T2）。
   changes: Change[];
   preview: ProposalPreview;
   notes: string[];
-  // Present only on seam_length_mismatch proposals: the mismatched pair, both edges'
-  // digests, the gap, and which edge (if any) is the reference. Optional/additive.
+  // seam_length_mismatch proposal にのみ付く: 不一致ペア、両 edge の digest、差、そして
+  //（もしあれば）どちらが reference か。任意・追加的。
   seamReconciliation?: SeamReconciliation;
 }
 
@@ -205,12 +203,12 @@ export interface ProposalSource {
   createdBy: string;
 }
 
-// A diagnostic that could not become a proposal. Kept with its reason so nothing
-// is silently discarded (T8). Additive to the file; not a proposal.
+// proposal になれなかった diagnostic。何も silent に捨てないよう理由とともに残す（T8）。
+// file への追加的なもので、proposal ではない。
 export interface SkippedDiagnostic {
-  // Truer skip-reason code (e.g. proposal.unsupported_diagnostic_code).
+  // Truer の skip-reason code（例: proposal.unsupported_diagnostic_code）。
   code: string;
-  // Original diagnostic's own code, preserved for the report.
+  // 元の diagnostic 自身の code。report のために保持する。
   diagnosticCode: string;
   message: string;
   diagnostic: unknown;
@@ -234,11 +232,10 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-// Seamlint arcRange: a normalized [start, end] slice of the piece loop, origin at the
-// first corner, values in 0..1 (Seamlint structuralEdges convention). Edges are corner-bounded and
-// never wrap the origin, so start < end. Reject swapped / out-of-[0,1] ranges here so a
-// malformed addressing (e.g. [0.9, 0.1] or [2, -1]) never reaches a saved proposal and
-// breaks later edge resolution or digest matching.
+// Seamlint arcRange: piece loop の正規化された [start, end] slice、原点は最初の corner、
+// 値は 0..1（Seamlint structuralEdges の規約）。edge は corner 境界で原点をまたがないので
+// start < end。swap 済み / [0,1] 外の range はここで弾き、壊れた addressing（例: [0.9, 0.1] や
+// [2, -1]）が保存された proposal に届いて後の edge resolution や digest 照合を壊さないようにする。
 function isArcRange(value: unknown): value is [number, number] {
   if (!Array.isArray(value) || value.length !== 2) return false;
   const [start, end] = value as [unknown, unknown];
@@ -253,8 +250,8 @@ function isArcRange(value: unknown): value is [number, number] {
   );
 }
 
-// A SeamEdge needs DXF addressing (blockName + edgeId or arcRange, reusing the same T6
-// rule as ProposalTarget), a non-empty digest, and a finite length.
+// SeamEdge には DXF addressing（blockName + edgeId または arcRange。ProposalTarget と同じ T6
+// ルールを再利用）、空でない digest、有限の length が要る。
 function isSeamEdge(value: unknown): value is SeamEdge {
   if (typeof value !== "object" || value === null) return false;
   const edge = value as Record<string, unknown>;
@@ -263,7 +260,7 @@ function isSeamEdge(value: unknown): value is SeamEdge {
   if (typeof edge.lengthMm !== "number" || !Number.isFinite(edge.lengthMm)) return false;
   if (edge.edgeId !== undefined && !isNonEmptyString(edge.edgeId)) return false;
   if (edge.arcRange !== undefined && !isArcRange(edge.arcRange)) return false;
-  // Addressing needs at least one of edgeId / arcRange (T6: never guess the edge).
+  // addressing には edgeId / arcRange の少なくとも一方が要る（T6: edge を推測しない）。
   if (!isNonEmptyString(edge.edgeId) && !isArcRange(edge.arcRange)) return false;
   return true;
 }
@@ -279,9 +276,9 @@ function isFinitePoint(value: unknown): value is Point {
   );
 }
 
-// A preview edge needs a from/to role and at least two finite net-line points (an edge is a
-// polyline: two corners minimum). The digest==edgeDigest invariant is pinned by tests, not
-// here, so validation stays free of the digest module.
+// preview edge には from/to の role と、有限な net-line point が最低 2 つ要る（edge は polyline:
+// 最低 2 corner）。digest==edgeDigest の invariant はここではなく test で固定するので、
+// validation は digest module に依存しない。
 function isPreviewEdge(value: unknown): value is PreviewEdge {
   if (typeof value !== "object" || value === null) return false;
   const edge = value as Record<string, unknown>;
@@ -290,11 +287,11 @@ function isPreviewEdge(value: unknown): value is PreviewEdge {
   return edge.points.every(isFinitePoint);
 }
 
-// Validates one change's recorded shape. A malformed change would make apply write garbage or
-// crash, so it must never reach a saved proposal. Returns a problem string, or undefined if the
-// shape is valid. (Whether apply *supports* the kind at run time is applyChanges' concern — T9;
-// here we check the shape of the kinds this v0 model can emit, and reject unknown kinds so a
-// mis-built file never passes the contract guard.)
+// 記録された 1 change の shape を検証する。壊れた change は apply にゴミを書かせるか crash させる
+// ので、保存された proposal に絶対に届かせない。問題があれば文字列を、shape が正しければ undefined
+// を返す。（実行時に apply がその kind を *サポート* するかは applyChanges の担当 — T9; ここでは
+// この v0 model が emit しうる kind の shape を検査し、未知の kind を弾いて、壊れた file が contract
+// guard を通らないようにする。）
 function changeError(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null) return "must be an object";
   const change = value as Record<string, unknown>;
@@ -349,7 +346,7 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
         `${at}.target.arcRange must be a normalized [start, end] with 0 <= start < end <= 1`
       );
     }
-    // Addressing needs at least one of edgeId / arcRange (T6: never guess the edge).
+    // addressing には edgeId / arcRange の少なくとも一方が要る（T6: edge を推測しない）。
     if (!isNonEmptyString(target.edgeId) && !isArcRange(target.arcRange)) {
       errors.push(`${at}.target must address the edge by edgeId or arcRange`);
     }
@@ -368,18 +365,18 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
   if (!Array.isArray(proposal.changes)) {
     errors.push(`${at}.changes must be an array`);
   } else if (proposal.mode === "preview-only" && proposal.changes.length !== 0) {
-    // T2: a preview-only proposal shows nothing to apply.
+    // T2: preview-only proposal は apply するものを何も見せない。
     errors.push(`${at} is preview-only but carries changes`);
   } else {
-    // local-adjustment carries changes; validate each one's shape so a malformed change never
-    // reaches apply (T9). preview-only has [] and this loop is a no-op.
+    // local-adjustment は changes を持つ; 壊れた change が apply に届かないよう各 shape を
+    // 検証する（T9）。preview-only は [] なのでこの loop は no-op。
     proposal.changes.forEach((change, changeIndex) => {
       const problem = changeError(change);
       if (problem !== undefined) errors.push(`${at}.changes[${changeIndex}] ${problem}`);
     });
   }
 
-  // seamReconciliation is optional/additive; validate only when present.
+  // seamReconciliation は任意・追加的; 存在するときだけ検証する。
   if (proposal.seamReconciliation !== undefined) {
     const seam = proposal.seamReconciliation as Record<string, unknown>;
     if (typeof seam !== "object" || seam === null) {
@@ -400,8 +397,8 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
     }
   }
 
-  // preview.edges (seam overlay render geometry) is optional/additive; validate shape only
-  // when present.
+  // preview.edges（seam overlay の render geometry）は任意・追加的; 存在するときだけ shape を
+  // 検証する。
   const preview = proposal.preview as Record<string, unknown> | undefined;
   if (preview && preview.edges !== undefined) {
     if (!Array.isArray(preview.edges)) {
@@ -415,8 +412,8 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
     }
   }
 
-  // preview.edge (single addressed edge render geometry, curve_kink) is optional/additive; validate
-  // shape only when present. An edge is a polyline: two finite net-line points minimum.
+  // preview.edge（addressing した単一 edge の render geometry、curve_kink）は任意・追加的; 存在する
+  // ときだけ shape を検証する。edge は polyline: 有限な net-line point が最低 2 つ。
   if (preview && preview.edge !== undefined) {
     const edge = preview.edge as Record<string, unknown>;
     if (
@@ -430,11 +427,11 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
     }
   }
 
-  // A move-vertex change edits one vertex of the addressed edge's net line, so the proposal MUST
-  // carry that edge's render geometry (preview.edge). Without it, the correction is applyable but the
-  // overlay shows nothing — a human could accept a line they never saw, breaking "don't apply what
-  // wasn't seen". And the moved vertex must be INTERIOR (never an endpoint, T7). Cross-check here so a
-  // hand-edited proposal that omits preview.edge or points at an endpoint fails the contract.
+  // move-vertex change は addressing した edge の net line の vertex を 1 つ編集するので、proposal は
+  // その edge の render geometry（preview.edge）を必ず持たねばならない。無いと、補正は applyable
+  // なのに overlay が何も見せない — 人間が見たことのない線を accept でき、「見ていないものを apply
+  // しない」を破る。そして動かす vertex は内部でなければならない（endpoint は不可、T7）。ここで
+  // cross-check し、preview.edge を欠くか endpoint を指す手編集 proposal が contract を通らないようにする。
   const changeList: unknown[] = Array.isArray(proposal.changes) ? proposal.changes : [];
   const moveVertexChanges = changeList.filter(
     (change): change is Record<string, unknown> =>
@@ -464,9 +461,8 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
   }
 }
 
-// Validates the file's required fields. Returns a list of human-readable errors;
-// an empty list means the file satisfies the v0 contract. Used both as an internal
-// guard in createProposalFile and by tests (T9).
+// file の required field を検証する。人間が読める error のリストを返す; 空リストは file が v0
+// contract を満たすことを意味する。createProposalFile 内の内部 guard としても、test からも使う（T9）。
 export function validateProposalFile(file: unknown): string[] {
   const errors: string[] = [];
   if (typeof file !== "object" || file === null) {

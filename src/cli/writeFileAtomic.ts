@@ -1,8 +1,8 @@
-// Atomic file write for apply's `--out`: write a temp file in the SAME directory, then rename over
-// the target. If apply crashes mid-write (error / disk full / Ctrl-C), the target is never left
-// half-written — the reader always sees the old file or the complete new one
-// (references/critical-invariants.md T1; mirrors Loomit's R1). The temp lives beside the target so
-// the rename stays on one volume.
+// apply の `--out` 用の atomic file write: 同じディレクトリに temp file を書き、target の上に rename する。
+// apply が書き込み途中で crash（error / disk full / Ctrl-C）しても、target が半分だけ書かれた状態に残る
+// ことは決してない — 読み手は常に古い file か完全な新しい file のどちらかを見る
+//（references/critical-invariants.md T1; Loomit の R1 に倣う）。temp は target の隣に置くので、rename は
+// 1 つの volume に収まる。
 
 import { rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";

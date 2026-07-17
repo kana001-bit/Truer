@@ -1,23 +1,22 @@
-// The single function that turns a proposal's `changes` into corrected edge geometry.
+// proposal の `changes` を補正後 edge geometry へ変換する単一の関数。
 //
-// Both `preview` (the overlay's blue "after" line) and `apply` (what gets written to the
-// corrected DXF) go through THIS function — never a second, preview-only approximation — so
-// the line a human accepts in preview is byte-for-byte the line apply writes
-// (references/critical-invariants.md T2). apply also does not re-run any fix solver: it just
-// replays the recorded `changes` (T4).
+// `preview`（overlay の青い "after" line）も `apply`（補正済み DXF に書かれるもの）も、どちらも
+// この関数を通る — preview 専用の別近似は決して作らない — ので、人間が preview で accept する line は
+// apply が書く line と byte 単位で一致する（references/critical-invariants.md T2）。apply は fix solver を
+// 再実行もしない: 記録された `changes` を再生するだけ（T4）。
 //
-// Pure and deterministic (T10): same points + same changes -> same output, no IO / time /
-// randomness. Operates on the addressed edge's net-line points (DXF flattened polyline). Unknown
-// change kinds are an explicit error, never a silent skip (T9).
+// pure かつ決定的（T10）: 同じ points + 同じ changes -> 同じ出力、IO / 時刻 / 乱数なし。
+// addressing した edge の net-line points（DXF flattened polyline）を操作する。未知の change kind は
+// 明示的な error にし、silent skip はしない（T9）。
 
 import type { Change, Point } from "../proposal/proposalSchema.ts";
 
 export const APPLY_UNSUPPORTED_CHANGE_KIND = "apply.unsupported_change_kind";
 export const APPLY_ENDPOINT_MOVE_FORBIDDEN = "apply.endpoint_move_forbidden";
 
-// Thrown when a change carries a kind applyChanges cannot execute on net-line points. The CLI
-// turns this into an `apply.unsupported_change_kind` error report rather than writing anything
-// (T9); it never silently drops the change.
+// change が applyChanges では net-line points 上で実行できない kind を持つとき throw する。CLI は
+// これを何も書かず `apply.unsupported_change_kind` の error report に変える（T9）; change を silent に
+// 捨てることは決してしない。
 export class UnsupportedChangeKindError extends Error {
   readonly code = APPLY_UNSUPPORTED_CHANGE_KIND;
   readonly kind: string;
@@ -29,10 +28,10 @@ export class UnsupportedChangeKindError extends Error {
   }
 }
 
-// Thrown when a move-vertex change targets an edge endpoint (first or last vertex). Endpoints carry
-// seam / notch / closure meaning, so the first slice never moves them (T7). The curve_kink fix never
-// emits such a change; this is the apply/preview backstop against a hand-edited or corrupted proposal
-// slipping an endpoint move past validation.
+// move-vertex change が edge の endpoint（最初か最後の vertex）を対象にしたとき throw する。endpoint は
+// seam / notch / 閉じ線の意味を持つので、first slice では決して動かさない（T7）。curve_kink fix は
+// そんな change を emit しない; これは手編集や壊れた proposal が endpoint move を validation すり抜けで
+// 通したときの apply/preview 側の最後の砦。
 export class EndpointMoveError extends Error {
   readonly code = APPLY_ENDPOINT_MOVE_FORBIDDEN;
   readonly vertexIndex: number;
@@ -46,10 +45,10 @@ export class EndpointMoveError extends Error {
   }
 }
 
-// Applies `changes` in order to a copy of `points`, returning the corrected net-line points.
-// The input is never mutated (purity). Coordinates are copied verbatim from the recorded change
-// — the fix already did the (rounded, deterministic) geometry math, so apply introduces no new
-// rounding of its own (T10: rounding lives at the fix's emit boundary, not here).
+// `points` のコピーに `changes` を順に適用し、補正後の net-line points を返す。入力は決して mutate
+// しない（purity）。座標は記録された change からそのままコピーする — fix が既に（丸め済み・決定的な）
+// geometry 計算を済ませているので、apply は自前の新たな丸めを持ち込まない（T10: 丸めは fix の emit
+// 境界にあり、ここには無い）。
 export function applyChanges(points: readonly Point[], changes: readonly Change[]): Point[] {
   let result: Point[] = points.map((point) => ({ x: point.x, y: point.y }));
   for (const change of changes) {
@@ -63,15 +62,15 @@ function applyOne(points: Point[], change: Change): Point[] {
     case "move-vertex": {
       const { vertexIndex } = change;
       if (vertexIndex < 0 || vertexIndex >= points.length) {
-        // A recorded index outside the edge means the proposal and the edge disagree; refuse
-        // rather than write a garbled line. (The digest gate should catch a changed edge before
-        // this, but applyChanges stays defensive so it never emits NaN or an out-of-range write.)
+        // 記録された index が edge の外なら、proposal と edge が食い違っている; 崩れた line を書く
+        // より拒否する。（変わった edge は手前の digest gate が捕らえるはずだが、applyChanges は
+        // NaN や範囲外書き込みを絶対に emit しないよう defensive に構える。）
         throw new RangeError(
           `move-vertex vertexIndex ${vertexIndex} is out of range for an edge with ${points.length} points`
         );
       }
-      // T7: never move an endpoint, even if a hand-edited proposal asks for it. The fix only ever
-      // targets interior vertices; this is the last line of defense before a physical write.
+      // T7: 手編集 proposal が要求しても endpoint は決して動かさない。fix は内部 vertex しか対象に
+      // しない; これは物理的な書き込み前の最後の防御線。
       if (vertexIndex === 0 || vertexIndex === points.length - 1) {
         throw new EndpointMoveError(vertexIndex, points.length);
       }
@@ -79,9 +78,9 @@ function applyOne(points: Point[], change: Change): Point[] {
       next[vertexIndex] = { x: change.to.x, y: change.to.y };
       return next;
     }
-    // `replace-path-data` is a legacy SVG kind (operates on a path `d` string, not net-line
-    // points), so it cannot be applied here. Treat it — and any future/unknown kind — as an
-    // explicit unsupported-kind error (T9), never a silent skip.
+    // `replace-path-data` は legacy SVG 用の kind（net-line points ではなく path の `d` 文字列を
+    // 操作する）なので、ここでは適用できない。これも — そして将来の / 未知の kind も — 明示的な
+    // unsupported-kind error として扱う（T9）、silent skip はしない。
     default:
       throw new UnsupportedChangeKindError((change as Change).kind);
   }

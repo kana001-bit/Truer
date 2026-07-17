@@ -8,9 +8,9 @@ import {
   editNetLineVertex
 } from "../src/adapters/dxf/editNetLineVertex.ts";
 
-// A minimal ASTM-shaped DXF: one BLOCK "BODY" with a layer-1 outline and a layer-14 net line. The
-// layer-1 outline shares the vertex (0,0) with the net line on purpose, to prove the editor only
-// touches layer 14. The net line has a distinct vertex (20,40) we move.
+// 最小の ASTM 形 DXF: layer-1 outline と layer-14 net line を持つ BLOCK "BODY" 1 つ。layer-1 outline は
+// 意図的に net line と vertex (0,0) を共有し、editor が layer 14 だけを触ることを示す。net line には
+// 動かす専用の vertex (20,40) がある。
 const DXF = [
   "0",
   "SECTION",
@@ -91,7 +91,7 @@ test("editNetLineVertex moves the matched layer-14 vertex and preserves every ot
   const changed = before
     .map((line, index) => (line === after[index] ? -1 : index))
     .filter((index) => index >= 0);
-  // Exactly two lines change: the x value line and the y value line of the (20,40) vertex.
+  // 変わる行はちょうど 2 つ: (20,40) vertex の x 値行と y 値行。
   assert.equal(changed.length, 2);
   assert.equal(before[changed[0]!], "20");
   assert.equal(after[changed[0]!], "20.5");
@@ -100,7 +100,7 @@ test("editNetLineVertex moves the matched layer-14 vertex and preserves every ot
 });
 
 test("editNetLineVertex ignores a coordinate that lives only on layer 1, not layer 14", () => {
-  // (60,60) is a layer-1 outline vertex, not on the layer-14 net line, so it must not be found.
+  // (60,60) は layer-1 outline の vertex で layer-14 net line には無いので、見つかってはならない。
   assert.throws(
     () => editNetLineVertex(DXF, "BODY", { x: 60, y: 60 }, { x: 61, y: 61 }),
     (error: unknown) => error instanceof DxfEditError && error.code === DXF_VERTEX_NOT_FOUND
@@ -122,7 +122,7 @@ test("editNetLineVertex refuses a wrong block name (vertex not found there)", ()
 });
 
 test("editNetLineVertex refuses an ambiguous match rather than guess (T6/T8)", () => {
-  // Two identical layer-14 vertices at (7,7): the editor must not pick one.
+  // (7,7) に同一の layer-14 vertex が 2 つ: editor はどちらか 1 つを選んではならない。
   const ambiguous = [
     "0",
     "SECTION",
@@ -175,7 +175,7 @@ test("editNetLineVertex refuses an ambiguous match rather than guess (T6/T8)", (
 test("editNetLineVertex preserves CRLF separators when the source uses them", () => {
   const crlf = DXF.replace(/\n/g, "\r\n");
   const out = editNetLineVertex(crlf, "BODY", { x: 20, y: 40 }, { x: 20.5, y: 2.5 });
-  // Still CRLF, and the vertex moved.
+  // 依然 CRLF で、vertex は動いた。
   assert.ok(out.includes("\r\n"));
   assert.ok(!/[^\r]\n/.test(out), "no bare LF introduced");
   assert.ok(out.includes("20.5\r\n"));
