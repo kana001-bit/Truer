@@ -1,11 +1,11 @@
-// Seamlint report -> internal DiagnosticInput[]. This adapter is the ONLY place that knows
-// Seamlint's report JSON shape; core (createProposalFile) stays agnostic to it
-// (references/implementation-rules.md Module Boundaries: "core は Seamlint の JSON 形に直接依存
-// しない").
+// Seamlint report -> 内部の DiagnosticInput[]。この adapter は Seamlint の report JSON の shape を
+// 知る唯一の場所; core（createProposalFile）はそれに依存しない
+//（references/implementation-rules.md の Module Boundaries:「core は Seamlint の JSON 形に直接依存
+// しない」）。
 //
-// Accepts either a Seamlint CheckReport or a GeometryRequestReport — both carry a flat
-// `diagnostics` array (GeometryRequestReport already flattens across checks). The report is
-// external, parsed JSON, so this is defensive: it validates shape and never trusts fields.
+// Seamlint CheckReport でも GeometryRequestReport でも受ける — どちらも平坦な `diagnostics` 配列を
+// 持つ（GeometryRequestReport は check をまたいで既に平坦化済み）。report は外部の parse 済み JSON
+// なので、これは defensive: shape を検証し、field を決して信頼しない。
 
 import type { DiagnosticInput } from "../../core/proposal/createProposalFile.ts";
 
@@ -24,9 +24,9 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-// Maps one Seamlint diagnostic to the subset Truer reads. `actual` (which carries
-// fromEdge/toEdge addresses and the length fields) is passed through as-is under its index
-// signature; the resolver, not this adapter, interprets it.
+// 1 つの Seamlint diagnostic を Truer が読む部分集合へ写す。`actual`（fromEdge/toEdge の address と
+// length field を持つ）は index signature の下でそのまま通す; それを解釈するのは この adapter では
+// なく resolver。
 function toDiagnosticInput(raw: unknown, index: number): DiagnosticInput {
   if (!isObject(raw)) {
     throw new SeamlintReportError(`diagnostics[${index}] must be an object.`);

@@ -65,9 +65,9 @@ test("renderProposalPreview draws both edges and the Δ for a seam proposal", ()
   const svg = renderProposalPreview(seamProposalFile());
   assert.match(svg, /^<svg xmlns/);
   assert.match(svg, /<\/svg>/);
-  // Both mismatched edges are drawn as polylines.
+  // 不一致な 2 edge がどちらも polyline として描かれる。
   assert.equal((svg.match(/<polyline /g) ?? []).length, 2);
-  // Δ and both edge labels are annotated so the mismatch is legible.
+  // Δ と両 edge の label が注記され、mismatch が読み取れる。
   assert.match(svg, /Δ 7\.8 mm/);
   assert.match(svg, /from · BACK\/1 · 814\.6 mm/);
   assert.match(svg, /to · FRONT\/1 · 806\.7 mm/);
@@ -86,8 +86,8 @@ test("renderProposalPreview is deterministic", () => {
   assert.equal(renderProposalPreview(file), renderProposalPreview(file));
 });
 
-// A single edge with an interior kink at index 2 (20,40). The diagnostic point equals that vertex,
-// so the fix maps it and (for an interior vertex) produces a local-adjustment.
+// index 2（20,40）に内部 kink を持つ単一 edge。診断点はその vertex に等しいので、fix は対応づけ、
+//（内部 vertex なので）local-adjustment を生む。
 const KINK_POINTS = [
   { x: 0, y: 0 },
   { x: 10, y: 5 },

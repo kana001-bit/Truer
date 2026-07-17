@@ -1,13 +1,13 @@
-// Resolves BOTH edges of a geometry.seam_length_mismatch to their net-line points, by shelling
-// out to Seamlint's `slnt edges` (A1: subprocess, not library import — the consumption path is
-// Seamlint's documented CLI/structuralEdges contract, not its internals).
+// geometry.seam_length_mismatch の両 edge を net-line points に解決する。Seamlint の `slnt edges` を
+// shell 呼び出しして行う（A1: library import ではなく subprocess — 消費経路は Seamlint の文書化された
+// CLI/structuralEdges contract であって、その内部実装ではない）。
 //
-// The diagnostic already carries each side's address `actual.fromEdge/toEdge =
-// { blockName, edgeId, arcRange }` (Seamlint edge-addressing bridge). This resolver uses those
-// addresses to pull the edge's `points` from `slnt edges`, coerces edgeId (number -> string),
-// and takes each side's length from the diagnostic's fromLengthMm/toLengthMm (what the mismatch
-// is measured on). Which side absorbs Δ stays undecided (no Loomit/human reference token yet),
-// so the pair is presented both directions (T6) and the proposal stays preview-only.
+// diagnostic は既に各辺の address `actual.fromEdge/toEdge = { blockName, edgeId, arcRange }` を持つ
+//（Seamlint edge-addressing bridge）。この resolver はその address を使って edge の `points` を
+// `slnt edges` から取り、edgeId を変換し（number -> string）、各辺の長さは diagnostic の
+// fromLengthMm/toLengthMm（mismatch を測っている値）から取る。どちらが Δ を吸収するかは未決のまま
+//（まだ Loomit/人間の reference token が無い）なので、ペアは両方向で提示し（T6）、proposal は
+// preview-only のまま。
 
 import type {
   DiagnosticInput,
@@ -18,9 +18,9 @@ import type { Point } from "../../core/proposal/proposalSchema.ts";
 import { readEdgeAddress } from "./edgeAddress.ts";
 import type { EdgeAddress } from "./edgeAddress.ts";
 
-// The subset of `slnt edges --json` output this resolver consumes: each edge's id and points.
-// Extra fields (arcRange/lengthMm/darts/notches/...) are ignored here — addresses and lengths
-// come from the diagnostic.
+// この resolver が消費する `slnt edges --json` 出力の部分集合: 各 edge の id と points。
+// 余分な field（arcRange/lengthMm/darts/notches/...）はここでは無視する — address と length は
+// diagnostic から来る。
 export interface SlntEdge {
   edgeId: number;
   points: Point[];
@@ -31,9 +31,9 @@ export interface SlntEdgesResult {
   edges: SlntEdge[];
 }
 
-// Runs `slnt edges <dxf> --block <blockName> --json` and returns the parsed result. Injected so
-// core and tests stay pure and the "where does slnt live" decision is a CLI concern. May throw
-// if slnt fails to run (systemic) — that propagates; a merely-missing edge returns not-found.
+// `slnt edges <dxf> --block <blockName> --json` を実行し、parse 済みの結果を返す。core と tests を
+// pure に保ち「slnt がどこに在るか」の判断を CLI の関心事にするため注入する。slnt の実行が失敗
+//（systemic）すると throw しうる — それは伝播する; 単に edge が無いだけなら not-found を返す。
 export type SlntEdgesRunner = (blockName: string) => SlntEdgesResult;
 
 function numberOr(value: unknown, fallback: number): number {
@@ -50,7 +50,7 @@ function resolveEdge(
   if (!edge || !Array.isArray(edge.points) || edge.points.length < 2) return undefined;
   return {
     blockName: address.blockName,
-    edgeId: String(address.edgeId), // Seamlint emits number; Truer's schema uses string.
+    edgeId: String(address.edgeId), // Seamlint は number で出す; Truer の schema は string を使う。
     ...(address.arcRange ? { arcRange: address.arcRange } : {}),
     points: edge.points,
     lengthMm
@@ -60,8 +60,8 @@ function resolveEdge(
 export function buildResolveSeamPair(
   runEdges: SlntEdgesRunner
 ): (diagnostic: DiagnosticInput) => SeamPairResolution {
-  // Query each BLOCK's edges at most once per propose run (a report may hold several mismatches
-  // over the same blocks). Keeps propose deterministic and avoids redundant subprocess spawns.
+  // 各 BLOCK の edges を propose run ごとに高々 1 回だけ問い合わせる（1 つの report が同じ block 上に
+  // 複数の mismatch を持ちうる）。propose を決定的に保ち、冗長な subprocess 起動を避ける。
   const cache = new Map<string, SlntEdgesResult>();
   const cachedRun: SlntEdgesRunner = (blockName) => {
     const hit = cache.get(blockName);
@@ -75,14 +75,14 @@ export function buildResolveSeamPair(
     const actual = diagnostic.actual;
     const fromAddress = readEdgeAddress(actual?.fromEdge);
     const toAddress = readEdgeAddress(actual?.toEdge);
-    // No edge addresses (e.g. sewn-seam whole-path) -> not a pair we can resolve.
+    // edge address が無い（例: 縫い合わせ seam の whole-path）-> 解決できるペアではない。
     if (!fromAddress || !toAddress) return { status: "not-found" };
 
     const fromEdge = resolveEdge(fromAddress, numberOr(actual?.fromLengthMm, 0), cachedRun);
     const toEdge = resolveEdge(toAddress, numberOr(actual?.toLengthMm, 0), cachedRun);
     if (!fromEdge || !toEdge) return { status: "not-found" };
 
-    // reference undecided (no Loomit/human token) -> both directions presented (T6).
+    // reference は未決（Loomit/人間の token 無し）-> 両方向を提示する（T6）。
     return { status: "resolved", fromEdge, toEdge };
   };
 }

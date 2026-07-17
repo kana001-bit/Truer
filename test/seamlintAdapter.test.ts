@@ -13,8 +13,8 @@ import { createProposalFile } from "../src/core/proposal/createProposalFile.ts";
 import { validateProposalFile } from "../src/core/proposal/proposalSchema.ts";
 import { digestEdgePoints } from "../src/core/proposal/proposalDigest.ts";
 
-// A real Seamlint seam_length_mismatch report (shape from docs/diagnostics.md): the diagnostic
-// carries each side's address in actual.fromEdge / actual.toEdge.
+// 実際の Seamlint seam_length_mismatch report（shape は docs/diagnostics.md 由来）: diagnostic は
+// 各辺の address を actual.fromEdge / actual.toEdge に持つ。
 function seamReport() {
   return {
     status: "warning",
@@ -50,8 +50,8 @@ const FRONT_POINTS = [
   { x: 9, y: 806.722 }
 ];
 
-// Fake `slnt edges` runner: returns canned structural edges per BLOCK and records the blocks it
-// was asked for (so we can assert the per-block cache).
+// 偽の `slnt edges` runner: BLOCK ごとに用意した structural edges を返し、問い合わせられた block を
+// 記録する（per-block cache を assert できるように）。
 function fakeRunner(calls: string[]): SlntEdgesRunner {
   return (blockName): SlntEdgesResult => {
     calls.push(blockName);
@@ -104,27 +104,27 @@ test("buildResolveSeamPair resolves both edges from slnt edges (edgeId coerced t
 
   assert.equal(result.status, "resolved");
   if (result.status !== "resolved") return;
-  // from = BACK edge 1: points from the runner, length from the diagnostic, edgeId as string.
+  // from = BACK edge 1: points は runner から、length は diagnostic から、edgeId は string。
   assert.equal(result.fromEdge.blockName, "BACK");
   assert.equal(result.fromEdge.edgeId, "1");
   assert.deepEqual(result.fromEdge.arcRange, [0.112, 0.471]);
   assert.deepEqual(result.fromEdge.points, BACK_POINTS);
   assert.equal(result.fromEdge.lengthMm, 814.568);
-  // to = FRONT edge 1.
+  // to = FRONT edge 1。
   assert.deepEqual(result.toEdge.points, FRONT_POINTS);
   assert.equal(result.toEdge.edgeId, "1");
   assert.equal(result.toEdge.lengthMm, 806.722);
 });
 
 test("buildResolveSeamPair returns not-found for a missing address or a missing edge", () => {
-  // sewn-seam whole-path mismatch: no fromEdge/toEdge address -> not-found (never guessed).
+  // 縫い合わせ seam の whole-path mismatch: fromEdge/toEdge address が無い -> not-found（推測しない）。
   const noAddress = {
     code: "geometry.seam_length_mismatch",
     actual: { fromLengthMm: 1, toLengthMm: 2 }
   };
   assert.equal(buildResolveSeamPair(fakeRunner([]))(noAddress).status, "not-found");
 
-  // Address points at an edgeId the BLOCK does not have -> not-found.
+  // address が BLOCK に無い edgeId を指す -> not-found。
   const badEdge = {
     code: "geometry.seam_length_mismatch",
     actual: {
@@ -159,7 +159,7 @@ test("buildResolveSeamPair resolves an address with edgeId but no arcRange (edge
   assert.equal(result.fromEdge.arcRange, undefined);
   assert.deepEqual(result.fromEdge.points, BACK_POINTS);
 
-  // A malformed arcRange is dropped (not carried into an invalid proposal), edgeId still resolves.
+  // 壊れた arcRange は捨てる（無効な proposal に持ち込まない）、edge は edgeId で依然解決する。
   const badArc = {
     code: "geometry.seam_length_mismatch",
     actual: {
@@ -174,7 +174,7 @@ test("buildResolveSeamPair resolves an address with edgeId but no arcRange (edge
   if (badResult.status !== "resolved") return;
   assert.equal(badResult.fromEdge.arcRange, undefined);
 
-  // End to end: the resulting proposal validates (addressed by edgeId alone).
+  // end to end: 出来た proposal は validation を通る（edgeId だけで addressing）。
   const file = createProposalFile({
     sourceFile: "x.dxf",
     sourceText: "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
@@ -188,8 +188,8 @@ test("buildResolveSeamPair resolves an address with edgeId but no arcRange (edge
   assert.equal(file.proposals[0]!.target.edgeId, "1");
 });
 
-// curve_kink single-edge address (DXF closed-loop): the interior kink at (50,112) on edge 2 of BODY,
-// with Seamlint's exact vertexIndex (index into the same edge points Truer fetches from `slnt edges`).
+// curve_kink の単一 edge address（DXF closed-loop）: BODY の edge 2 上、(50,112) の内部 kink。
+// Seamlint の正確な vertexIndex 付き（Truer が `slnt edges` から取るのと同じ edge points への index）。
 const KINK_EDGE_POINTS = [
   { x: 100, y: 100 },
   { x: 50, y: 112 },
@@ -291,6 +291,6 @@ test("adapter + createProposalFile produce a self-contained overlay proposal", (
   assert.equal(edges.length, 2);
   const fromEdge = edges.find((edge) => edge.role === "from")!;
   assert.deepEqual(fromEdge.points, BACK_POINTS);
-  // Self-contained: the drawn points digest to the recorded edgeDigest.
+  // self-contained: 描く points は記録された edgeDigest に digest される。
   assert.equal(digestEdgePoints(fromEdge.points), proposal.seamReconciliation!.fromEdge.edgeDigest);
 });

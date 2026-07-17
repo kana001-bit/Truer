@@ -1,6 +1,6 @@
-// Seamlint adapter: everything that talks to Seamlint. Reads Seamlint reports into internal
-// diagnostics, and resolves seam-pair edge geometry via Seamlint's `slnt edges` (A1 subprocess).
-// Core does not depend on Seamlint's JSON shapes; this boundary does.
+// Seamlint adapter: Seamlint とやり取りするものすべて。Seamlint report を内部 diagnostics へ読み込み、
+// seam-pair の edge geometry を Seamlint の `slnt edges`（A1 subprocess）で解決する。
+// core は Seamlint の JSON shape に依存しない; この境界が依存する。
 
 export {
   parseSeamlintReport,

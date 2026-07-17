@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Truer CLI entry. The CLI layer owns argument parsing, file IO, stdout/stderr, and exit status;
-// core stays pure. `propose` reads a Seamlint report + a DXF, builds a proposal file (and, with
-// --preview, an overlay SVG). `apply` writes the accepted proposals' corrected geometry into a
-// Truer-owned DXF at --out (M3: the write target is a corrected DXF for this cut, not .val/Loomit).
+// Truer CLI の入口。CLI 層は引数 parsing・file IO・stdout/stderr・exit status を持つ; core は pure の
+// まま。`propose` は Seamlint report + DXF を読み、proposal file を（--preview 付きなら overlay SVG も）
+// 作る。`apply` は accept された proposal の補正 geometry を、--out の Truer 所有 DXF に書く
+//（M3: 書き先はこの裁断用の補正済み DXF であって、.val/Loomit ではない）。
 
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -102,7 +102,7 @@ function parseApplyArgs(args: string[]): ApplyOptions {
     } else if (arg === "--slnt") {
       options.slnt = requireValue(arg, args[++index]);
     } else if (arg === "--accepted") {
-      // Consume following non-flag tokens as proposal ids.
+      // 続く非 flag token を proposal id として取り込む。
       while (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
         options.accepted.push(args[++index]!);
       }
@@ -161,9 +161,9 @@ async function runPropose(args: string[]): Promise<number> {
     sourceFile: options.dxfFile,
     sourceText: dxfText,
     diagnostics,
-    // curve_kink resolves its single edge from the diagnostic's actual.edge address (Seamlint
-    // edge-addressing bridge). Absent an address, it returns not-found and the diagnostic is
-    // skipped, never guessed (T6 / T8).
+    // curve_kink は単一 edge を diagnostic の actual.edge address から解決する（Seamlint
+    // edge-addressing bridge）。address が無ければ not-found を返し、diagnostic は skip される、
+    // 推測はしない（T6 / T8）。
     resolveTarget: buildResolveTarget(runEdges),
     resolveSeamPair: buildResolveSeamPair(runEdges)
   });
@@ -197,8 +197,8 @@ async function runApply(args: string[]): Promise<number> {
     return 2;
   }
 
-  // Never write over the source: apply is --out only, in-place is forbidden (T1). Case-insensitive
-  // on Windows so a case-only difference (C:\Foo vs c:\foo = same file) still trips the guard.
+  // source の上書きは決してしない: apply は --out のみ、in-place は禁止（T1）。Windows では
+  // case を無視するので、大文字小文字だけの違い（C:\Foo と c:\foo = 同じ file）でも guard に掛かる。
   if (isSameFilePath(options.out, options.dxfFile)) {
     process.stderr.write(
       "tru apply: apply.out_overwrites_source: --out must not be the source DXF path.\n"
@@ -236,7 +236,7 @@ async function runApply(args: string[]): Promise<number> {
       getCurrentPoints
     });
   } catch (error) {
-    // e.g. the slnt subprocess failed to run (systemic). Fail before writing anything.
+    // 例: slnt subprocess の実行が失敗（systemic）。何か書く前に失敗させる。
     process.stderr.write(`tru apply: ${errorMessage(error)}\n`);
     return 1;
   }
@@ -246,7 +246,7 @@ async function runApply(args: string[]): Promise<number> {
     return 1;
   }
 
-  // Splice each vertex edit into the DXF, preserving every other byte (T6).
+  // 各 vertex edit を DXF に差し込む。他のすべての byte は保つ（T6）。
   let resultText = dxfText;
   try {
     for (const edit of plan.edits) {

@@ -23,8 +23,8 @@ import type { Point, ProposalFile } from "../src/core/proposal/proposalSchema.ts
 import { digestEdgePoints, digestText } from "../src/core/proposal/proposalDigest.ts";
 import { editNetLineVertex } from "../src/adapters/dxf/editNetLineVertex.ts";
 
-// A net line with an interior kink at index 2 (20,40); its neighbours are not colinear-with it, so
-// the chord projection moves it in both x and y.
+// index 2（20,40）に内部 kink を持つ net line; 両隣とは共線でないので、弦への射影は x と y の
+// 両方で動かす。
 const EDGE_POINTS: Point[] = [
   { x: 0, y: 0 },
   { x: 10, y: 10 },
@@ -42,7 +42,7 @@ const DXF = [
   "BLOCK",
   "2",
   "BODY",
-  // layer-1 outline (encloses the net line; not touched by the editor)
+  // layer-1 outline（net line を囲む; editor は触らない）
   "0",
   "POLYLINE",
   "8",
@@ -75,7 +75,7 @@ const DXF = [
   "60",
   "0",
   "SEQEND",
-  // layer-14 net line = EDGE_POINTS
+  // layer-14 の net line = EDGE_POINTS
   "0",
   "POLYLINE",
   "8",
@@ -220,10 +220,10 @@ test("preview == apply: the DXF vertex apply writes equals applyChanges' output 
   const proposal = file.proposals[0]!;
   assert.equal(proposal.mode, "local-adjustment");
 
-  // What the preview draws (the corrected line) comes from applyChanges.
+  // preview が描くもの（補正後の line）は applyChanges から来る。
   const previewCorrected = applyChanges(proposal.preview.edge!.points, proposal.changes);
 
-  // What apply computes as the edit.
+  // apply が edit として計算するもの。
   const plan = planApply({
     file,
     sourceText: DXF,
@@ -235,11 +235,11 @@ test("preview == apply: the DXF vertex apply writes equals applyChanges' output 
   assert.equal(plan.edits.length, 1);
   const edit = plan.edits[0]!;
 
-  // The edit's target == what preview drew at that vertex.
+  // edit の target == preview がその vertex で描いたもの。
   assert.deepEqual(edit.from, EDGE_POINTS[2]);
   assert.deepEqual(edit.to, previewCorrected[2]);
 
-  // And the DXF apply writes carries exactly that corrected coordinate (round-trip stable).
+  // そして apply が書く DXF はその補正後座標をそのまま持つ（round-trip 安定）。
   const out = editNetLineVertex(DXF, edit.blockName, edit.from, edit.to);
   const outLines = out.split("\n");
   const before = DXF.split("\n");
@@ -342,7 +342,7 @@ test("an unknown proposal schema is an explicit error (T9)", () => {
 });
 
 test("accepting a preview-only proposal writes nothing (T2)", () => {
-  // An endpoint kink stays preview-only; accepting it yields no edits.
+  // endpoint の kink は preview-only のまま; accept しても edit は出ない。
   const file = createProposalFile({
     sourceFile: "body.dxf",
     sourceText: DXF,
