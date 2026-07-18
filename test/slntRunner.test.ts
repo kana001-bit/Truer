@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   createSlntEdgesRunner,
+  detectCmdPercentRisk,
   tokenizeCommand,
   resolveSlntCommand
 } from "../src/adapters/seamlint/slntRunner.ts";
@@ -110,6 +111,61 @@ test(
         delete process.env.SLNTFOO;
       } else {
         process.env.SLNTFOO = prev;
+      }
+    }
+  }
+);
+
+test(
+  "createSlntEdgesRunner runs a .cmd slnt whose name contains cmd metacharacters (e.g. &)",
+  { skip: process.platform !== "win32" ? "Windows-only: .cmd metachar name" : false },
+  () => {
+    // 守る仕様: slnt.cmd の名前に cmd.exe メタ文字（& ( ) 等）が入っても起動できる。basename と引数を二重
+    //           引用符で囲み、外側1組を /s に剥がさせて literal 化するため（cmd の & による分断を防ぐ）。
+    const dir = mkdtempSync(join(tmpdir(), "truer-slnt-meta-"));
+    const cmd = join(dir, "fake&slnt.cmd");
+    writeFileSync(
+      cmd,
+      `@echo {"blockName":"BODY","edges":[{"edgeId":0,"points":[{"x":0,"y":0},{"x":10,"y":0}]}]}\r\n`,
+      "utf8"
+    );
+
+    const runner = createSlntEdgesRunner({ slntCommand: [cmd], dxfFile: join(dir, "pattern.dxf") });
+    const result = runner("BODY");
+    assert.equal(result.blockName, "BODY");
+    assert.deepEqual(result.edges[0]!.points, [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 }
+    ]);
+  }
+);
+
+test(
+  "detectCmdPercentRisk warns only for a .cmd slnt with a defined %VAR% in a path",
+  { skip: process.platform !== "win32" ? "Windows-only: cmd %VAR% risk" : false },
+  () => {
+    // 守る仕様: slnt が .cmd/.bat かつ path に「定義済み環境変数に一致する %VAR%」があるときだけ警告文を返す。
+    //           未定義変数の %...%（実際は cmd がそのまま残す＝動く）や、非 .cmd の slnt では警告しない（空振りしない）。
+    const prev = process.env.SLNTPCT;
+    process.env.SLNTPCT = "x";
+    try {
+      const warn = detectCmdPercentRisk(["C:\\tools\\slnt.cmd"], ["C:\\a\\%SLNTPCT%\\pattern.dxf"]);
+      assert.match(warn ?? "", /%SLNTPCT%/);
+      // 未定義変数 → 警告しない
+      assert.equal(
+        detectCmdPercentRisk(["C:\\tools\\slnt.cmd"], ["C:\\a\\%SLNT_UNDEFINED_XYZ%\\p.dxf"]),
+        undefined
+      );
+      // 非 .cmd（node <script>）→ 警告しない
+      assert.equal(
+        detectCmdPercentRisk(["node", "C:\\x\\slnt.ts"], ["C:\\a\\%SLNTPCT%\\p.dxf"]),
+        undefined
+      );
+    } finally {
+      if (prev === undefined) {
+        delete process.env.SLNTPCT;
+      } else {
+        process.env.SLNTPCT = prev;
       }
     }
   }
