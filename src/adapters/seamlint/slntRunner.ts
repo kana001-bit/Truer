@@ -71,12 +71,14 @@ function coerceEdgesResult(value: unknown, blockName: string): SlntEdgesResult {
 //
 // `.cmd/.bat` は cmd.exe を明示起動（.exe なので EINVAL しない）し、対象を **cwd=そのディレクトリ +
 // `.\<basename>`**（相対）で参照する。cmd.exe は命令行の `%VAR%` を二重引用符内でも必ず展開するので、実行
-// ファイルの絶対パスを命令行に載せると `C:\...\%FOO%\slnt.cmd` のような正当なパスが壊れる。相対参照なら
-// 実行ファイルの % を命令行に出さずに済む。引数は配列で渡し Node にクォートさせる（joined string + `/c` の
-// 外側クォート剥がし問題も避ける）。
-// 既知の残制約: 引数（dxf パス）自体が定義済み変数に一致する `%VAR%` を含むと cmd がそれを展開する — これは
-// `.cmd` を Windows で起動する際の cmd.exe の原理的制約で caller 側から回避不能。`node <script>` / `.exe` 形式
-// の slnt なら cmd を経由しないのでこの問題は一切起きない（そちらが推奨）。
+// ファイルの絶対パスを命令行に載せると `C:\...\%FOO%\slnt.cmd` のような正当なパスが壊れる。相対参照なら実行
+// ファイルの「ディレクトリ側」の % を命令行に出さずに済む。basename と各引数は二重引用符で囲んで cmd メタ文字
+// （`& ( ) ^ < > |` 等）を literal 化し、外側にもう1組の引用符を足して `/s` にその外側だけ剥がさせ、内側の
+// 引用をそのまま解釈させる（cross-spawn と同じ `/s` トリック）。windowsVerbatimArguments で Node の再クォートを止める。
+// 既知の残制約: 引数（dxf パス）や basename 自体が定義済み変数に一致する `%VAR%` を含むと cmd が展開する
+// （二重引用符内でも `%` だけは展開される。`.cmd` を Windows で起動する際の cmd.exe の原理的制約で caller 側
+// から回避不能）。`node <script>` / `.exe` 形式の slnt なら cmd を経由しないのでこの問題は一切起きない（推奨）。
+// この残制約は `detectCmdPercentRisk` が該当時に警告する。
 function runSlnt(command: string, args: string[]): SpawnSyncReturns<string> {
   if (process.platform !== "win32") {
     return spawnSync(command, args, { encoding: "utf8" });
@@ -99,12 +101,15 @@ function runSlnt(command: string, args: string[]): SpawnSyncReturns<string> {
     // 実行ファイルは直接叩ける（パス中のメタ文字にも影響されない）。
     return spawnSync(resolved, args, { encoding: "utf8" });
   }
-  // `.cmd`/`.bat`: cmd.exe を起動し、対象は cwd + 相対名（`.\<basename>`）で参照して % 展開を避ける。
-  return spawnSync(
-    process.env.ComSpec ?? "cmd.exe",
-    ["/d", "/s", "/c", "." + sep + basename(resolved), ...args],
-    { cwd: dirname(resolved), encoding: "utf8" }
-  );
+  // `.cmd`/`.bat`: cmd.exe を起動。実行ファイルは cwd + 相対名で参照し（ディレクトリ % 回避）、basename と
+  // 各引数を二重引用符で囲んで cmd メタ文字を literal 化、外側1組を `/s` に剥がさせて内側の引用を保つ。
+  const quote = (value: string): string => `"${value}"`;
+  const inner = [quote("." + sep + basename(resolved)), ...args.map(quote)].join(" ");
+  return spawnSync(process.env.ComSpec ?? "cmd.exe", [`/d /s /c "${inner}"`], {
+    cwd: dirname(resolved),
+    windowsVerbatimArguments: true,
+    encoding: "utf8"
+  });
 }
 
 // PATH / PATHEXT を辿って Windows 実行ファイルの実体パスを返す（相対パスは cwd 基準、絶対はそのまま）。
@@ -148,6 +153,34 @@ function isFile(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+// slnt が `.cmd`/`.bat` で、渡す path に「定義済み環境変数に一致する `%VAR%`」が含まれると、cmd.exe が起動時に
+// それを環境変数として展開し、実在するファイルでも「パスが見つかりません」で失敗する（Windows の .cmd 起動の
+// 原理的制約。runSlnt は実行ファイル側の % は cwd + 相対名で回避するが、引数 path の % は回避不能）。その状況を
+// 事前検出して人向けの警告文を返す（無ければ undefined）。判定だけで、stderr 出力は CLI 層が行う。未定義変数の
+// `%...%` は cmd がそのまま残す（実際に動く）ので警告しない＝空振りしない。
+export function detectCmdPercentRisk(slntCommand: string[], paths: string[]): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  const [command] = slntCommand;
+  if (!command) return undefined;
+  const resolved = resolveWindowsExecutable(command);
+  const ext = (resolved ? extname(resolved) : extname(command)).toLowerCase();
+  if (ext !== ".cmd" && ext !== ".bat") return undefined;
+  // Windows の環境変数は case-insensitive。定義済み名を大文字で集める。
+  const defined = new Set(Object.keys(process.env).map((name) => name.toUpperCase()));
+  const hits = new Set<string>();
+  for (const path of paths) {
+    for (const match of path.matchAll(/%([^%]+)%/g)) {
+      const name = match[1];
+      if (name && defined.has(name.toUpperCase())) hits.add(match[0]);
+    }
+  }
+  if (hits.size === 0) return undefined;
+  return (
+    `slnt が .cmd/.bat のため、パス内の ${[...hits].join(", ")} が cmd.exe に環境変数として展開され、` +
+    `実在するファイルでも失敗することがあります。回避するには非 .cmd の slnt（例: --slnt "node <path>/slnt.ts"）を使ってください。`
+  );
 }
 
 export function createSlntEdgesRunner(config: SlntRunnerConfig): SlntEdgesRunner {
