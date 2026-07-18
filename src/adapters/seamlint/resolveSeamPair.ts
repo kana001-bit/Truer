@@ -10,7 +10,7 @@
 // どちらを固定（基準 = reference）とみなすかは、CLI `--reference` で渡された BLOCK 名集合と from/to edge の
 // blockName を照合して決める（片側だけ一致→その側が reference）。集合が空、両側一致、どちらも不一致のときは
 // 決めない（reference undefined＝両方向 preview-only, T6、推測しない）。人が打つ part 名→BLOCK 名の翻訳は
-// 上流（Loomit の `loom reconcile`）が持ち、ここには解決済みの BLOCK 名が届く。
+// 上流（Loomit の `loom match`）が持ち、ここには解決済みの BLOCK 名が届く。
 
 import type {
   DiagnosticInput,
