@@ -85,7 +85,7 @@ before / after を見せる preview を出し、**人間が明示的に採用し
 
 作業の背景・仕様・調査結果はチャット履歴ではなくファイルに残し、再開・引き継ぎのコストを下げる。
 
-- **ブランチ単位**: `docs/branch/<branch>.md`（`/` は `__` に置換）。plan / progress /
+- **ブランチ単位**: `docs/branch/<branch>.md`（ブランチ名の `/` は入れ子フォルダ。例 `feature/x` → `docs/branch/feature/x.md`）。plan / progress /
   decisions / blockers / handoff を記録する。運用は `.claude/skills/branch-worklog/SKILL.md`。
 - **長期タスク単位**: `docs/task-specs/<slug>/task-spec.md`。確定仕様と未確認事項を分け、
   証拠（ファイルパス / 関数名 / テーブル名 / 回答日）を添える。運用は
