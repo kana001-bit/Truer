@@ -19,7 +19,7 @@ spec のいちばんの役割は「後から読む人が、何を信じてよい
 
 - 実在するファイルパス（例: `src/core/apply.ts`）
 - 関数名 / 型名 / schema 名（例: `applyChanges()` / `truer.proposal.v0`）
-- 外部プロジェクトの位置（例: `C:\Users\kannn\Seamlint` の `slnt check` 出力）
+- 外部プロジェクトの位置（例: `C:\path\to\Seamlint` の `slnt check` 出力）
 - 人への確認なら「回答日」と回答内容（例: 2026-07-11 回答: apply の書き先は `--out` のみ）
 
 ## セクションの書き方
