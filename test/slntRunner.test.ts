@@ -17,9 +17,9 @@ test("tokenizeCommand keeps quoted paths with spaces as one argv token", () => {
     "node",
     "C:\\Program Files\\seamlint\\src\\cli\\slnt.ts"
   ]);
-  assert.deepEqual(tokenizeCommand("node C:/Users/kannn/Seamlint/src/cli/slnt.ts"), [
+  assert.deepEqual(tokenizeCommand("node C:/tools/seamlint/src/cli/slnt.ts"), [
     "node",
-    "C:/Users/kannn/Seamlint/src/cli/slnt.ts"
+    "C:/tools/seamlint/src/cli/slnt.ts"
   ]);
   assert.deepEqual(tokenizeCommand("'/opt/my seamlint/slnt'"), ["/opt/my seamlint/slnt"]);
   assert.deepEqual(tokenizeCommand("slnt"), ["slnt"]);
