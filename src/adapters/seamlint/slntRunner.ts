@@ -8,7 +8,7 @@
 
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { statSync } from "node:fs";
-import { delimiter, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import type { Point } from "../../core/proposal/proposalSchema.ts";
 import type { SlntEdge, SlntEdgesResult, SlntEdgesRunner } from "./resolveSeamPair.ts";
 
@@ -64,10 +64,19 @@ function coerceEdgesResult(value: unknown, blockName: string): SlntEdgesResult {
 }
 
 // slnt を1回起動して結果を返す。Windows の `.cmd`/`.bat` は Node >= 24 が `shell:true` 無しで spawn できず
-// `EINVAL` を投げる（CVE-2024-27980 対策）。npm 導入の slnt は Windows で `slnt.cmd` になり、loom が `--slnt` で
-// その `.cmd` を Truer に転送してくるので、ここで扱わないと `loom match` が Truer 段で落ちる。実行ファイルを
-// 解決して `.exe/.com` は直接 spawn・`.cmd/.bat` は shell 経由の単一コマンド文字列で叩く。posix は従来どおり
-// shell 無しで直接 spawn（ENOENT で未検出を拾う）。
+// `EINVAL` を投げる（CVE-2024-27980 対策）。npm 導入の slnt は Windows で `slnt.cmd` になり、loom が `--slnt`
+// でその `.cmd` を Truer に転送してくるので、ここで扱わないと `loom match` が Truer 段で落ちる。実行ファイルを
+// 解決して `.exe/.com` は直接 spawn、`.cmd/.bat` は cmd.exe 経由で起動する。posix は従来どおり shell 無しで
+// 直接 spawn（ENOENT で未検出を拾う）。
+//
+// `.cmd/.bat` は cmd.exe を明示起動（.exe なので EINVAL しない）し、対象を **cwd=そのディレクトリ +
+// `.\<basename>`**（相対）で参照する。cmd.exe は命令行の `%VAR%` を二重引用符内でも必ず展開するので、実行
+// ファイルの絶対パスを命令行に載せると `C:\...\%FOO%\slnt.cmd` のような正当なパスが壊れる。相対参照なら
+// 実行ファイルの % を命令行に出さずに済む。引数は配列で渡し Node にクォートさせる（joined string + `/c` の
+// 外側クォート剥がし問題も避ける）。
+// 既知の残制約: 引数（dxf パス）自体が定義済み変数に一致する `%VAR%` を含むと cmd がそれを展開する — これは
+// `.cmd` を Windows で起動する際の cmd.exe の原理的制約で caller 側から回避不能。`node <script>` / `.exe` 形式
+// の slnt なら cmd を経由しないのでこの問題は一切起きない（そちらが推奨）。
 function runSlnt(command: string, args: string[]): SpawnSyncReturns<string> {
   if (process.platform !== "win32") {
     return spawnSync(command, args, { encoding: "utf8" });
@@ -90,10 +99,12 @@ function runSlnt(command: string, args: string[]): SpawnSyncReturns<string> {
     // 実行ファイルは直接叩ける（パス中のメタ文字にも影響されない）。
     return spawnSync(resolved, args, { encoding: "utf8" });
   }
-  // `.cmd`/`.bat` は cmd.exe 経由が要る。実行ファイルと各引数を二重引用符で囲み、単一コマンド文字列 +
-  // `shell:true` で渡す（args 配列 + shell:true の DEP0190 を踏まない）。
-  const line = [quoteForCmd(resolved), ...args.map(quoteForCmd)].join(" ");
-  return spawnSync(line, { shell: true, encoding: "utf8" });
+  // `.cmd`/`.bat`: cmd.exe を起動し、対象は cwd + 相対名（`.\<basename>`）で参照して % 展開を避ける。
+  return spawnSync(
+    process.env.ComSpec ?? "cmd.exe",
+    ["/d", "/s", "/c", "." + sep + basename(resolved), ...args],
+    { cwd: dirname(resolved), encoding: "utf8" }
+  );
 }
 
 // PATH / PATHEXT を辿って Windows 実行ファイルの実体パスを返す（相対パスは cwd 基準、絶対はそのまま）。
@@ -139,26 +150,20 @@ function isFile(path: string): boolean {
   }
 }
 
-// cmd.exe のメタ文字（空白 & ( ) ^ < > | 等）で分解されないよう二重引用符で囲う。既に囲済みなら二重掛けしない。
-// Windows のパスは " を含められないのでエスケープ不要（loom の quoteForCmd と同型）。
-function quoteForCmd(value: string): string {
-  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-    return value;
-  }
-  return `"${value}"`;
-}
-
 export function createSlntEdgesRunner(config: SlntRunnerConfig): SlntEdgesRunner {
   const [command, ...baseArgs] = config.slntCommand;
   if (!command) {
     throw new SlntRunError("Empty slnt command. Set SEAMLINT_CLI or pass --slnt.");
   }
+  // dxf は絶対パス化する。`.cmd/.bat` 経路では cmd.exe の cwd を実行ファイルのディレクトリへ変えるので、相対
+  // dxf パスだとそこ基準に解決されて壊れる。絶対化しておけば cwd 変更の影響を受けない（同一ファイルを指す）。
+  const dxfFile = resolve(config.dxfFile);
 
   return (blockName): SlntEdgesResult => {
     const result = runSlnt(command, [
       ...baseArgs,
       "edges",
-      config.dxfFile,
+      dxfFile,
       "--block",
       blockName,
       "--json"

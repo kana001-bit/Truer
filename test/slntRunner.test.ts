@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -71,5 +71,46 @@ test(
       { x: 0, y: 0 },
       { x: 10, y: 0 }
     ]);
+  }
+);
+
+test(
+  "createSlntEdgesRunner runs a .cmd slnt whose directory name contains %VAR% (no cmd env expansion)",
+  { skip: process.platform !== "win32" ? "Windows-only: .cmd %VAR% path behavior" : false },
+  () => {
+    // 守る仕様: slnt.cmd が「定義済み環境変数に一致する %VAR%」を名前に持つディレクトリ配下でも起動できる。
+    //           cmd.exe は命令行の %VAR% を二重引用符内でも展開するので、実行ファイルは cwd + 相対名で参照して
+    //           % を命令行に載せない。SLNTFOO を定義して %SLNTFOO% ディレクトリを作り、展開されると壊れる状況で確認。
+    const prev = process.env.SLNTFOO;
+    process.env.SLNTFOO = "expanded-wrong";
+    try {
+      const dir = mkdtempSync(join(tmpdir(), "truer-slnt-pct-"));
+      const pctDir = join(dir, "%SLNTFOO%");
+      mkdirSync(pctDir);
+      const cmd = join(pctDir, "fake-slnt.cmd");
+      // 外部参照なしの自己完結 .cmd（echo で edges JSON を返す）＝実行ファイルの起動(layer1)だけを固定する。
+      writeFileSync(
+        cmd,
+        `@echo {"blockName":"BODY","edges":[{"edgeId":0,"points":[{"x":0,"y":0},{"x":10,"y":0}]}]}\r\n`,
+        "utf8"
+      );
+
+      const runner = createSlntEdgesRunner({
+        slntCommand: [cmd],
+        dxfFile: join(pctDir, "pattern.dxf")
+      });
+      const result = runner("BODY");
+      assert.equal(result.blockName, "BODY");
+      assert.deepEqual(result.edges[0]!.points, [
+        { x: 0, y: 0 },
+        { x: 10, y: 0 }
+      ]);
+    } finally {
+      if (prev === undefined) {
+        delete process.env.SLNTFOO;
+      } else {
+        process.env.SLNTFOO = prev;
+      }
+    }
   }
 );
