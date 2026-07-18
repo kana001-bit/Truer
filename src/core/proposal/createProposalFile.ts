@@ -376,8 +376,9 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
     // ①structural-link の推奨。reference が決まっていれば conform 側（reference の反対辺）と目標 finished
     // 長を渡す。目標長は宣言 ease を保つよう、固定辺長から現在の差の向きへ ease ぶん残す（ease=0 なら固定辺
     // 長＝等長）＝ minimal-change で宣言 ease を潰さない。ease の「向き」を connector が宣言するまでは現在の
-    // 測定差の符号を採る。reference の供給源（--reference / connector）は次スライス; ここは pair.reference を
-    // そのまま使う。まだ preview-only（changes は空）。
+    // 測定差の符号を採る。reference の供給源は CLI `--reference`（実装済み。adapter が診断の from/to の
+    // blockName と照合して pair.reference を決める）; connector 宣言は将来。core はここで pair.reference を
+    // そのまま使うだけ（pure）。まだ preview-only（changes は空）。
     let linkTarget: LinkTarget | undefined;
     if (pair.reference !== undefined) {
       const conform = pair.reference === "from" ? "to" : "from";
