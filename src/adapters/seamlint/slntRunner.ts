@@ -6,7 +6,9 @@
 // deployment の関心事で、core には焼き込まない。Seamlint はまだ未公開なので、典型的な値は
 // `node <path>/src/cli/slnt.ts`。
 
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { statSync } from "node:fs";
+import { delimiter, extname, isAbsolute, join, resolve } from "node:path";
 import type { Point } from "../../core/proposal/proposalSchema.ts";
 import type { SlntEdge, SlntEdgesResult, SlntEdgesRunner } from "./resolveSeamPair.ts";
 
@@ -61,6 +63,91 @@ function coerceEdgesResult(value: unknown, blockName: string): SlntEdgesResult {
   };
 }
 
+// slnt を1回起動して結果を返す。Windows の `.cmd`/`.bat` は Node >= 24 が `shell:true` 無しで spawn できず
+// `EINVAL` を投げる（CVE-2024-27980 対策）。npm 導入の slnt は Windows で `slnt.cmd` になり、loom が `--slnt` で
+// その `.cmd` を Truer に転送してくるので、ここで扱わないと `loom match` が Truer 段で落ちる。実行ファイルを
+// 解決して `.exe/.com` は直接 spawn・`.cmd/.bat` は shell 経由の単一コマンド文字列で叩く。posix は従来どおり
+// shell 無しで直接 spawn（ENOENT で未検出を拾う）。
+function runSlnt(command: string, args: string[]): SpawnSyncReturns<string> {
+  if (process.platform !== "win32") {
+    return spawnSync(command, args, { encoding: "utf8" });
+  }
+  const resolved = resolveWindowsExecutable(command);
+  if (resolved === undefined) {
+    // 未検出は ENOENT 相当の error として返し、呼び出し側の "Could not run slnt" 分岐に載せる。
+    return {
+      pid: -1,
+      output: [],
+      stdout: "",
+      stderr: "",
+      status: null,
+      signal: null,
+      error: new Error("could not resolve executable on PATH/PATHEXT")
+    };
+  }
+  const ext = extname(resolved).toLowerCase();
+  if (ext === ".exe" || ext === ".com") {
+    // 実行ファイルは直接叩ける（パス中のメタ文字にも影響されない）。
+    return spawnSync(resolved, args, { encoding: "utf8" });
+  }
+  // `.cmd`/`.bat` は cmd.exe 経由が要る。実行ファイルと各引数を二重引用符で囲み、単一コマンド文字列 +
+  // `shell:true` で渡す（args 配列 + shell:true の DEP0190 を踏まない）。
+  const line = [quoteForCmd(resolved), ...args.map(quoteForCmd)].join(" ");
+  return spawnSync(line, { shell: true, encoding: "utf8" });
+}
+
+// PATH / PATHEXT を辿って Windows 実行ファイルの実体パスを返す（相対パスは cwd 基準、絶対はそのまま）。
+// 見つからなければ undefined。loom `packages/cli/src/commands/subprocess.ts` の resolveExecutable と同型。
+function resolveWindowsExecutable(bin: string): string | undefined {
+  const cwd = process.cwd();
+  const hasSeparator = bin.includes("/") || bin.includes("\\");
+  const candidates: string[] = [];
+  if (isAbsolute(bin) || hasSeparator) {
+    candidates.push(resolve(cwd, bin));
+  } else {
+    const pathDirs = (process.env.PATH ?? "").split(delimiter).filter((dir) => dir.length > 0);
+    pathDirs.unshift(cwd); // cmd.exe 同様まず cwd を見る
+    for (const dir of pathDirs) {
+      candidates.push(join(dir, bin));
+    }
+  }
+  const pathExts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+    .split(";")
+    .filter((ext) => ext.length > 0);
+  for (const candidate of candidates) {
+    // 拡張子無しの名前は PATHEXT を補って解決する（`slnt` -> `slnt.cmd` 等）。
+    if (extname(candidate) === "") {
+      for (const ext of pathExts) {
+        if (isFile(candidate + ext)) {
+          return candidate + ext;
+        }
+      }
+      continue;
+    }
+    if (isFile(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// cmd.exe のメタ文字（空白 & ( ) ^ < > | 等）で分解されないよう二重引用符で囲う。既に囲済みなら二重掛けしない。
+// Windows のパスは " を含められないのでエスケープ不要（loom の quoteForCmd と同型）。
+function quoteForCmd(value: string): string {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return value;
+  }
+  return `"${value}"`;
+}
+
 export function createSlntEdgesRunner(config: SlntRunnerConfig): SlntEdgesRunner {
   const [command, ...baseArgs] = config.slntCommand;
   if (!command) {
@@ -68,11 +155,14 @@ export function createSlntEdgesRunner(config: SlntRunnerConfig): SlntEdgesRunner
   }
 
   return (blockName): SlntEdgesResult => {
-    const result = spawnSync(
-      command,
-      [...baseArgs, "edges", config.dxfFile, "--block", blockName, "--json"],
-      { encoding: "utf8" }
-    );
+    const result = runSlnt(command, [
+      ...baseArgs,
+      "edges",
+      config.dxfFile,
+      "--block",
+      blockName,
+      "--json"
+    ]);
 
     if (result.error) {
       throw new SlntRunError(`Could not run slnt ("${command}"): ${result.error.message}`);
