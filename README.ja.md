@@ -100,7 +100,7 @@ Truer はその edge を addressing し——内部 kink の正解は一意（�
       },
       "intent": { "kind": "smooth-curve-kink", "confidence": "medium", "reviewRequired": true },
       "changes": [{ "kind": "move-vertex", "vertexIndex": 4, "to": { "x": 121.4, "y": 70.8 } }],
-      "preview": { "edge": { "points": [ /* この edge の net-line polyline */ ] } },
+      "preview": { "edge": { "points": [/* この edge の net-line polyline */] } },
       "notes": ["内部 kink を、隣り合う 2 点の弦上へ寄せた。"]
     }
   ],
@@ -108,7 +108,7 @@ Truer はその edge を addressing し——内部 kink の正解は一意（�
 }
 ```
 
-正解が一意 *でない* とき——`geometry.seam_length_mismatch`、長さ差を「詰める / いせ込む /
+正解が一意 _でない_ とき——`geometry.seam_length_mismatch`、長さ差を「詰める / いせ込む /
 ギャザーで入れる」のどれで吸収するか決まらない——Truer は `preview-only` に留まる。不一致な
 2 辺と Δ を見せ、advisory な目標（どちらの辺を、どの finished 長に合わせるか）を記録し、人が
 選ぶまで青い線を作らない。
@@ -137,14 +137,14 @@ Truer は AI コーディングエージェントで作っているが、方向�
 
 Truer は型紙製作 toolchain の三分の一で、それぞれが一つの仕事を持つ。
 
-| 道具                                            | 仕事                                                 |
-| ----------------------------------------------- | ---------------------------------------------------- |
-| **[Loomit](https://github.com/kana001-bit/Loomit)**   | 型紙の構造、assembly graph、意味的な `diff`。         |
-| **[Seamlint](https://github.com/kana001-bit/Seamlint)** | 幾何を測って問題を報告する。                          |
-| **Truer**                                       | 補正案を作り、採用されたものを書く。                  |
+| 道具                                                    | 仕事                                          |
+| ------------------------------------------------------- | --------------------------------------------- |
+| **[Loomit](https://github.com/kana001-bit/Loomit)**     | 型紙の構造、assembly graph、意味的な `diff`。 |
+| **[Seamlint](https://github.com/kana001-bit/Seamlint)** | 幾何を測って問題を報告する。                  |
+| **Truer**                                               | 補正案を作り、採用されたものを書く。          |
 
-三者の境界は中身より先に固定してある。Seamlint が *何が間違っているか* を、Truer が *どう直せて、
-それを書く* を、そして人が *実際に何を変えるか* を決める。
+三者の境界は中身より先に固定してある。Seamlint が _何が間違っているか_ を、Truer が _どう直せて、
+それを書く_ を、そして人が _実際に何を変えるか_ を決める。
 
 ## 状態
 
@@ -176,7 +176,7 @@ Truer は型紙製作 toolchain の三分の一で、それぞれが一つの仕
 - Truer は `.val`（Valentina master）ではなく自分の補正済み DXF（この 1 着分）を書く設計。
   npm install 導線はまだ無い。
 
-Truer が書く補正済み DXF は *この 1 回の裁断* のためのもので、Valentina `.val` master には
+Truer が書く補正済み DXF は _この 1 回の裁断_ のためのもので、Valentina `.val` master には
 戻さない。これは意図的なトレードオフで、正直に受け入れている——「裁つ前にこの服を直す」であって
 「サイズ全体を grade し直す」ではない。理由の全体は design history にある。
 

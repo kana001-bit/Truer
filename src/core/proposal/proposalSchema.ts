@@ -167,6 +167,27 @@ export interface SeamEdge {
   lengthMm: number;
 }
 
+// seam_length_mismatch で Truer が推す修正の「種類」（advisory）。Truer は種類と目標を推すが、val の
+// 案文は書かない（詳細は docs/design-history.md の 2026-07-18 章 /
+// docs/branch/feature/seam-length-adjustment.md）。
+//   - "structural-link": Valentina の構築で 2 辺の長さを共有(リンク)する。恒久・再発なし・mid-process の
+//     本命で既定に推す。案文（VLineLength/VIncrement の配線）は人が Valentina 側で当てる。
+//   - "corner-slide": 共有コーナーを隣辺に沿って滑らせる幾何パッチ。その場限りの fallback・pre-cut
+//     （val が未リンクのままなら再生成で再発する band-aid）。
+export type FixKind = "structural-link" | "corner-slide";
+
+// fixKind === "structural-link" のときの推奨内容（linkTarget があれば fixKind は structural-link）。
+// Valentina の角は導出点のことがあり座標では直接動かせないので、案文（xy）ではなく **目標長** で人へ
+// 渡す:「conform 側の辺の finished 長を targetFinishedMm にせよ」。住所は seamReconciliation の
+// fromEdge/toEdge にあるので、ここは動かす側と目標長だけを持つ。
+export interface LinkTarget {
+  // 合わせる側（= reference の反対辺 = 動かす辺）。この辺を targetFinishedMm に合わせる。
+  conform: "from" | "to";
+  // conform 辺が到達すべき finished 長 mm（有限・非負）。ease=0 なら reference 辺の長さと一致し、宣言
+  // ease があるとそのぶんずれる。実際の数値は builder が計算する責務（schema は shape と関係のみ検証）。
+  targetFinishedMm: number;
+}
+
 // seam_length_mismatch の decision 2（reference に合わせる）を表す: 一方の edge を正とする
 // `reference`（固定）にし、もう一方を ±Δ 調整して合わせる。reference が指定される
 //（Loomit/人間の token）までは `reference` は undefined。undefined の間、proposal は両方向を
@@ -179,6 +200,14 @@ export interface SeamReconciliation {
   deltaMm: number;
   // どちらの edge が固定 reference か、undefined = 未決（両方向）。
   reference?: "from" | "to";
+  // --- Slice 1（2026-07-18）追加。いずれも任意・追加的（additive, T9）。proposal は依然 preview-only ---
+  // 宣言された ease（意図された長さ差 mm、既定 0 = 揃うべき）。measured の deltaMm と対で「いせ(意図)か
+  // mistake か」を分ける。reconcile 目標は |fromLen - toLen| == easeMm（equal は easeMm=0 の特殊ケース）。
+  easeMm?: number;
+  // Truer が推す修正の種類（advisory）。①structural-link を既定に推し、②corner-slide は fallback。
+  fixKind?: FixKind;
+  // fixKind === "structural-link" のときの推奨内容（どの辺を、どの finished 長へリンクせよ）。
+  linkTarget?: LinkTarget;
 }
 
 export interface Proposal {
@@ -227,6 +256,7 @@ export function isSupportedDiagnosticCode(code: string): boolean {
 
 const STATUSES: readonly ProposalStatus[] = ["proposed", "accepted", "rejected", "applied"];
 const MODES: readonly ProposalMode[] = ["preview-only", "local-adjustment"];
+const FIX_KINDS: readonly FixKind[] = ["structural-link", "corner-slide"];
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -393,6 +423,57 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
       }
       if (seam.reference !== undefined && seam.reference !== "from" && seam.reference !== "to") {
         errors.push(`${at}.seamReconciliation.reference must be "from", "to", or omitted`);
+      }
+      // Slice 1 の advisory field（すべて任意・追加的）: 存在するときだけ shape を検証する。
+      if (
+        seam.easeMm !== undefined &&
+        (typeof seam.easeMm !== "number" || !Number.isFinite(seam.easeMm) || seam.easeMm < 0)
+      ) {
+        errors.push(
+          `${at}.seamReconciliation.easeMm must be a non-negative finite number when present`
+        );
+      }
+      if (
+        seam.fixKind !== undefined &&
+        !(FIX_KINDS as readonly string[]).includes(seam.fixKind as string)
+      ) {
+        errors.push(`${at}.seamReconciliation.fixKind must be one of ${FIX_KINDS.join(" | ")}`);
+      }
+      if (seam.linkTarget !== undefined) {
+        const link = seam.linkTarget as Record<string, unknown>;
+        if (typeof link !== "object" || link === null) {
+          errors.push(`${at}.seamReconciliation.linkTarget must be an object when present`);
+        } else {
+          if (link.conform !== "from" && link.conform !== "to") {
+            errors.push(`${at}.seamReconciliation.linkTarget.conform must be "from" or "to"`);
+          }
+          if (
+            typeof link.targetFinishedMm !== "number" ||
+            !Number.isFinite(link.targetFinishedMm) ||
+            link.targetFinishedMm < 0
+          ) {
+            errors.push(
+              `${at}.seamReconciliation.linkTarget.targetFinishedMm must be a non-negative finite number`
+            );
+          }
+          // relation（shape だけでなく整合も見る。move-vertex↔preview.edge と同じ方針）: linkTarget は
+          // fixKind === "structural-link" の payload で、conform は reference の反対側（= 動かす辺）。
+          // 矛盾した advisory record を下流へ渡さないため、種類・向きの整合も検証する。
+          if (seam.fixKind !== "structural-link") {
+            errors.push(
+              `${at}.seamReconciliation.linkTarget is only valid when fixKind is "structural-link"`
+            );
+          }
+          if (seam.reference !== "from" && seam.reference !== "to") {
+            errors.push(
+              `${at}.seamReconciliation.linkTarget requires reference to designate the fixed edge`
+            );
+          } else if (link.conform === seam.reference) {
+            errors.push(
+              `${at}.seamReconciliation.linkTarget.conform must be the non-reference edge (opposite of reference)`
+            );
+          }
+        }
       }
     }
   }

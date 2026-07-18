@@ -592,6 +592,73 @@ test("seam pair keeps a designated reference; still preview-only", () => {
   assert.equal(proposal.changes.length, 0);
 });
 
+test("seam ① structural-link recommendation: fixKind/easeMm always, linkTarget when reference set", () => {
+  // 守る仕様（Slice 1）: seam_length_mismatch には常に fixKind="structural-link" と easeMm（既定0）が付く。
+  //           reference が決まっていれば linkTarget（conform=reference の反対辺 / 目標=reference 辺の長さ）も
+  //           builder が計算して載せる（Codex Finding 2 の数値整合を builder test で固定）。preview-only は不変。
+  const withRef = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(2415.778, 2167.495)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from")
+  });
+  assert.deepEqual(validateProposalFile(withRef), []);
+  const seamRef = withRef.proposals[0]!.seamReconciliation!;
+  assert.equal(seamRef.fixKind, "structural-link");
+  assert.equal(seamRef.easeMm, 0);
+  // reference="from" → conform="to"、目標 = from 辺の長さ（2415.778）。
+  assert.deepEqual(seamRef.linkTarget, { conform: "to", targetFinishedMm: 2415.778 });
+  assert.equal(withRef.proposals[0]!.mode, "preview-only");
+
+  // reference 未指定なら linkTarget は付かない（fixKind/easeMm は付く、preview-only 両方向）。
+  const noRef = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(500, 505)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub()
+  });
+  assert.deepEqual(validateProposalFile(noRef), []);
+  const seamNo = noRef.proposals[0]!.seamReconciliation!;
+  assert.equal(seamNo.fixKind, "structural-link");
+  assert.equal(seamNo.easeMm, 0);
+  assert.equal(seamNo.linkTarget, undefined);
+
+  // 宣言 ease≠0（Codex Finding）: 目標長は固定辺長ではなく、宣言 ease を保つ位置でなければならない。
+  // reference="from"(=100), to=90, ease=8 → conform="to"、目標 = 100 - 8 = 92（8mm のイセを潰さない）。
+  const easeBase = seamLengthMismatch(100, 90);
+  const withEase: DiagnosticInput = { ...easeBase, actual: { ...easeBase.actual, easeMm: 8 } };
+  const eased = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [withEase],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from")
+  });
+  assert.deepEqual(validateProposalFile(eased), []);
+  const seamEase = eased.proposals[0]!.seamReconciliation!;
+  assert.equal(seamEase.easeMm, 8);
+  assert.deepEqual(seamEase.linkTarget, { conform: "to", targetFinishedMm: 92 });
+
+  // 宣言 ease>0 だが測定差 0（Codex Finding, Math.sign(0)）: 向きが決まらないので目標長を捏造せず
+  // linkTarget を出さない。from=100/to=100/ease=8 → fixKind/easeMm は付くが linkTarget は付かない。
+  const zeroDiff = seamLengthMismatch(100, 100);
+  const zeroDiffEase: DiagnosticInput = { ...zeroDiff, actual: { ...zeroDiff.actual, easeMm: 8 } };
+  const zeroed = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [zeroDiffEase],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from")
+  });
+  assert.deepEqual(validateProposalFile(zeroed), []);
+  const seamZero = zeroed.proposals[0]!.seamReconciliation!;
+  assert.equal(seamZero.fixKind, "structural-link");
+  assert.equal(seamZero.easeMm, 8);
+  assert.equal(seamZero.linkTarget, undefined);
+});
+
 test("seam pair not-found / ambiguous are skipped, not guessed (T6)", () => {
   // 守る仕様: ペア解決が not-found / ambiguous なら推測せず、区別して skip。
   const notFound = createProposalFile({
@@ -688,6 +755,112 @@ test("malformed seamReconciliation is rejected by validation", () => {
     validateProposalFile(withSeam({ fromEdge, toEdge, deltaMm: 5, reference: "left" })).some(
       (error) => error.includes("reference")
     )
+  );
+});
+
+test("seamReconciliation Slice 1 advisory fields (easeMm / fixKind / linkTarget) validate additively", () => {
+  // 守る仕様: easeMm / fixKind / linkTarget は任意・追加的（additive, T9）。無くても妥当、present なら
+  //           shape を検証する（easeMm は非負 finite、fixKind は structural-link|corner-slide、
+  //           linkTarget は conform=from/to + targetFinishedMm 非負 finite）。preview-only は不変。
+  function withSeam(seamReconciliation: unknown) {
+    return {
+      schema: PROPOSAL_SCHEMA_V0,
+      source: { file: "x.dxf", sourceDigest: "sha256:0", createdBy: "tru propose" },
+      proposals: [
+        {
+          id: "prop_001",
+          status: "proposed",
+          mode: "preview-only",
+          target: { blockName: "BACK", edgeId: "outseam", targetDigest: "sha256:0" },
+          sourceDiagnostic: { code: "geometry.seam_length_mismatch" },
+          intent: { kind: "reconcile-seam-length", confidence: "low", reviewRequired: true },
+          changes: [],
+          preview: {},
+          notes: [],
+          seamReconciliation
+        }
+      ],
+      skipped: []
+    };
+  }
+  const fromEdge = { blockName: "BACK", edgeId: "outseam", edgeDigest: "sha256:1", lengthMm: 100 };
+  const toEdge = { blockName: "FRONT", edgeId: "outseam", edgeDigest: "sha256:2", lengthMm: 95 };
+  const base = { fromEdge, toEdge, deltaMm: 5, reference: "to" };
+
+  // 後方互換: 新フィールドが無くても妥当（additive）。
+  assert.deepEqual(validateProposalFile(withSeam({ fromEdge, toEdge, deltaMm: 5 })), []);
+  // 妥当: ①structural-link + ease=0 + linkTarget（from 辺を to 辺の 95mm へ合わせる）
+  assert.deepEqual(
+    validateProposalFile(
+      withSeam({
+        ...base,
+        easeMm: 0,
+        fixKind: "structural-link",
+        linkTarget: { conform: "from", targetFinishedMm: 95 }
+      })
+    ),
+    []
+  );
+  // 妥当: ②corner-slide + 非ゼロ ease（宣言されたいせ）
+  assert.deepEqual(
+    validateProposalFile(withSeam({ ...base, easeMm: 2.5, fixKind: "corner-slide" })),
+    []
+  );
+  // 不正な fixKind
+  assert.ok(
+    validateProposalFile(withSeam({ ...base, fixKind: "magic" })).some((error) =>
+      error.includes("fixKind")
+    )
+  );
+  // 負の easeMm
+  assert.ok(
+    validateProposalFile(withSeam({ ...base, easeMm: -1 })).some((error) =>
+      error.includes("easeMm")
+    )
+  );
+  // linkTarget.conform が from/to 以外
+  assert.ok(
+    validateProposalFile(
+      withSeam({ ...base, linkTarget: { conform: "left", targetFinishedMm: 95 } })
+    ).some((error) => error.includes("conform"))
+  );
+  // linkTarget.targetFinishedMm が非有限 / 負
+  assert.ok(
+    validateProposalFile(
+      withSeam({ ...base, linkTarget: { conform: "from", targetFinishedMm: Number.NaN } })
+    ).some((error) => error.includes("targetFinishedMm"))
+  );
+  // relation: linkTarget は fixKind === "structural-link" の payload（corner-slide に付くのは矛盾）
+  assert.ok(
+    validateProposalFile(
+      withSeam({
+        ...base,
+        fixKind: "corner-slide",
+        linkTarget: { conform: "from", targetFinishedMm: 95 }
+      })
+    ).some((error) => error.includes("linkTarget"))
+  );
+  // relation: conform は reference の反対側でなければならない（conform === reference は矛盾）
+  assert.ok(
+    validateProposalFile(
+      withSeam({
+        ...base,
+        fixKind: "structural-link",
+        linkTarget: { conform: "to", targetFinishedMm: 95 }
+      })
+    ).some((error) => error.includes("conform"))
+  );
+  // relation: linkTarget は reference（固定辺）が指定されていることを要する
+  assert.ok(
+    validateProposalFile(
+      withSeam({
+        fromEdge,
+        toEdge,
+        deltaMm: 5,
+        fixKind: "structural-link",
+        linkTarget: { conform: "from", targetFinishedMm: 95 }
+      })
+    ).some((error) => error.includes("reference"))
   );
 });
 

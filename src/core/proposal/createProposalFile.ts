@@ -32,6 +32,7 @@ import {
 } from "./proposalSchema.ts";
 import type {
   IntentConfidence,
+  LinkTarget,
   Point,
   PreviewEdge,
   Proposal,
@@ -210,17 +211,24 @@ function buildSeamEdge(edge: ResolvedSeamEdge): SeamEdge {
 function seamNotes(
   diffMm: number,
   lengths: SeamLengths,
-  reference: "from" | "to" | undefined
+  reference: "from" | "to" | undefined,
+  easeMm: number,
+  targetFinishedMm: number | undefined
 ): string[] {
-  const head = `縫い合わせる2辺の長さが ${formatMm(diffMm)} mm 食い違っています (${formatMm(lengths.fromLengthMm)} / ${formatMm(lengths.toLengthMm)} mm)。`;
+  const head = `縫い合わせる2辺の長さが ${formatMm(diffMm)} mm 食い違っています (${formatMm(lengths.fromLengthMm)} / ${formatMm(lengths.toLengthMm)} mm、宣言 ease=${formatMm(easeMm)})。`;
+  const recommend =
+    "推奨は①構造リンク: Valentina の構築で2辺の長さをリンク（VLineLength / VIncrement で配線）し、宣言差（ease、0 なら等長）を保てば、構築で保証され再発しません。";
   const direction =
     reference === undefined
-      ? "基準辺が未指定のため、どちらに寄せるかは決めていません（両方向が候補, T6）。"
-      : `${reference} 辺を基準（固定）とし、もう片方を ±Δ で合わせる想定です。`;
+      ? "どちらの辺を固定（基準）にするかが未指定のため、目標長は未確定です（両方向が候補, T6）。"
+      : targetFinishedMm === undefined
+        ? "基準辺は指定済みですが、宣言 ease の向き（どちらを長くするか）が現状の測定差から決まらないため、目標長は保留です。"
+        : `${reference} 辺を固定し、${reference === "from" ? "to" : "from"} 辺の finished 長を ${formatMm(targetFinishedMm)} mm に合わせてください。`;
   return [
     head,
+    recommend,
     direction,
-    "書き戻し先は未確定 (B: apply 先決定待ち)。意図的なイセ・ギャザーの可能性もあるため人間の確認が必要です。まだ線は引き直していません (preview-only)。"
+    "Truer は目標を提案するだけ（advisory）で、val は人が Valentina で当てます。当てたら再エクスポート→Seamlint で確認を。意図的なイセ・ギャザーなら ease を宣言してください。まだ線は引き直していません (preview-only)。"
   ];
 }
 
@@ -357,11 +365,40 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
 
     const fromSeamEdge = buildSeamEdge(pair.fromEdge);
     const toSeamEdge = buildSeamEdge(pair.toEdge);
+
+    // 宣言 ease。Seamlint diagnostic が connector 由来の ease を運ぶまでは既定 0（＝揃うべき）。
+    const declaredEase = diagnostic.actual?.easeMm;
+    const easeMm =
+      typeof declaredEase === "number" && Number.isFinite(declaredEase) && declaredEase >= 0
+        ? declaredEase
+        : 0;
+
+    // ①structural-link の推奨。reference が決まっていれば conform 側（reference の反対辺）と目標 finished
+    // 長を渡す。目標長は宣言 ease を保つよう、固定辺長から現在の差の向きへ ease ぶん残す（ease=0 なら固定辺
+    // 長＝等長）＝ minimal-change で宣言 ease を潰さない。ease の「向き」を connector が宣言するまでは現在の
+    // 測定差の符号を採る。reference の供給源（--reference / connector）は次スライス; ここは pair.reference を
+    // そのまま使う。まだ preview-only（changes は空）。
+    let linkTarget: LinkTarget | undefined;
+    if (pair.reference !== undefined) {
+      const conform = pair.reference === "from" ? "to" : "from";
+      const referenceLen = pair.reference === "from" ? fromSeamEdge.lengthMm : toSeamEdge.lengthMm;
+      const conformLen = pair.reference === "from" ? toSeamEdge.lengthMm : fromSeamEdge.lengthMm;
+      const direction = Math.sign(conformLen - referenceLen); // -1 / 0 / +1
+      // ease>0 かつ測定差 0（direction===0＝符号が採れない）は向きが決まらないので、目標長を捏造せず
+      // linkTarget を出さない（T8）。ease=0 は向き不要（目標＝固定辺長＝等長）。
+      if (easeMm === 0 || direction !== 0) {
+        linkTarget = { conform, targetFinishedMm: referenceLen + direction * easeMm };
+      }
+    }
+
     const seamReconciliation: SeamReconciliation = {
       fromEdge: fromSeamEdge,
       toEdge: toSeamEdge,
       deltaMm: diffMm,
-      ...(pair.reference !== undefined ? { reference: pair.reference } : {})
+      easeMm,
+      fixKind: "structural-link",
+      ...(pair.reference !== undefined ? { reference: pair.reference } : {}),
+      ...(linkTarget !== undefined ? { linkTarget } : {})
     };
 
     // target は依然 "from" edge を addressing する（表示 anchor であって、どちらを変えるかの主張では
@@ -393,7 +430,7 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
         intent: { kind: "reconcile-seam-length", confidence, reviewRequired: true },
         changes: [],
         preview: { edges: previewEdges },
-        notes: seamNotes(diffMm, lengths, pair.reference),
+        notes: seamNotes(diffMm, lengths, pair.reference, easeMm, linkTarget?.targetFinishedMm),
         seamReconciliation
       }
     };
