@@ -691,6 +691,112 @@ test("malformed seamReconciliation is rejected by validation", () => {
   );
 });
 
+test("seamReconciliation Slice 1 advisory fields (easeMm / fixKind / linkTarget) validate additively", () => {
+  // 守る仕様: easeMm / fixKind / linkTarget は任意・追加的（additive, T9）。無くても妥当、present なら
+  //           shape を検証する（easeMm は非負 finite、fixKind は structural-link|corner-slide、
+  //           linkTarget は conform=from/to + targetFinishedMm 非負 finite）。preview-only は不変。
+  function withSeam(seamReconciliation: unknown) {
+    return {
+      schema: PROPOSAL_SCHEMA_V0,
+      source: { file: "x.dxf", sourceDigest: "sha256:0", createdBy: "tru propose" },
+      proposals: [
+        {
+          id: "prop_001",
+          status: "proposed",
+          mode: "preview-only",
+          target: { blockName: "BACK", edgeId: "outseam", targetDigest: "sha256:0" },
+          sourceDiagnostic: { code: "geometry.seam_length_mismatch" },
+          intent: { kind: "reconcile-seam-length", confidence: "low", reviewRequired: true },
+          changes: [],
+          preview: {},
+          notes: [],
+          seamReconciliation
+        }
+      ],
+      skipped: []
+    };
+  }
+  const fromEdge = { blockName: "BACK", edgeId: "outseam", edgeDigest: "sha256:1", lengthMm: 100 };
+  const toEdge = { blockName: "FRONT", edgeId: "outseam", edgeDigest: "sha256:2", lengthMm: 95 };
+  const base = { fromEdge, toEdge, deltaMm: 5, reference: "to" };
+
+  // 後方互換: 新フィールドが無くても妥当（additive）。
+  assert.deepEqual(validateProposalFile(withSeam({ fromEdge, toEdge, deltaMm: 5 })), []);
+  // 妥当: ①structural-link + ease=0 + linkTarget（from 辺を to 辺の 95mm へ合わせる）
+  assert.deepEqual(
+    validateProposalFile(
+      withSeam({
+        ...base,
+        easeMm: 0,
+        fixKind: "structural-link",
+        linkTarget: { conform: "from", targetFinishedMm: 95 }
+      })
+    ),
+    []
+  );
+  // 妥当: ②corner-slide + 非ゼロ ease（宣言されたいせ）
+  assert.deepEqual(
+    validateProposalFile(withSeam({ ...base, easeMm: 2.5, fixKind: "corner-slide" })),
+    []
+  );
+  // 不正な fixKind
+  assert.ok(
+    validateProposalFile(withSeam({ ...base, fixKind: "magic" })).some((error) =>
+      error.includes("fixKind")
+    )
+  );
+  // 負の easeMm
+  assert.ok(
+    validateProposalFile(withSeam({ ...base, easeMm: -1 })).some((error) =>
+      error.includes("easeMm")
+    )
+  );
+  // linkTarget.conform が from/to 以外
+  assert.ok(
+    validateProposalFile(
+      withSeam({ ...base, linkTarget: { conform: "left", targetFinishedMm: 95 } })
+    ).some((error) => error.includes("conform"))
+  );
+  // linkTarget.targetFinishedMm が非有限 / 負
+  assert.ok(
+    validateProposalFile(
+      withSeam({ ...base, linkTarget: { conform: "from", targetFinishedMm: Number.NaN } })
+    ).some((error) => error.includes("targetFinishedMm"))
+  );
+  // relation: linkTarget は fixKind === "structural-link" の payload（corner-slide に付くのは矛盾）
+  assert.ok(
+    validateProposalFile(
+      withSeam({
+        ...base,
+        fixKind: "corner-slide",
+        linkTarget: { conform: "from", targetFinishedMm: 95 }
+      })
+    ).some((error) => error.includes("linkTarget"))
+  );
+  // relation: conform は reference の反対側でなければならない（conform === reference は矛盾）
+  assert.ok(
+    validateProposalFile(
+      withSeam({
+        ...base,
+        fixKind: "structural-link",
+        linkTarget: { conform: "to", targetFinishedMm: 95 }
+      })
+    ).some((error) => error.includes("conform"))
+  );
+  // relation: linkTarget は reference（固定辺）が指定されていることを要する
+  assert.ok(
+    validateProposalFile(
+      withSeam({
+        fromEdge,
+        toEdge,
+        deltaMm: 5,
+        fixKind: "structural-link",
+        linkTarget: { conform: "from", targetFinishedMm: 95 }
+      })
+    ).some((error) => error.includes("reference"))
+  );
+});
+
 test("createProposalFile is deterministic with the seam pair model", () => {
   // 守る仕様 (T10): ペアモデルでも同じ入力から byte 一致。
   const input = {
