@@ -272,6 +272,92 @@ test("buildResolveSeamPair queries each BLOCK at most once per run", () => {
   assert.deepEqual(calls.sort(), ["BACK", "FRONT"]); // BACK + FRONT once each, not four times
 });
 
+test("buildResolveSeamPair marks the --reference side as the fixed edge (blockName match)", () => {
+  // 守る仕様: --reference の BLOCK 名が from/to の片側だけに一致すれば、その側を reference（固定辺）に決める。
+  //           fixture は fromEdge=BACK / toEdge=FRONT。BACK 固定→reference="from"、FRONT 固定→reference="to"。
+  const [diagnostic] = parseSeamlintReport(seamReport());
+
+  const backFixed = buildResolveSeamPair(fakeRunner([]), ["BACK"])(diagnostic!);
+  assert.equal(backFixed.status, "resolved");
+  if (backFixed.status !== "resolved") return;
+  assert.equal(backFixed.reference, "from");
+
+  const frontFixed = buildResolveSeamPair(fakeRunner([]), ["FRONT"])(diagnostic!);
+  assert.equal(frontFixed.status, "resolved");
+  if (frontFixed.status !== "resolved") return;
+  assert.equal(frontFixed.reference, "to");
+});
+
+test("buildResolveSeamPair leaves reference undecided when neither or both sides match (T6)", () => {
+  // 守る仕様: --reference 未指定 / この seam に無い BLOCK / 両側とも指定、のいずれも reference を決めない
+  //           （両方向 preview-only、推測しない）。
+  const [diagnostic] = parseSeamlintReport(seamReport());
+  for (const refs of [[], ["SLEEVE"], ["BACK", "FRONT"]]) {
+    const result = buildResolveSeamPair(fakeRunner([]), refs)(diagnostic!);
+    assert.equal(result.status, "resolved");
+    assert.equal(result.status === "resolved" ? result.reference : "unresolved", undefined);
+  }
+});
+
+test("--reference makes the seam proposal carry a linkTarget in production (blockName match)", () => {
+  // 守る仕様: reference が決まると seamReconciliation に reference と linkTarget（conform=反対辺 /
+  //           目標=固定辺の finished 長, ease=0）が載る。未指定なら linkTarget は付かない。どちらも preview-only。
+  const input = {
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
+    diagnostics: parseSeamlintReport(seamReport()),
+    resolveTarget: () => ({ status: "not-found" as const })
+  };
+
+  const withRef = createProposalFile({
+    ...input,
+    resolveSeamPair: buildResolveSeamPair(fakeRunner([]), ["BACK"])
+  });
+  assert.deepEqual(validateProposalFile(withRef), []);
+  const seam = withRef.proposals[0]!.seamReconciliation!;
+  assert.equal(seam.reference, "from"); // BACK = fromEdge
+  assert.deepEqual(seam.linkTarget, { conform: "to", targetFinishedMm: 814.568 });
+  assert.equal(withRef.proposals[0]!.mode, "preview-only");
+  assert.deepEqual(withRef.proposals[0]!.changes, []);
+
+  const noRef = createProposalFile({
+    ...input,
+    resolveSeamPair: buildResolveSeamPair(fakeRunner([]))
+  });
+  assert.equal(noRef.proposals[0]!.seamReconciliation!.reference, undefined);
+  assert.equal(noRef.proposals[0]!.seamReconciliation!.linkTarget, undefined);
+});
+
+test("--reference applies per seam (same fixed BLOCK on whichever side it appears)", () => {
+  // 守る仕様: 複数 seam でも各診断ごとに from/to の blockName を集合と照合する。BACK を固定すると、BACK が
+  //           from 側の seam は reference="from"、to 側の seam は reference="to" になる。
+  const resolve = buildResolveSeamPair(fakeRunner([]), ["BACK"]);
+
+  const backFrom = resolve({
+    code: "geometry.seam_length_mismatch",
+    actual: {
+      fromLengthMm: 814.568,
+      toLengthMm: 806.722,
+      lengthDiffMm: 7.847,
+      fromEdge: { blockName: "BACK", edgeId: 1 },
+      toEdge: { blockName: "FRONT", edgeId: 1 }
+    }
+  });
+  assert.equal(backFrom.status === "resolved" ? backFrom.reference : "unresolved", "from");
+
+  const backTo = resolve({
+    code: "geometry.seam_length_mismatch",
+    actual: {
+      fromLengthMm: 806.722,
+      toLengthMm: 814.568,
+      lengthDiffMm: 7.847,
+      fromEdge: { blockName: "FRONT", edgeId: 1 },
+      toEdge: { blockName: "BACK", edgeId: 1 }
+    }
+  });
+  assert.equal(backTo.status === "resolved" ? backTo.reference : "unresolved", "to");
+});
+
 test("adapter + createProposalFile produce a self-contained overlay proposal", () => {
   const file = createProposalFile({
     sourceFile: "cycling_knickers.dxf",

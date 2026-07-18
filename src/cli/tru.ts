@@ -4,7 +4,8 @@
 // 作る。`apply` は accept された proposal の補正 geometry を、--out の Truer 所有 DXF に書く
 //（M3: 書き先はこの裁断用の補正済み DXF であって、.val/Loomit ではない）。
 
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join } from "node:path";
 
 import { createProposalFile } from "../core/proposal/createProposalFile.ts";
 import { validateProposalFile } from "../core/proposal/proposalSchema.ts";
@@ -29,7 +30,7 @@ import { isSameFilePath } from "./samePath.ts";
 const USAGE = `tru — Truer CLI (MVP)
 
 Usage:
-  tru propose <pattern.dxf> --diagnostic <report.json> --out <proposal.json> [--preview <preview.svg>] [--slnt <cmd>]
+  tru propose <pattern.dxf> --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--slnt <cmd>]
   tru apply   <pattern.dxf> --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
 
 Commands:
@@ -38,7 +39,10 @@ Commands:
 
 propose options:
   --diagnostic <file>   Seamlint report JSON (CheckReport or GeometryRequestReport).
-  --out <file>          Where to write the proposal JSON.
+  --reference <block>   seam_length_mismatch で固定 (基準=reference) とする辺の BLOCK 名。相手辺をこれに
+                        合わせる目標を出す。複数指定可 (固定パーツ集合)。診断の from/to どちらの blockName にも
+                        一致しない / 両方一致なら向きを決めず両方向 preview-only のまま (T6)。
+  --out <file>          proposal JSON の書き出し先。省略時は output/<dxf 名>.proposal.json (親が無ければ作成)。
   --preview <file>      Optional: overlay SVG (seam Δ / curve_kink before+after).
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
@@ -58,10 +62,14 @@ interface ProposeOptions {
   out?: string;
   preview?: string;
   slnt?: string;
+  // seam_length_mismatch で「固定（基準 = reference）とみなす辺」の BLOCK 名。人が打つのは part 名だが、
+  // part→BLOCK 名の翻訳は上流（Loomit の `loom reconcile`）が持ち、CLI には解決済みの BLOCK 名が渡る
+  //（例 `--reference FRONT`）。複数指定＝固定パーツ集合。照合は seam adapter が行い core は pure のまま。
+  reference: string[];
 }
 
 function parseProposeArgs(args: string[]): ProposeOptions {
-  const options: ProposeOptions = {};
+  const options: ProposeOptions = { reference: [] };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--diagnostic") {
@@ -72,6 +80,16 @@ function parseProposeArgs(args: string[]): ProposeOptions {
       options.preview = requireValue(arg, args[++index]);
     } else if (arg === "--slnt") {
       options.slnt = requireValue(arg, args[++index]);
+    } else if (arg === "--reference") {
+      // 続く非 flag token を BLOCK 名として取り込む（複数=固定パーツ集合）。`--accepted <id...>` と同じ多トークン形
+      // なので `--reference BACK FRONT` も `--reference BACK --reference FRONT` も通る。usage の `<block>...` と一致。
+      const before = options.reference.length;
+      while (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
+        options.reference.push(args[++index]!);
+      }
+      if (options.reference.length === before) {
+        throw new Error("--reference requires at least one BLOCK name.");
+      }
     } else if (arg.startsWith("--")) {
       throw new Error(`Unknown option: ${arg}`);
     } else if (options.dxfFile !== undefined) {
@@ -127,6 +145,11 @@ function requireValue(optionName: string, value: string | undefined): string {
   return value;
 }
 
+// --out 省略時の proposal 既定出力先（直叩きデバッグ用）。DXF 名から導き output/ 配下に置く。
+function defaultProposalOutPath(dxfFile: string): string {
+  return join("output", `${basename(dxfFile, extname(dxfFile))}.proposal.json`);
+}
+
 async function runPropose(args: string[]): Promise<number> {
   let options: ProposeOptions;
   try {
@@ -136,10 +159,8 @@ async function runPropose(args: string[]): Promise<number> {
     return 2;
   }
 
-  if (!options.dxfFile || !options.diagnostic || !options.out) {
-    process.stderr.write(
-      "tru propose: <pattern.dxf>, --diagnostic, and --out are required.\n\n" + USAGE
-    );
+  if (!options.dxfFile || !options.diagnostic) {
+    process.stderr.write("tru propose: <pattern.dxf> and --diagnostic are required.\n\n" + USAGE);
     return 2;
   }
 
@@ -165,12 +186,19 @@ async function runPropose(args: string[]): Promise<number> {
     // edge-addressing bridge）。address が無ければ not-found を返し、diagnostic は skip される、
     // 推測はしない（T6 / T8）。
     resolveTarget: buildResolveTarget(runEdges),
-    resolveSeamPair: buildResolveSeamPair(runEdges)
+    // seam ペアの reference（固定辺）は、診断の from/to edge の blockName を `--reference` の BLOCK 名集合と
+    // 照合して決める（adapter の責務。core は pure）。集合が空なら従来どおり両方向 preview-only（T6）。
+    resolveSeamPair: buildResolveSeamPair(runEdges, options.reference)
   });
 
-  await writeFile(options.out, JSON.stringify(file, null, 2) + "\n", "utf8");
+  // --out は任意。省略時は output/<dxf 名>.proposal.json を既定にし、親ディレクトリが無ければ作る。
+  // loom 経由の reconcile では loom が常に絶対 --out（<outputs.dir>/reconcile/<from>-<to>.proposal.json）を
+  // 渡すので、この既定は直叩きデバッグ用。指定パスの親も無ければ作る（loom の reconcile/ サブディレクトリ対応）。
+  const outPath = options.out ?? defaultProposalOutPath(options.dxfFile);
+  await mkdir(dirname(outPath), { recursive: true });
+  await writeFile(outPath, JSON.stringify(file, null, 2) + "\n", "utf8");
   process.stdout.write(
-    `propose: ${file.proposals.length} proposal(s), ${file.skipped.length} skipped -> ${options.out}\n`
+    `propose: ${file.proposals.length} proposal(s), ${file.skipped.length} skipped -> ${outPath}\n`
   );
 
   if (options.preview) {
