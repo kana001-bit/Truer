@@ -592,6 +592,73 @@ test("seam pair keeps a designated reference; still preview-only", () => {
   assert.equal(proposal.changes.length, 0);
 });
 
+test("seam ① structural-link recommendation: fixKind/easeMm always, linkTarget when reference set", () => {
+  // 守る仕様（Slice 1）: seam_length_mismatch には常に fixKind="structural-link" と easeMm（既定0）が付く。
+  //           reference が決まっていれば linkTarget（conform=reference の反対辺 / 目標=reference 辺の長さ）も
+  //           builder が計算して載せる（Codex Finding 2 の数値整合を builder test で固定）。preview-only は不変。
+  const withRef = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(2415.778, 2167.495)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from")
+  });
+  assert.deepEqual(validateProposalFile(withRef), []);
+  const seamRef = withRef.proposals[0]!.seamReconciliation!;
+  assert.equal(seamRef.fixKind, "structural-link");
+  assert.equal(seamRef.easeMm, 0);
+  // reference="from" → conform="to"、目標 = from 辺の長さ（2415.778）。
+  assert.deepEqual(seamRef.linkTarget, { conform: "to", targetFinishedMm: 2415.778 });
+  assert.equal(withRef.proposals[0]!.mode, "preview-only");
+
+  // reference 未指定なら linkTarget は付かない（fixKind/easeMm は付く、preview-only 両方向）。
+  const noRef = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(500, 505)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub()
+  });
+  assert.deepEqual(validateProposalFile(noRef), []);
+  const seamNo = noRef.proposals[0]!.seamReconciliation!;
+  assert.equal(seamNo.fixKind, "structural-link");
+  assert.equal(seamNo.easeMm, 0);
+  assert.equal(seamNo.linkTarget, undefined);
+
+  // 宣言 ease≠0（Codex Finding）: 目標長は固定辺長ではなく、宣言 ease を保つ位置でなければならない。
+  // reference="from"(=100), to=90, ease=8 → conform="to"、目標 = 100 - 8 = 92（8mm のイセを潰さない）。
+  const easeBase = seamLengthMismatch(100, 90);
+  const withEase: DiagnosticInput = { ...easeBase, actual: { ...easeBase.actual, easeMm: 8 } };
+  const eased = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [withEase],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from")
+  });
+  assert.deepEqual(validateProposalFile(eased), []);
+  const seamEase = eased.proposals[0]!.seamReconciliation!;
+  assert.equal(seamEase.easeMm, 8);
+  assert.deepEqual(seamEase.linkTarget, { conform: "to", targetFinishedMm: 92 });
+
+  // 宣言 ease>0 だが測定差 0（Codex Finding, Math.sign(0)）: 向きが決まらないので目標長を捏造せず
+  // linkTarget を出さない。from=100/to=100/ease=8 → fixKind/easeMm は付くが linkTarget は付かない。
+  const zeroDiff = seamLengthMismatch(100, 100);
+  const zeroDiffEase: DiagnosticInput = { ...zeroDiff, actual: { ...zeroDiff.actual, easeMm: 8 } };
+  const zeroed = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [zeroDiffEase],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from")
+  });
+  assert.deepEqual(validateProposalFile(zeroed), []);
+  const seamZero = zeroed.proposals[0]!.seamReconciliation!;
+  assert.equal(seamZero.fixKind, "structural-link");
+  assert.equal(seamZero.easeMm, 8);
+  assert.equal(seamZero.linkTarget, undefined);
+});
+
 test("seam pair not-found / ambiguous are skipped, not guessed (T6)", () => {
   // 守る仕様: ペア解決が not-found / ambiguous なら推測せず、区別して skip。
   const notFound = createProposalFile({
