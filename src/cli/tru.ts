@@ -19,6 +19,7 @@ import {
 } from "../adapters/seamlint/index.ts";
 import {
   createSlntEdgesRunner,
+  detectCmdPercentRisk,
   resolveSlntCommand,
   tokenizeCommand
 } from "../adapters/seamlint/slntRunner.ts";
@@ -177,6 +178,11 @@ async function runPropose(args: string[]): Promise<number> {
 
   const slntCommand = options.slnt ? tokenizeCommand(options.slnt) : resolveSlntCommand();
   const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile: options.dxfFile });
+  // Windows で slnt が .cmd/.bat かつ dxf パスに定義済み %VAR% があると cmd.exe が展開して失敗しうる。事前に警告。
+  const cmdRisk = detectCmdPercentRisk(slntCommand, [options.dxfFile]);
+  if (cmdRisk) {
+    process.stderr.write(`tru propose: warning: ${cmdRisk}\n`);
+  }
 
   const file = createProposalFile({
     sourceFile: options.dxfFile,
@@ -253,6 +259,10 @@ async function runApply(args: string[]): Promise<number> {
 
   const slntCommand = options.slnt ? tokenizeCommand(options.slnt) : resolveSlntCommand();
   const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile: options.dxfFile });
+  const cmdRisk = detectCmdPercentRisk(slntCommand, [options.dxfFile]);
+  if (cmdRisk) {
+    process.stderr.write(`tru apply: warning: ${cmdRisk}\n`);
+  }
   const getCurrentPoints = buildEdgePointsLookup(runEdges);
 
   let plan;
