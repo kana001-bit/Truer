@@ -5,9 +5,12 @@
 // diagnostic は既に各辺の address `actual.fromEdge/toEdge = { blockName, edgeId, arcRange }` を持つ
 //（Seamlint edge-addressing bridge）。この resolver はその address を使って edge の `points` を
 // `slnt edges` から取り、edgeId を変換し（number -> string）、各辺の長さは diagnostic の
-// fromLengthMm/toLengthMm（mismatch を測っている値）から取る。どちらが Δ を吸収するかは未決のまま
-//（まだ Loomit/人間の reference token が無い）なので、ペアは両方向で提示し（T6）、proposal は
-// preview-only のまま。
+// fromLengthMm/toLengthMm（mismatch を測っている値）から取る。
+//
+// どちらを固定（基準 = reference）とみなすかは、CLI `--reference` で渡された BLOCK 名集合と from/to edge の
+// blockName を照合して決める（片側だけ一致→その側が reference）。集合が空、両側一致、どちらも不一致のときは
+// 決めない（reference undefined＝両方向 preview-only, T6、推測しない）。人が打つ part 名→BLOCK 名の翻訳は
+// 上流（Loomit の `loom reconcile`）が持ち、ここには解決済みの BLOCK 名が届く。
 
 import type {
   DiagnosticInput,
@@ -58,8 +61,12 @@ function resolveEdge(
 }
 
 export function buildResolveSeamPair(
-  runEdges: SlntEdgesRunner
+  runEdges: SlntEdgesRunner,
+  // 固定（基準 = reference）とみなす辺の BLOCK 名集合（`--reference`）。省略 / 空なら reference を決めず
+  // 両方向 preview-only（T6）。順序は無関係なので Set 化して照合する。
+  referenceBlockNames: readonly string[] = []
 ): (diagnostic: DiagnosticInput) => SeamPairResolution {
+  const referenceBlocks = new Set(referenceBlockNames);
   // 各 BLOCK の edges を propose run ごとに高々 1 回だけ問い合わせる（1 つの report が同じ block 上に
   // 複数の mismatch を持ちうる）。propose を決定的に保ち、冗長な subprocess 起動を避ける。
   const cache = new Map<string, SlntEdgesResult>();
@@ -82,7 +89,23 @@ export function buildResolveSeamPair(
     const toEdge = resolveEdge(toAddress, numberOr(actual?.toLengthMm, 0), cachedRun);
     if (!fromEdge || !toEdge) return { status: "not-found" };
 
-    // reference は未決（Loomit/人間の token 無し）-> 両方向を提示する（T6）。
-    return { status: "resolved", fromEdge, toEdge };
+    // reference（固定辺）の決定: from/to の blockName が `--reference` 集合にあるかを見て、片側だけ一致すれば
+    // その側を固定とする。両側一致（同一 BLOCK 内 seam / 両方指定）や、どちらも不一致は決めない
+    //（reference undefined＝両方向を提示, T6、推測しない）。
+    const fromIsReference = referenceBlocks.has(fromAddress.blockName);
+    const toIsReference = referenceBlocks.has(toAddress.blockName);
+    let reference: "from" | "to" | undefined;
+    if (fromIsReference && !toIsReference) {
+      reference = "from";
+    } else if (toIsReference && !fromIsReference) {
+      reference = "to";
+    }
+
+    return {
+      status: "resolved",
+      fromEdge,
+      toEdge,
+      ...(reference !== undefined ? { reference } : {})
+    };
   };
 }
