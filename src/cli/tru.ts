@@ -63,7 +63,7 @@ interface ProposeOptions {
   preview?: string;
   slnt?: string;
   // seam_length_mismatch で「固定（基準 = reference）とみなす辺」の BLOCK 名。人が打つのは part 名だが、
-  // part→BLOCK 名の翻訳は上流（Loomit の `loom reconcile`）が持ち、CLI には解決済みの BLOCK 名が渡る
+  // part→BLOCK 名の翻訳は上流（Loomit の `loom match`）が持ち、CLI には解決済みの BLOCK 名が渡る
   //（例 `--reference FRONT`）。複数指定＝固定パーツ集合。照合は seam adapter が行い core は pure のまま。
   reference: string[];
 }
@@ -192,8 +192,8 @@ async function runPropose(args: string[]): Promise<number> {
   });
 
   // --out は任意。省略時は output/<dxf 名>.proposal.json を既定にし、親ディレクトリが無ければ作る。
-  // loom 経由の reconcile では loom が常に絶対 --out（<outputs.dir>/reconcile/<from>-<to>.proposal.json）を
-  // 渡すので、この既定は直叩きデバッグ用。指定パスの親も無ければ作る（loom の reconcile/ サブディレクトリ対応）。
+  // loom 経由の match では loom が常に絶対 --out（<outputs.dir>/match/<from>-<to>.proposal.json）を
+  // 渡すので、この既定は直叩きデバッグ用。指定パスの親も無ければ作る（loom の match/ サブディレクトリ対応）。
   const outPath = options.out ?? defaultProposalOutPath(options.dxfFile);
   await mkdir(dirname(outPath), { recursive: true });
   await writeFile(outPath, JSON.stringify(file, null, 2) + "\n", "utf8");
