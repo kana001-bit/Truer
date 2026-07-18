@@ -4,7 +4,7 @@
 
 A write tool for pattern making — it proposes a small, explainable correction and writes only the one a human accepts.
 
-*日本語版: [`README.ja.md`](README.ja.md)*
+_日本語版: [`README.ja.md`](README.ja.md)_
 
 ## What is Truer?
 
@@ -25,12 +25,12 @@ The geometry it edits is an ASTM **DXF** net line: an edge is addressed by `BLOC
 ## Why this one has to be careful
 
 The lines Truer edits become physical cuts in cloth. So the heaviest failure here is not a
-crash — it is applying a correction a human *thinks* they reviewed but did not. A validator that
+crash — it is applying a correction a human _thinks_ they reviewed but did not. A validator that
 is merely wrong wastes time; a fixer that quietly writes an unreviewed edit wastes fabric, or
 ships a garment that does not fit.
 
-That single risk shapes the whole design. Truer is built so that it is *structurally unable to
-lie* about what it will do:
+That single risk shapes the whole design. Truer is built so that it is _structurally unable to
+lie_ about what it will do:
 
 - **preview == apply.** The "after" line drawn in the preview is byte-for-byte the geometry
   `apply` writes. Both are produced from the same proposal, through the same single function —
@@ -39,8 +39,8 @@ lie* about what it will do:
   atomically (temp → rename); in-place overwrite is refused (`--out` == source is an error).
   Source design data is not recoverable, so it is never the thing being written.
 - **No apply without acceptance.** `apply` touches only the proposal ids a human explicitly
-  accepted (`--accepted`). Seamlint's `severity` is a signal to *look*, never permission to
-  *change*.
+  accepted (`--accepted`). Seamlint's `severity` is a signal to _look_, never permission to
+  _change_.
 - **Digest-gated.** Before `apply` writes a byte, it verifies the source and the target edge
   still match the digests recorded at propose time. If the pattern moved underneath, it fails
   instead of writing.
@@ -49,7 +49,7 @@ lie* about what it will do:
   draw a blue "corrected" line for an edit it is unsure of. A confident-looking wrong answer is
   worse than a visible false positive.
 - **Endpoints are not moved alone.** An endpoint carries seam, closure, and notch meaning. The
-  first slice corrects kinks *inside* an edge only; anything touching an endpoint stays
+  first slice corrects kinks _inside_ an edge only; anything touching an endpoint stays
   preview-only.
 
 The proposal itself is a machine-readable contract (`truer.proposal.v0`) — self-contained, with
@@ -108,7 +108,7 @@ the same `changes` that `apply` will write (preview == apply).
       },
       "intent": { "kind": "smooth-curve-kink", "confidence": "medium", "reviewRequired": true },
       "changes": [{ "kind": "move-vertex", "vertexIndex": 4, "to": { "x": 121.4, "y": 70.8 } }],
-      "preview": { "edge": { "points": [ /* the edge's net-line polyline */ ] } },
+      "preview": { "edge": { "points": [/* the edge's net-line polyline */] } },
       "notes": ["Interior kink slid onto the chord between its two neighbours."]
     }
   ],
@@ -116,7 +116,7 @@ the same `changes` that `apply` will write (preview == apply).
 }
 ```
 
-When the fix is *not* unique — a `geometry.seam_length_mismatch`, where the length difference
+When the fix is _not_ unique — a `geometry.seam_length_mismatch`, where the length difference
 could be taken up by shortening one edge, easing, or gathering — Truer stays `preview-only`. It
 shows the two mismatched edges and the Δ, records an advisory target (which edge to conform, to
 what finished length), and refuses to invent a blue line until a human chooses:
@@ -136,7 +136,7 @@ what finished length), and refuses to invent a blue line until a human chooses:
 ## How this was built
 
 Truer is built with AI coding agents, directed by me. The design — above all the safety
-invariants that decide what the tool is even *allowed* to do — the architecture, and every
+invariants that decide what the tool is even _allowed_ to do — the architecture, and every
 judgment call are mine; the agents write the code under rules I set. Those rules live in
 [`AGENTS.md`](AGENTS.md). The reasoning behind the design, including the SVG→DXF pivot and what I
 kept invariant while changing geometry formats, is recorded in the
@@ -146,14 +146,14 @@ kept invariant while changing geometry formats, is recorded in the
 
 Truer is one third of a pattern-making toolchain, each with a single job:
 
-| Tool                                            | Job                                                     |
-| ----------------------------------------------- | ------------------------------------------------------- |
-| **[Loomit](https://github.com/kana001-bit/Loomit)**   | Pattern structure, the assembly graph, semantic `diff`. |
+| Tool                                                    | Job                                                     |
+| ------------------------------------------------------- | ------------------------------------------------------- |
+| **[Loomit](https://github.com/kana001-bit/Loomit)**     | Pattern structure, the assembly graph, semantic `diff`. |
 | **[Seamlint](https://github.com/kana001-bit/Seamlint)** | Measures geometry and reports problems.                 |
-| **Truer**                                       | Proposes corrections and writes the accepted ones.      |
+| **Truer**                                               | Proposes corrections and writes the accepted ones.      |
 
-The boundary between them is fixed before the internals: Seamlint decides *what is wrong*, Truer
-decides *how it could be fixed and writes it*, and a human decides *what actually changes*.
+The boundary between them is fixed before the internals: Seamlint decides _what is wrong_, Truer
+decides _how it could be fixed and writes it_, and a human decides _what actually changes_.
 
 ## Status
 
@@ -187,7 +187,7 @@ is still `private` at `0.0.0`).
 - Truer writes its own corrected DXF (this one garment), not `.val` (the Valentina master), by
   design; an npm install path is not there yet.
 
-The corrected DXF Truer writes is for *this one cut* — it is not propagated back to a Valentina
+The corrected DXF Truer writes is for _this one cut_ — it is not propagated back to a Valentina
 `.val` master. That is a deliberate trade-off, kept honest: "fix this garment before cutting,"
 not "re-grade the whole size run." The design history has the full reasoning.
 
