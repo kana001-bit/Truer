@@ -358,6 +358,76 @@ test("--reference applies per seam (same fixed BLOCK on whichever side it appear
   assert.equal(backTo.status === "resolved" ? backTo.reference : "unresolved", "to");
 });
 
+// Seamlint band-seam の実 emit shape（Seamlint checkGeometryRequest.ts の bandSeamFailureReport /
+// BandNeighbourTrace 由来）: N-ary 診断で fromEdge/toEdge を持たず、actual は neighbours（各隣接ピースの
+// 接辺と finished 長・裁断枚数の証跡）と band 側の測定値。pairwise の seam_length_mismatch とは別 shape。
+function bandSeamDiagnostic() {
+  return {
+    severity: "warning",
+    code: "geometry.band_seam_sum_mismatch",
+    target: "waistband",
+    message:
+      'Band-seam check "waist" found that the band circumference does not reconcile with the sum of its neighbours\' finished edges within the closure tolerance, so this band may be gathered/tucked or the neighbour set is wrong.',
+    expected: { checkId: "waist", kind: "band-seam" },
+    actual: {
+      neighbours: [
+        {
+          partId: "front",
+          blockName: "FRONT",
+          edgeId: 0,
+          arcRange: [0.499, 0.887],
+          finishedLengthMm: 165,
+          cutQuantity: 2
+        },
+        {
+          partId: "back",
+          blockName: "BACK",
+          edgeId: 0,
+          arcRange: [0.471, 0.899],
+          finishedLengthMm: 162.5,
+          cutQuantity: 2
+        }
+      ],
+      bandTotalMm: 700.25,
+      sumMm: 655,
+      closureMm: 45.25,
+      closurePct: 6.91
+    },
+    suggestion: [
+      "Confirm the neighbour set and each piece's cut quantity, or widen closureRatio if this band carries intentional ease."
+    ]
+  };
+}
+
+test("band_seam_sum_mismatch (N-ary, no fromEdge/toEdge) is skipped without poisoning the sibling seam proposal", () => {
+  // 守る仕様 (S5/T8): Seamlint が実際に出す band-seam 診断は fromEdge/toEdge を持たない別 shape。Truer は
+  //           これを crash させず proposal.unsupported_diagnostic_code で skipped に残す（黙って捨てない・
+  //           推測しない）。同じ report に混在する seam_length_mismatch は巻き込まれず proposal になり、
+  //           skip は id を消費しないので prop_001 のまま。file 全体も validation を通る。
+  const report = seamReport();
+  const mixed = { ...report, diagnostics: [bandSeamDiagnostic(), ...report.diagnostics] };
+
+  // 実 shape（neighbours 配列・長さ field 無し）が parse を通る（throw しない）。
+  const diagnostics = parseSeamlintReport(mixed);
+  assert.equal(diagnostics.length, 2);
+
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
+    diagnostics,
+    resolveTarget: () => ({ status: "not-found" }),
+    resolveSeamPair: buildResolveSeamPair(fakeRunner([]))
+  });
+
+  assert.deepEqual(validateProposalFile(file), []);
+  assert.equal(file.skipped.length, 1);
+  assert.equal(file.skipped[0]!.code, "proposal.unsupported_diagnostic_code");
+  assert.equal(file.skipped[0]!.diagnosticCode, "geometry.band_seam_sum_mismatch");
+  assert.equal(file.proposals.length, 1);
+  assert.equal(file.proposals[0]!.id, "prop_001");
+  assert.equal(file.proposals[0]!.sourceDiagnostic.code, "geometry.seam_length_mismatch");
+});
+
 test("adapter + createProposalFile produce a self-contained overlay proposal", () => {
   const file = createProposalFile({
     sourceFile: "cycling_knickers.dxf",

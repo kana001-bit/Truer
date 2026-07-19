@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 function runTru(args: string[]) {
@@ -60,4 +63,62 @@ test("propose --reference takes multiple BLOCK names (BACK FRONT is not a stray 
   ]);
   assert.notEqual(result.status, 2);
   assert.doesNotMatch(result.stderr, /Expected a single/);
+});
+
+test("propose with a band-seam-only report exits 0 and records the skip (slnt not spawned)", () => {
+  // 守る仕様 (S5/T8 + exit code 契約): supported 診断が 1 件も無い report（geometry.band_seam_sum_mismatch
+  //           のみ）でも tru propose は exit 0 で proposal file を書き、band 診断は理由付きで skipped に残る。
+  //           unsupported code は resolver に届く前に skip されるので、slnt が無い環境でも成立する（lazy spawn）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-band-skip-"));
+  const report = {
+    status: "warning",
+    target: "geometry-request",
+    diagnostics: [
+      {
+        severity: "warning",
+        code: "geometry.band_seam_sum_mismatch",
+        target: "waistband",
+        expected: { checkId: "waist", kind: "band-seam" },
+        actual: {
+          neighbours: [
+            {
+              partId: "front",
+              blockName: "FRONT",
+              edgeId: 0,
+              arcRange: [0.499, 0.887],
+              finishedLengthMm: 165,
+              cutQuantity: 2
+            }
+          ],
+          bandTotalMm: 700.25,
+          sumMm: 330,
+          closureMm: 370.25,
+          closurePct: 52.88
+        }
+      }
+    ],
+    reports: []
+  };
+  const reportPath = join(dir, "band.report.json");
+  writeFileSync(reportPath, JSON.stringify(report));
+  const outPath = join(dir, "band.proposal.json");
+
+  const result = runTru([
+    "propose",
+    "test/fixtures/curve-kink.dxf",
+    "--diagnostic",
+    reportPath,
+    "--out",
+    outPath
+  ]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /0 proposal\(s\), 1 skipped/);
+
+  const file = JSON.parse(readFileSync(outPath, "utf8")) as {
+    proposals: unknown[];
+    skipped: { code: string; diagnosticCode: string }[];
+  };
+  assert.equal(file.proposals.length, 0);
+  assert.equal(file.skipped[0]!.code, "proposal.unsupported_diagnostic_code");
+  assert.equal(file.skipped[0]!.diagnosticCode, "geometry.band_seam_sum_mismatch");
 });
