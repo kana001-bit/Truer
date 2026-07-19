@@ -41,11 +41,13 @@ Commands:
 
 propose options:
   --diagnostic <file>   Seamlint report JSON (CheckReport or GeometryRequestReport).
-  --reference <block>   seam_length_mismatch で固定 (基準=reference) とする辺の BLOCK 名。相手辺をこれに
-                        合わせる目標を出す。複数指定可 (固定パーツ集合)。診断の from/to どちらの blockName にも
-                        一致しない / 両方一致なら向きを決めず両方向 preview-only のまま (T6)。
+  --reference <block>   固定 (基準=reference) とする側の BLOCK 名。複数指定可 (固定パーツ集合)。相手側を
+                        これに合わせる目標を出す。seam_length_mismatch: 相手辺の目標 finished 長
+                        (linkTarget)。band_seam_sum_mismatch: band を指定→band 固定 (neighbours を直す
+                        向きだけ)、neighbour を指定→band が conform で band 長の目標 (targetBandLengthMm)。
+                        どの blockName にも一致しない / 両側一致なら向きを決めず両方向 preview-only (T6)。
   --out <file>          proposal JSON の書き出し先。省略時は output/<dxf 名>.proposal.json (親が無ければ作成)。
-  --preview <file>      Optional: overlay SVG (seam Δ / curve_kink before+after).
+  --preview <file>      Optional: overlay SVG (seam Δ / band closure / curve_kink before+after).
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
 apply options:
@@ -64,9 +66,10 @@ interface ProposeOptions {
   out?: string;
   preview?: string;
   slnt?: string;
-  // seam_length_mismatch で「固定（基準 = reference）とみなす辺」の BLOCK 名。人が打つのは part 名だが、
+  // 「固定（基準 = reference）とみなす側」の BLOCK 名。seam_length_mismatch では固定辺、
+  // band_seam_sum_mismatch では band か neighbour 群のどちらを正とするか。人が打つのは part 名だが、
   // part→BLOCK 名の翻訳は上流（Loomit の `loom match`）が持ち、CLI には解決済みの BLOCK 名が渡る
-  //（例 `--reference FRONT`）。複数指定＝固定パーツ集合。照合は seam adapter が行い core は pure のまま。
+  //（例 `--reference FRONT`）。複数指定＝固定パーツ集合。照合は adapter が行い core は pure のまま。
   reference: string[];
 }
 
