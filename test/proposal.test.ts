@@ -659,6 +659,239 @@ test("seam ① structural-link recommendation: fixKind/easeMm always, linkTarget
   assert.equal(seamZero.linkTarget, undefined);
 });
 
+// ②corner-slide 用の pair stub: conform（to）辺は直辺 (9,0)→(9,100)。end 角 (9,100) に水平の直線隣辺
+// （edgeId "2"、長さ 50）、start 角 (9,0) に曲線隣辺（3 点 → solve 対象外）を持つ。
+const SLIDE_TO_POINTS = [
+  { x: 9, y: 0 },
+  { x: 9, y: 100 }
+];
+const SLIDE_TO_NEIGHBORS = {
+  start: {
+    edgeId: "0",
+    points: [
+      { x: 9, y: 0 },
+      { x: 30, y: -20 },
+      { x: 60, y: -25 }
+    ]
+  },
+  end: {
+    edgeId: "2",
+    points: [
+      { x: 9, y: 100 },
+      { x: 59, y: 100 }
+    ]
+  }
+};
+
+function resolveSlidePairStub(
+  reference?: "from" | "to"
+): (diagnostic: DiagnosticInput) => SeamPairResolution {
+  return (diagnostic) => {
+    if (diagnostic.target !== SEAM_TARGET) return { status: "not-found" };
+    const fromRaw = diagnostic.actual?.fromLengthMm;
+    const toRaw = diagnostic.actual?.toLengthMm;
+    return {
+      status: "resolved",
+      fromEdge: {
+        blockName: SEAM_BLOCK,
+        edgeId: SEAM_EDGE,
+        points: SEAM_POINTS,
+        lengthMm: typeof fromRaw === "number" ? fromRaw : 0
+      },
+      toEdge: {
+        blockName: SEAM_TO_BLOCK,
+        edgeId: SEAM_TO_EDGE,
+        points: SLIDE_TO_POINTS,
+        lengthMm: typeof toRaw === "number" ? toRaw : 0,
+        neighbors: SLIDE_TO_NEIGHBORS
+      },
+      ...(reference !== undefined ? { reference } : {})
+    };
+  };
+}
+
+test("seam ② corner-slide: solved corner candidates ride along when reference is set (advisory)", () => {
+  // 守る仕様（②Slice 1）: reference が決まると cornerSlide が linkTarget と同ゲートで載る。conform 辺の
+  //           直線隣辺を持つ角だけが候補になり（曲線隣辺の start 角は出ない）、数値は emit 丸め
+  //           （EMIT_DECIMALS=3）。角の xy は出さない（V2: スライド量と隣辺長変化のみ）。preview-only /
+  //           changes:[] / preview.edges は②を足しても不変（補正線は描かない）。
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(105, 100)], // reference=from(105) → conform=to(100)、Δ=+5
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSlidePairStub("from")
+  });
+  assert.deepEqual(validateProposalFile(file), []);
+  const proposal = file.proposals[0]!;
+  const slide = proposal.seamReconciliation!.cornerSlide!;
+  assert.equal(slide.conform, "to");
+  assert.equal(slide.targetFinishedMm, 105);
+  assert.equal(slide.pairingMayDrift, true);
+  assert.equal(slide.candidates.length, 1);
+  // 末端 segment 100 → 105: 円∩線の解は √(105²−100²)=√1025=32.0156…、emit 丸めで 32.016。
+  // 隣辺（長さ 50）は N 側へ滑るので 50−√1025=17.984…。
+  assert.deepEqual(slide.candidates[0], {
+    corner: "end",
+    slideAlong: { blockName: SEAM_TO_BLOCK, edgeId: "2" },
+    couplingClass: "unknown",
+    slideDistanceMm: 32.016,
+    neighborLengthChange: { fromMm: 50, toMm: 17.984 }
+  });
+  // ①は変わらず既定・推奨のまま（fixKind は structural-link、②は並記の fallback）。
+  assert.equal(proposal.seamReconciliation!.fixKind, "structural-link");
+  assert.deepEqual(proposal.seamReconciliation!.linkTarget, {
+    conform: "to",
+    targetFinishedMm: 105
+  });
+  // ②を足しても書かない・描かない。
+  assert.equal(proposal.mode, "preview-only");
+  assert.deepEqual(proposal.changes, []);
+  assert.equal(proposal.preview.edges!.length, 2);
+  // 指示ログの人間可読部（決定木の 2 行目）が notes にある。
+  assert.ok(proposal.notes.some((note) => note.includes("②corner-slide")));
+  assert.ok(proposal.notes.some((note) => note.includes("その場限り")));
+});
+
+test("seam ② corner-slide gate: absent without reference; empty candidates without neighbors", () => {
+  // 守る仕様: reference 未決なら cornerSlide 自体を出さない（conform が決まらない、T6）。reference は
+  //           あるが隣辺供給が無い（または解けない）なら candidates:[] で「②は解けない」を明示し、
+  //           pairingMayDrift も false（滑らせる候補が無いのに warning を出さない）。
+  const noRef = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(105, 100)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSlidePairStub()
+  });
+  assert.deepEqual(validateProposalFile(noRef), []);
+  assert.equal(noRef.proposals[0]!.seamReconciliation!.cornerSlide, undefined);
+
+  // 既存 stub（neighbors 無し）: reference はあるので cornerSlide は載るが候補ゼロ。
+  const noNeighbors = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(105, 100)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from")
+  });
+  assert.deepEqual(validateProposalFile(noNeighbors), []);
+  const slide = noNeighbors.proposals[0]!.seamReconciliation!.cornerSlide!;
+  assert.deepEqual(slide.candidates, []);
+  assert.equal(slide.pairingMayDrift, false);
+  assert.ok(noNeighbors.proposals[0]!.notes.some((note) => note.includes("解けません")));
+});
+
+test("createProposalFile is deterministic with corner-slide candidates too", () => {
+  // 守る仕様 (T10): solver を通しても同じ入力から byte 一致（根の選択・丸め・候補順が決定的）。
+  const input = {
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(105, 100)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSlidePairStub("from")
+  };
+  assert.equal(
+    JSON.stringify(createProposalFile(input)),
+    JSON.stringify(createProposalFile(input))
+  );
+});
+
+test("malformed cornerSlide is rejected by validation", () => {
+  // 守る仕様 (T9): cornerSlide が present なら shape（conform/targetFinishedMm/candidates/
+  //           pairingMayDrift、候補の住所・数値）と関係（reference 必須・conform は反対側）を検証し、
+  //           壊れた指示ログを下流へ渡さない。
+  const candidate = {
+    corner: "end",
+    slideAlong: { blockName: "FRONT", edgeId: "2" },
+    couplingClass: "unknown",
+    slideDistanceMm: 32.016,
+    neighborLengthChange: { fromMm: 50, toMm: 17.984 }
+  };
+  // reference は null で「無し」を表す（undefined だと default 引数に落ちて "from" になるため）。
+  function withCornerSlide(cornerSlide: unknown, reference: string | null = "from") {
+    return {
+      schema: PROPOSAL_SCHEMA_V0,
+      source: { file: "x.dxf", sourceDigest: "sha256:0", createdBy: "tru propose" },
+      proposals: [
+        {
+          id: "prop_001",
+          status: "proposed",
+          mode: "preview-only",
+          target: { blockName: "BACK", edgeId: "outseam", targetDigest: "sha256:0" },
+          sourceDiagnostic: { code: "geometry.seam_length_mismatch" },
+          intent: { kind: "reconcile-seam-length", confidence: "low", reviewRequired: true },
+          changes: [],
+          preview: {},
+          notes: [],
+          seamReconciliation: {
+            fromEdge: { blockName: "BACK", edgeId: "1", edgeDigest: "sha256:a", lengthMm: 105 },
+            toEdge: { blockName: "FRONT", edgeId: "1", edgeDigest: "sha256:b", lengthMm: 100 },
+            deltaMm: 5,
+            ...(reference !== null ? { reference } : {}),
+            cornerSlide
+          }
+        }
+      ],
+      skipped: []
+    };
+  }
+
+  // 正しい形は通る（candidates 空も可 = ②が解けないことの明示）。
+  const valid = {
+    conform: "to",
+    targetFinishedMm: 105,
+    candidates: [candidate],
+    pairingMayDrift: true
+  };
+  assert.deepEqual(validateProposalFile(withCornerSlide(valid)), []);
+  assert.deepEqual(
+    validateProposalFile(
+      withCornerSlide({
+        conform: "to",
+        targetFinishedMm: 105,
+        candidates: [],
+        pairingMayDrift: false
+      })
+    ),
+    []
+  );
+
+  const rejected: [unknown, string | null, string][] = [
+    // reference 無しでは出せない（conform が「反対側」として意味を持たない）。
+    [valid, null, "requires reference"],
+    // conform が reference と同じ側 = 固定辺を動かす矛盾。
+    [{ ...valid, conform: "from" }, "from", "non-reference"],
+    [{ ...valid, targetFinishedMm: Number.NaN }, "from", "targetFinishedMm"],
+    [{ ...valid, pairingMayDrift: "yes" }, "from", "pairingMayDrift"],
+    [{ ...valid, candidates: "none" }, "from", "candidates must be an array"],
+    [{ ...valid, candidates: [{ ...candidate, corner: "middle" }] }, "from", "corner"],
+    [
+      { ...valid, candidates: [{ ...candidate, slideAlong: { blockName: "FRONT" } }] },
+      "from",
+      "slideAlong"
+    ],
+    [
+      { ...valid, candidates: [{ ...candidate, couplingClass: "sideways" }] },
+      "from",
+      "couplingClass"
+    ],
+    [{ ...valid, candidates: [{ ...candidate, slideDistanceMm: -1 }] }, "from", "slideDistanceMm"],
+    [
+      { ...valid, candidates: [{ ...candidate, neighborLengthChange: { fromMm: 50 } }] },
+      "from",
+      "neighborLengthChange"
+    ]
+  ];
+  for (const [cornerSlide, reference, needle] of rejected) {
+    const errors = validateProposalFile(withCornerSlide(cornerSlide, reference));
+    assert.ok(
+      errors.some((error) => error.includes(needle)),
+      `expected an error mentioning "${needle}", got: ${errors.join("; ")}`
+    );
+  }
+});
+
 test("seam pair not-found / ambiguous are skipped, not guessed (T6)", () => {
   // 守る仕様: ペア解決が not-found / ambiguous なら推測せず、区別して skip。
   const notFound = createProposalFile({

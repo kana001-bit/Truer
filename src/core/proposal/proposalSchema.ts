@@ -193,6 +193,38 @@ export interface LinkTarget {
 //（Loomit/人間の token）までは `reference` は undefined。undefined の間、proposal は両方向を
 // 提示する preview-only のままで、どちらの edge を変えるか推測しない（T6）。
 // seam_length_mismatch proposal にのみ付く。
+// どの角で Δ を吸うかの選好クラス（V1）。低カップリング自動判定には piece の全 seam グラフ
+//（Loomit connector）が要るので、グラフ未供給の間は "unknown"＝人が選ぶ。
+export type CouplingClass = "low" | "high" | "unknown";
+
+// ②corner-slide の解けた角 1 つぶんの候補（advisory）。角の xy は出さない — Valentina の角は導出点の
+// ことがあり座標では動かせない（V2）。人へ渡すのは「どの角を・どの隣辺に沿って・何 mm」だけ。
+export interface CornerSlideCandidate {
+  // conform 辺の points 並びでどちらの角か。
+  corner: "start" | "end";
+  // 滑らせる先の隣辺（共有角を持つ同 BLOCK の辺）。直線隣辺だけが候補になる。
+  slideAlong: { blockName: string; edgeId: string };
+  couplingClass: CouplingClass;
+  // 隣辺に沿ったスライド量 mm（参考値・advisory）。
+  slideDistanceMm: number;
+  // 連動 warning（V3）: この角で吸うと隣辺の長さがこう変わる。
+  neighborLengthChange: { fromMm: number; toMm: number };
+}
+
+// fixKind の「② corner-slide（fallback・その場限り）」の指示ログ。①structural-link が過拘束などで
+// 使えないときに人が歩く決定木の 2 行目。linkTarget と同じゲート（reference 決定済み・目標長が
+// 決まる）でだけ付き、candidates が空 = どの角も解けない（曲線隣辺 / 解なし）ことの明示。
+export interface CornerSlide {
+  // 動かす辺（= reference の反対側）。linkTarget.conform と一致する。
+  conform: "from" | "to";
+  targetFinishedMm: number;
+  // 解けた角の候補（0..2、start→end 順で決定的）。どの角で吸うかは低カップリング優先で人が選ぶ（V1）。
+  candidates: CornerSlideCandidate[];
+  // 角スライドで notch 位置がずれ、Seamlint の notch 署名ペアリングが変わりうる（V3）。
+  // 当てたら再エクスポート→slnt 再チェックで閉じる。
+  pairingMayDrift: boolean;
+}
+
 export interface SeamReconciliation {
   fromEdge: SeamEdge;
   toEdge: SeamEdge;
@@ -208,6 +240,9 @@ export interface SeamReconciliation {
   fixKind?: FixKind;
   // fixKind === "structural-link" のときの推奨内容（どの辺を、どの finished 長へリンクせよ）。
   linkTarget?: LinkTarget;
+  // ②corner-slide（fallback）の指示ログ。fixKind はあくまで①を推したまま（既定）、②は「今すぐ
+  // 裁つなら」の代替として並記する。band-aid: val 未リンクのままなら再生成で mismatch が再発する。
+  cornerSlide?: CornerSlide;
 }
 
 export interface Proposal {
@@ -257,6 +292,7 @@ export function isSupportedDiagnosticCode(code: string): boolean {
 const STATUSES: readonly ProposalStatus[] = ["proposed", "accepted", "rejected", "applied"];
 const MODES: readonly ProposalMode[] = ["preview-only", "local-adjustment"];
 const FIX_KINDS: readonly FixKind[] = ["structural-link", "corner-slide"];
+const COUPLING_CLASSES: readonly CouplingClass[] = ["low", "high", "unknown"];
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -293,6 +329,45 @@ function isSeamEdge(value: unknown): value is SeamEdge {
   // addressing には edgeId / arcRange の少なくとも一方が要る（T6: edge を推測しない）。
   if (!isNonEmptyString(edge.edgeId) && !isArcRange(edge.arcRange)) return false;
   return true;
+}
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+// cornerSlide.candidates[] の 1 要素の shape 検証。壊れた候補（負のスライド量・住所欠落など）が
+// 保存された proposal から人へ届かないようにする（T9）。
+function cornerSlideCandidateError(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return "must be an object";
+  const candidate = value as Record<string, unknown>;
+  if (candidate.corner !== "start" && candidate.corner !== "end") {
+    return 'corner must be "start" or "end"';
+  }
+  const along = candidate.slideAlong as Record<string, unknown> | undefined;
+  if (
+    typeof along !== "object" ||
+    along === null ||
+    !isNonEmptyString(along.blockName) ||
+    !isNonEmptyString(along.edgeId)
+  ) {
+    return "slideAlong must address the neighbor edge with blockName and edgeId";
+  }
+  if (!(COUPLING_CLASSES as readonly string[]).includes(candidate.couplingClass as string)) {
+    return `couplingClass must be one of ${COUPLING_CLASSES.join(" | ")}`;
+  }
+  if (!isNonNegativeFiniteNumber(candidate.slideDistanceMm)) {
+    return "slideDistanceMm must be a non-negative finite number";
+  }
+  const change = candidate.neighborLengthChange as Record<string, unknown> | undefined;
+  if (
+    typeof change !== "object" ||
+    change === null ||
+    !isNonNegativeFiniteNumber(change.fromMm) ||
+    !isNonNegativeFiniteNumber(change.toMm)
+  ) {
+    return "neighborLengthChange must carry non-negative finite fromMm and toMm";
+  }
+  return undefined;
 }
 
 function isFinitePoint(value: unknown): value is Point {
@@ -471,6 +546,48 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
           } else if (link.conform === seam.reference) {
             errors.push(
               `${at}.seamReconciliation.linkTarget.conform must be the non-reference edge (opposite of reference)`
+            );
+          }
+        }
+      }
+      // ②corner-slide の指示ログ（任意・追加的）: 存在するときだけ shape と関係を検証する。
+      if (seam.cornerSlide !== undefined) {
+        const slide = seam.cornerSlide as Record<string, unknown>;
+        if (typeof slide !== "object" || slide === null) {
+          errors.push(`${at}.seamReconciliation.cornerSlide must be an object when present`);
+        } else {
+          if (slide.conform !== "from" && slide.conform !== "to") {
+            errors.push(`${at}.seamReconciliation.cornerSlide.conform must be "from" or "to"`);
+          }
+          if (!isNonNegativeFiniteNumber(slide.targetFinishedMm)) {
+            errors.push(
+              `${at}.seamReconciliation.cornerSlide.targetFinishedMm must be a non-negative finite number`
+            );
+          }
+          if (typeof slide.pairingMayDrift !== "boolean") {
+            errors.push(`${at}.seamReconciliation.cornerSlide.pairingMayDrift must be a boolean`);
+          }
+          if (!Array.isArray(slide.candidates)) {
+            errors.push(`${at}.seamReconciliation.cornerSlide.candidates must be an array`);
+          } else {
+            slide.candidates.forEach((candidate, candidateIndex) => {
+              const problem = cornerSlideCandidateError(candidate);
+              if (problem !== undefined) {
+                errors.push(
+                  `${at}.seamReconciliation.cornerSlide.candidates[${candidateIndex}] ${problem}`
+                );
+              }
+            });
+          }
+          // relation: linkTarget と同じゲートで出る advisory なので、reference（固定辺）が決まって
+          // いて conform がその反対側であることを要求する（矛盾した指示を下流へ渡さない）。
+          if (seam.reference !== "from" && seam.reference !== "to") {
+            errors.push(
+              `${at}.seamReconciliation.cornerSlide requires reference to designate the fixed edge`
+            );
+          } else if (slide.conform === seam.reference) {
+            errors.push(
+              `${at}.seamReconciliation.cornerSlide.conform must be the non-reference edge (opposite of reference)`
             );
           }
         }

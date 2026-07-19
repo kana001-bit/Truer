@@ -15,6 +15,7 @@
 import type {
   DiagnosticInput,
   ResolvedSeamEdge,
+  SeamEdgeNeighbor,
   SeamPairResolution
 } from "../../core/proposal/createProposalFile.ts";
 import type { Point } from "../../core/proposal/proposalSchema.ts";
@@ -43,20 +44,43 @@ function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+// 隣辺の軽量ビュー。points が辺として成立しない（2 点未満）候補は付けない — solver 側の
+// 共有角チェックと合わせ、壊れた隣辺で corner-slide を解かないための defensive（T8）。
+function toNeighbor(edge: SlntEdge | undefined): SeamEdgeNeighbor | undefined {
+  if (!edge || !Array.isArray(edge.points) || edge.points.length < 2) return undefined;
+  return { edgeId: String(edge.edgeId), points: edge.points };
+}
+
 function resolveEdge(
   address: EdgeAddress,
   lengthMm: number,
   runEdges: SlntEdgesRunner
 ): ResolvedSeamEdge | undefined {
   const result = runEdges(address.blockName);
-  const edge = result.edges.find((candidate) => candidate.edgeId === address.edgeId);
+  const index = result.edges.findIndex((candidate) => candidate.edgeId === address.edgeId);
+  const edge = result.edges[index];
   if (!edge || !Array.isArray(edge.points) || edge.points.length < 2) return undefined;
+
+  // 隣辺（②corner-slide の solve 用）: Seamlint の edges はループ順（edge[k].endPoint ===
+  // edge[k+1].startPoint、閉ループなので wrap-around）。始点角の隣 = k-1、終点角の隣 = k+1。
+  // 並びがループ順でない slnt 実装でも、solver の共有角チェックが不一致を弾く（推測しない）。
+  const count = result.edges.length;
+  let neighbors: ResolvedSeamEdge["neighbors"];
+  if (count >= 2) {
+    const start = toNeighbor(result.edges[(index - 1 + count) % count]);
+    const end = toNeighbor(result.edges[(index + 1) % count]);
+    if (start || end) {
+      neighbors = { ...(start ? { start } : {}), ...(end ? { end } : {}) };
+    }
+  }
+
   return {
     blockName: address.blockName,
     edgeId: String(address.edgeId), // Seamlint は number で出す; Truer の schema は string を使う。
     ...(address.arcRange ? { arcRange: address.arcRange } : {}),
     points: edge.points,
-    lengthMm
+    lengthMm,
+    ...(neighbors !== undefined ? { neighbors } : {})
   };
 }
 
