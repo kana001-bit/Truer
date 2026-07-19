@@ -263,6 +263,26 @@ test("buildResolveTarget omits vertexIndex when the address has none (older Seam
   assert.deepEqual(result.target.points, KINK_EDGE_POINTS);
 });
 
+test("buildResolveSeamPair attaches loop-order neighbors (k±1 wrap-around) for corner-slide", () => {
+  // 守る仕様: 解決した辺に同 BLOCK のループ順隣辺（始点角 = k-1 / 終点角 = k+1、閉ループなので
+  //           wrap-around）を軽量ビュー {edgeId(string), points} で付ける（②corner-slide の solve 用）。
+  //           BACK は 2 辺ループなので edge 1 の両角の隣辺はどちらも edge 0。FRONT は 1 辺しか
+  //           返さないので隣辺は付かない（solve をあきらめるだけで解決自体は成立）。
+  const [diagnostic] = parseSeamlintReport(seamReport());
+  const result = buildResolveSeamPair(fakeRunner([]))(diagnostic!);
+  assert.equal(result.status, "resolved");
+  if (result.status !== "resolved") return;
+
+  const neighbors = result.fromEdge.neighbors!;
+  assert.equal(neighbors.start!.edgeId, "0");
+  assert.equal(neighbors.end!.edgeId, "0");
+  assert.deepEqual(neighbors.start!.points, [
+    { x: 1, y: 1 },
+    { x: 2, y: 2 }
+  ]);
+  assert.equal(result.toEdge.neighbors, undefined);
+});
+
 test("buildResolveSeamPair queries each BLOCK at most once per run", () => {
   const calls: string[] = [];
   const resolve = buildResolveSeamPair(fakeRunner(calls));
