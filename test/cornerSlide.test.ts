@@ -180,6 +180,41 @@ test("corner-slide reports no-solution instead of emitting broken numbers", () =
   assert.deepEqual(unreachable, { ok: false, reason: "no-solution" });
 });
 
+test("corner-slide refuses a slide beyond the finite neighbor segment (no flip past the far corner)", () => {
+  // 守る仕様（レビュー P2）: 解は円∩無限直線なので、|t| が隣辺長以上（反対端 N を通り越して隣辺が
+  //           反転する / 隣辺長を超える大延長）は「隣辺に沿って滑らせる」操作ではない。ok にせず
+  //           no-solution とし、advisory 候補に載せない。
+  // 再現: 隣辺 50mm に対し Δ=+100 → t = √(200²−100²) = 173.2… > 50。修正前は (173.2,100) を ok で返していた。
+  const beyondFar = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: PERPENDICULAR_NEIGHBOR,
+    deltaMm: 100
+  });
+  assert.deepEqual(beyondFar, { ok: false, reason: "no-solution" });
+
+  // 負方向（隣辺の延長側）も同じ上限: 隣辺 3mm の延長線上を 5mm 引き戻す解は範囲外。
+  const beyondNear = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: [
+      { x: 0, y: 100 },
+      { x: 0, y: 103 }
+    ],
+    deltaMm: -5
+  });
+  assert.deepEqual(beyondNear, { ok: false, reason: "no-solution" });
+
+  // 境界の内側は依然解ける（隣辺 50mm・スライド √1025 ≈ 32mm < 50）。
+  const inside = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: PERPENDICULAR_NEIGHBOR,
+    deltaMm: 5
+  });
+  assert.ok(inside.ok);
+});
+
 test("corner-slide is deterministic (same input, same output)", () => {
   // 守る仕様 (T10): pure。時刻・乱数に依らず同じ入力から同じ出力。
   const input = {
