@@ -26,9 +26,12 @@ const TO_COLOR = "#ea580c";
 export const SEAM_PANEL_W = PAD * 2 + COL_W * 2 + COL_GAP;
 export const SEAM_PANEL_H = TITLE_H + COL_H + LABEL_H;
 
-// proposal は 2 edge の render geometry を持つとき seam panel を得る。
+// proposal は from/to 2 edge の render geometry を持つとき seam panel を得る。band 診断も
+// preview.edges を持つ（role="band"）ので、from/to の存在で厳密に判定して band を拾わない。
 export function hasSeamOverlay(proposal: Proposal): boolean {
-  return (proposal.preview.edges?.length ?? 0) > 0;
+  const edges = proposal.preview.edges;
+  if (!edges) return false;
+  return edges.some((edge) => edge.role === "from") && edges.some((edge) => edge.role === "to");
 }
 
 // edge の points を COL_W x COL_H の box に射影する: box に収め（アスペクト比保持）、中央寄せし、

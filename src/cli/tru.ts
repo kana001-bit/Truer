@@ -14,6 +14,7 @@ import { planApply } from "../core/apply/applyProposal.ts";
 import {
   parseSeamlintReport,
   buildResolveSeamPair,
+  buildResolveBandSeam,
   buildResolveTarget,
   buildEdgePointsLookup
 } from "../adapters/seamlint/index.ts";
@@ -194,7 +195,9 @@ async function runPropose(args: string[]): Promise<number> {
     resolveTarget: buildResolveTarget(runEdges),
     // seam ペアの reference（固定辺）は、診断の from/to edge の blockName を `--reference` の BLOCK 名集合と
     // 照合して決める（adapter の責務。core は pure）。集合が空なら従来どおり両方向 preview-only（T6）。
-    resolveSeamPair: buildResolveSeamPair(runEdges, options.reference)
+    resolveSeamPair: buildResolveSeamPair(runEdges, options.reference),
+    // band 診断（N-ary）も同じ `--reference` 集合を band/neighbour の blockName と照合して固定側を決める。
+    resolveBandSeam: buildResolveBandSeam(runEdges, options.reference)
   });
 
   // --out は任意。省略時は output/<dxf 名>.proposal.json を既定にし、親ディレクトリが無ければ作る。

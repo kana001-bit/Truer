@@ -46,9 +46,14 @@ export type ChangeKind = "replace-path-data" | "move-vertex";
 //     して addressing する — これは表示用の addressing anchor であって、どちらの edge を
 //     変えるかの主張ではない（T6）。どちらが Δ を吸収するか、そして apply の書き先は未決なので、
 //     これも preview-only（`changes: []`）のまま。
+//   - geometry.band_seam_sum_mismatch: *N-ary* の band 診断（バンド総周長 ↔ Σ(隣接ピース仕上がり辺
+//     × 裁断枚数)）。`actual.bandEdge`（住所）で band 辺を addressing し、`neighbours[]` は住所+
+//     finished+cut を運ぶ。pairwise の linkTarget には写らない別経路（bandReconciliation）。
+//     preview-only（`changes: []`）。
 export const SUPPORTED_DIAGNOSTIC_CODES = [
   "geometry.curve_kink",
-  "geometry.seam_length_mismatch"
+  "geometry.seam_length_mismatch",
+  "geometry.band_seam_sum_mismatch"
 ] as const;
 
 // Truer の skip-reason code（安定・英語; 文面は `message` に置く）。
@@ -58,6 +63,9 @@ export const SKIP_UNSUPPORTED_DIAGNOSTIC_CODE = "proposal.unsupported_diagnostic
 export const SKIP_MISSING_DIAGNOSTIC_POINT = "proposal.missing_diagnostic_point";
 // seam_length_mismatch に必要な有限の length field（from/to/diff mm）が欠けている。
 export const SKIP_MISSING_LENGTH_FIELDS = "proposal.missing_length_fields";
+// band_seam_sum_mismatch に必要な measure field（bandEdge 住所 / band 長 / cut / sum など）が
+// 欠けている（bandEdge を emit しない旧 Seamlint report を含む）。推測せず skip（T6/T8）。
+export const SKIP_MISSING_BAND_FIELDS = "proposal.missing_band_fields";
 // DXF addressing: target の BLOCK/edge が source に無い、または一意でない。
 export const SKIP_TARGET_NOT_FOUND = "proposal.target_not_found";
 export const SKIP_AMBIGUOUS_TARGET = "proposal.ambiguous_target";
@@ -122,7 +130,8 @@ export interface MovedPoint {
 // Render geometry はここに、addressing/identity は seamReconciliation に置く — 両者は
 // 意図的に分けている。
 export interface PreviewEdge {
-  role: "from" | "to";
+  // "band" は band_seam_sum_mismatch の band 辺（N-ary 経路。neighbours は数値で示し描かない first slice）。
+  role: "from" | "to" | "band";
   points: Point[];
 }
 
@@ -245,6 +254,49 @@ export interface SeamReconciliation {
   cornerSlide?: CornerSlide;
 }
 
+// band_seam_sum_mismatch の隣接ピース 1 枚ぶんの証跡。identity（どのピースが neighbour か）は Loomit
+// 宣言、幾何（住所・finished 長・裁断枚数）は Seamlint が測る。Truer は住所と数値を運ぶだけ
+// （first slice では points 解決も preview 描画もしない — band 辺だけ描く）。
+export interface BandNeighbor {
+  blockName: string;
+  edgeId?: string;
+  arcRange?: [number, number];
+  // dart 畳み込み済みの、バンドに接する辺の仕上がり長 mm。
+  finishedLengthMm: number;
+  // そのピースの裁断枚数（layer-1 "Cut N"）。
+  cutQuantity: number;
+}
+
+// band_seam_sum_mismatch proposal にのみ付く N-ary の指示ログ（pairwise の seamReconciliation の
+// band 版）。バンド総周長 `bandTotalMm = bandEdge.lengthMm × bandCutQuantity` と、隣接合計
+// `sumMm = Σ(neighbour.finishedLengthMm × cutQuantity)` の不一致（measured `closureMm` / `closurePct`）
+// を記録する。修正は「band を Σ隣接に構築でリンク」を推す（①structural-link の band 版）。preview-only。
+export interface BandReconciliation {
+  // バンド長辺（最長 finished 辺）の住所 + digest + finished 長（lengthMm = bandEdge の finished 長 1 枚）。
+  bandEdge: SeamEdge;
+  // バンドの裁断枚数（opening を張る枚数）。bandTotalMm = bandEdge.lengthMm × bandCutQuantity。
+  bandCutQuantity: number;
+  // measured: バンド総周長と隣接合計、その差（符号付き: + = バンドが長い = 閉じ代/ease）と割合。
+  bandTotalMm: number;
+  sumMm: number;
+  closureMm: number;
+  closurePct: number;
+  neighbours: BandNeighbor[];
+  // 固定される正。"band" = band を正として neighbours 側を直す向き（N-ary なので数値目標は出さない）、
+  // "neighbours" = neighbours を正として band を直す（targetBandLengthMm を出す）。undefined = 未決
+  // （両方向 preview-only, T6）。`--reference` の blockName 集合と band/neighbour を照合して決める。
+  reference?: "band" | "neighbours";
+  // --- 任意・追加的（additive, T9）---
+  // 宣言された閉じ代 mm（既定 0 = ぴったり sumMm に揃える）。measured の closureMm ではなく、意図した
+  // closure（connector 宣言）を保つための目標側の値。診断が運ぶまで既定 0（pairwise の easeMm と同型）。
+  declaredClosureMm?: number;
+  // Truer が推す修正の種類（advisory）。band は①structural-link のみ（②corner-slide は当たらない）。
+  fixKind?: FixKind;
+  // reference === "neighbours"（band が conform）のときの band 1 枚あたりの目標 finished 長 mm:
+  // (sumMm + declaredClosureMm) / bandCutQuantity。band 固定 / 未決のときは付かない。
+  targetBandLengthMm?: number;
+}
+
 export interface Proposal {
   id: string;
   status: ProposalStatus;
@@ -259,6 +311,8 @@ export interface Proposal {
   // seam_length_mismatch proposal にのみ付く: 不一致ペア、両 edge の digest、差、そして
   //（もしあれば）どちらが reference か。任意・追加的。
   seamReconciliation?: SeamReconciliation;
+  // band_seam_sum_mismatch proposal にのみ付く N-ary の指示ログ。任意・追加的。
+  bandReconciliation?: BandReconciliation;
 }
 
 export interface ProposalSource {
@@ -370,6 +424,34 @@ function cornerSlideCandidateError(value: unknown): string | undefined {
   return undefined;
 }
 
+// bandReconciliation.neighbours[] の 1 要素の shape 検証。住所（blockName + edgeId/arcRange の
+// 少なくとも一方）と finished 長（非負）・裁断枚数（正の整数）を要求する。
+function bandNeighborError(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return "must be an object";
+  const neighbour = value as Record<string, unknown>;
+  if (!isNonEmptyString(neighbour.blockName)) return "blockName must be a non-empty string";
+  if (neighbour.edgeId !== undefined && !isNonEmptyString(neighbour.edgeId)) {
+    return "edgeId must be a non-empty string when present";
+  }
+  if (neighbour.arcRange !== undefined && !isArcRange(neighbour.arcRange)) {
+    return "arcRange must be a normalized [start, end] when present";
+  }
+  if (!isNonEmptyString(neighbour.edgeId) && !isArcRange(neighbour.arcRange)) {
+    return "must address the edge by edgeId or arcRange";
+  }
+  if (!isNonNegativeFiniteNumber(neighbour.finishedLengthMm)) {
+    return "finishedLengthMm must be a non-negative finite number";
+  }
+  if (
+    typeof neighbour.cutQuantity !== "number" ||
+    !Number.isInteger(neighbour.cutQuantity) ||
+    neighbour.cutQuantity <= 0
+  ) {
+    return "cutQuantity must be a positive integer";
+  }
+  return undefined;
+}
+
 function isFinitePoint(value: unknown): value is Point {
   if (typeof value !== "object" || value === null) return false;
   const point = value as Record<string, unknown>;
@@ -387,7 +469,7 @@ function isFinitePoint(value: unknown): value is Point {
 function isPreviewEdge(value: unknown): value is PreviewEdge {
   if (typeof value !== "object" || value === null) return false;
   const edge = value as Record<string, unknown>;
-  if (edge.role !== "from" && edge.role !== "to") return false;
+  if (edge.role !== "from" && edge.role !== "to" && edge.role !== "band") return false;
   if (!Array.isArray(edge.points) || edge.points.length < 2) return false;
   return edge.points.every(isFinitePoint);
 }
@@ -590,6 +672,80 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
               `${at}.seamReconciliation.cornerSlide.conform must be the non-reference edge (opposite of reference)`
             );
           }
+        }
+      }
+    }
+  }
+
+  // bandReconciliation（N-ary band 診断）は任意・追加的; 存在するときだけ shape と関係を検証する。
+  if (proposal.bandReconciliation !== undefined) {
+    const band = proposal.bandReconciliation as Record<string, unknown>;
+    if (typeof band !== "object" || band === null) {
+      errors.push(`${at}.bandReconciliation must be an object when present`);
+    } else {
+      if (!isSeamEdge(band.bandEdge)) {
+        errors.push(`${at}.bandReconciliation.bandEdge is not a valid seam edge`);
+      }
+      for (const key of ["bandTotalMm", "sumMm", "closurePct"] as const) {
+        if (typeof band[key] !== "number" || !Number.isFinite(band[key])) {
+          errors.push(`${at}.bandReconciliation.${key} must be a finite number`);
+        }
+      }
+      // closureMm は符号付き（+ = バンドが長い）なので nonnegative を課さない。
+      if (typeof band.closureMm !== "number" || !Number.isFinite(band.closureMm)) {
+        errors.push(`${at}.bandReconciliation.closureMm must be a finite number`);
+      }
+      // bandCutQuantity は正の整数（バンド総周長を割る枚数。0/負では総周長が壊れる）。
+      if (
+        typeof band.bandCutQuantity !== "number" ||
+        !Number.isInteger(band.bandCutQuantity) ||
+        band.bandCutQuantity <= 0
+      ) {
+        errors.push(`${at}.bandReconciliation.bandCutQuantity must be a positive integer`);
+      }
+      if (!Array.isArray(band.neighbours) || band.neighbours.length === 0) {
+        errors.push(`${at}.bandReconciliation.neighbours must be a non-empty array`);
+      } else {
+        band.neighbours.forEach((neighbour, neighbourIndex) => {
+          const problem = bandNeighborError(neighbour);
+          if (problem !== undefined) {
+            errors.push(`${at}.bandReconciliation.neighbours[${neighbourIndex}] ${problem}`);
+          }
+        });
+      }
+      if (
+        band.reference !== undefined &&
+        band.reference !== "band" &&
+        band.reference !== "neighbours"
+      ) {
+        errors.push(`${at}.bandReconciliation.reference must be "band", "neighbours", or omitted`);
+      }
+      if (
+        band.declaredClosureMm !== undefined &&
+        !isNonNegativeFiniteNumber(band.declaredClosureMm)
+      ) {
+        errors.push(
+          `${at}.bandReconciliation.declaredClosureMm must be a non-negative finite number when present`
+        );
+      }
+      if (
+        band.fixKind !== undefined &&
+        !(FIX_KINDS as readonly string[]).includes(band.fixKind as string)
+      ) {
+        errors.push(`${at}.bandReconciliation.fixKind must be one of ${FIX_KINDS.join(" | ")}`);
+      }
+      // targetBandLengthMm は band conform（reference==="neighbours"）のときだけ出る数値目標。
+      // band 固定 / 未決で目標が付くのは矛盾（band を直さないのに目標長がある）なので弾く。
+      if (band.targetBandLengthMm !== undefined) {
+        if (!isNonNegativeFiniteNumber(band.targetBandLengthMm)) {
+          errors.push(
+            `${at}.bandReconciliation.targetBandLengthMm must be a non-negative finite number when present`
+          );
+        }
+        if (band.reference !== "neighbours") {
+          errors.push(
+            `${at}.bandReconciliation.targetBandLengthMm is only valid when reference is "neighbours" (band is the conforming side)`
+          );
         }
       }
     }
