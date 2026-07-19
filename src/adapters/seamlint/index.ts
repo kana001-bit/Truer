@@ -11,4 +11,6 @@ export {
 export { buildResolveSeamPair } from "./resolveSeamPair.ts";
 export type { SlntEdge, SlntEdgesResult, SlntEdgesRunner } from "./resolveSeamPair.ts";
 
+export { buildResolveBandSeam } from "./resolveBandSeam.ts";
+
 export { buildResolveTarget, buildEdgePointsLookup } from "./resolveTarget.ts";
