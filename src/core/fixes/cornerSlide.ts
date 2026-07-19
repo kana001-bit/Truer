@@ -51,7 +51,8 @@ export type CornerSlideResult =
       // curved-neighbor: 隣辺が直線でない（solve 対象外）。
       // detached-corner: 隣辺が指定の角を端点に持たない（ループ順前提が崩れている）。
       // degenerate: 末端 segment か隣辺がゼロ長で方向が定まらない。
-      // no-solution: 幾何的に届かない（segment が負になる / 円と直線が交わらない）。
+      // no-solution: 幾何的に届かない（segment が負になる / 円と直線が交わらない /
+      //              スライドが隣辺の有限 segment を外れる）。
       reason: "curved-neighbor" | "detached-corner" | "degenerate" | "no-solution";
     };
 
@@ -99,6 +100,13 @@ export function solveCornerSlide(input: CornerSlideInput): CornerSlideResult {
   roots.sort((p, q) => Math.abs(p) - Math.abs(q) || q - p);
   const t = roots[0]!;
   if (!Number.isFinite(t)) return { ok: false, reason: "no-solution" };
+
+  // 解は円∩「無限直線」なので、隣辺の有限 segment に収まるかを別途確認する（レビュー P2）。
+  // t >= neighborLen は反対端 N を通り越して隣辺が反転・消滅する別形状、t <= -neighborLen の
+  // 大延長も「隣辺に沿って滑らせる」局所操作から外れる — どちらも advisory に出さず解なしとする
+  //（実際の mismatch Δ は数 mm で辺は数百 mm なので、範囲外は形が壊れているサイン）。|t| 最小根を
+  // 選んでいるため、この根が範囲外ならもう片方の根はさらに遠く、必ず両方範囲外（検査は 1 回で足りる）。
+  if (Math.abs(t) >= neighborLen) return { ok: false, reason: "no-solution" };
 
   const newCorner = { x: c.x + t * d.x, y: c.y + t * d.y };
   return {
