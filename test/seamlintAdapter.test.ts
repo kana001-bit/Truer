@@ -5,6 +5,7 @@ import {
   parseSeamlintReport,
   SeamlintReportError,
   buildResolveSeamPair,
+  buildResolveBandSeam,
   buildResolveTarget
 } from "../src/adapters/seamlint/index.ts";
 import type { SlntEdgesRunner, SlntEdgesResult } from "../src/adapters/seamlint/index.ts";
@@ -419,11 +420,11 @@ function bandSeamDiagnostic() {
   };
 }
 
-test("band_seam_sum_mismatch (N-ary, no fromEdge/toEdge) is skipped without poisoning the sibling seam proposal", () => {
-  // 守る仕様 (S5/T8): Seamlint が実際に出す band-seam 診断は fromEdge/toEdge を持たない別 shape。Truer は
-  //           これを crash させず proposal.unsupported_diagnostic_code で skipped に残す（黙って捨てない・
-  //           推測しない）。同じ report に混在する seam_length_mismatch は巻き込まれず proposal になり、
-  //           skip は id を消費しないので prop_001 のまま。file 全体も validation を通る。
+test("band_seam_sum_mismatch without a bandEdge address is skipped without poisoning the sibling seam proposal", () => {
+  // 守る仕様 (B1 訂正 / T6/T8): band 診断は now supported だが、bandEdge 住所（B1 additive）を持たない
+  //           report（この fixture / 旧 Seamlint）は band 辺を addressing できないので proposal.missing_band_fields
+  //           で skipped に残す（crash させず・推測せず）。同じ report に混在する seam_length_mismatch は
+  //           巻き込まれず proposal になり、skip は id を消費しないので prop_001 のまま。file 全体も validation を通る。
   const report = seamReport();
   const mixed = { ...report, diagnostics: [bandSeamDiagnostic(), ...report.diagnostics] };
 
@@ -436,12 +437,13 @@ test("band_seam_sum_mismatch (N-ary, no fromEdge/toEdge) is skipped without pois
     sourceText: "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
     diagnostics,
     resolveTarget: () => ({ status: "not-found" }),
-    resolveSeamPair: buildResolveSeamPair(fakeRunner([]))
+    resolveSeamPair: buildResolveSeamPair(fakeRunner([])),
+    resolveBandSeam: buildResolveBandSeam(fakeRunner([]))
   });
 
   assert.deepEqual(validateProposalFile(file), []);
   assert.equal(file.skipped.length, 1);
-  assert.equal(file.skipped[0]!.code, "proposal.unsupported_diagnostic_code");
+  assert.equal(file.skipped[0]!.code, "proposal.missing_band_fields");
   assert.equal(file.skipped[0]!.diagnosticCode, "geometry.band_seam_sum_mismatch");
   assert.equal(file.proposals.length, 1);
   assert.equal(file.proposals[0]!.id, "prop_001");
