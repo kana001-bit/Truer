@@ -5,7 +5,7 @@
 // fixes（`src/core/fixes/`）にあり、最小の `changes` を返す; apply と preview はそれを applyChanges で
 // 再生する（T2 / T4）。
 //
-// 対応する diagnostic code は 2 つ、それぞれ builder 1 つ（registry-lite; references/extensibility.md
+// 対応する diagnostic code は 3 つ、それぞれ builder 1 つ（registry-lite; references/extensibility.md
 // E1 の完全な `src/core/fixes/` registry は後回し）:
 //   - geometry.curve_kink: 単一 edge + `actual.point`。curveKink fix は確信を持って対応づけた内部
 //     vertex を `local-adjustment`（move-vertex、弦への射影）として滑らかにし、endpoint / 対応不能 /
@@ -15,10 +15,13 @@
 //     "from" edge を anchor にして addressing する。anchor は表示 / addressing 用だけで、どちらの edge を
 //     変えるかの主張ではない（T6）。どちらが Δ を吸収するかは未決（人間/Loomit の reference token が
 //     要る）なので、今は preview-only のまま。
+//   - geometry.band_seam_sum_mismatch: *N-ary* の band 診断（band 総周長 ↔ Σ隣接ピース仕上がり辺）。
+//     `actual.bandEdge` で band 辺を addressing し、neighbours は住所+数値を運ぶ。`--reference` で band か
+//     neighbours を固定して band が conform のとき band 長目標を出す。preview-only（bandReconciliation）。
 //
 // pure: 同じ入力 -> 同じ出力。ここには時刻・乱数・filesystem アクセスを持たない
 //（references/critical-invariants.md T10）。呼び出し側（CLI）が file IO を行い、`sourceText` と
-// `resolveTarget` / `resolveSeamPair` の callback を渡す。
+// `resolveTarget` / `resolveSeamPair` / `resolveBandSeam` の callback を渡す。
 
 import {
   PROPOSAL_SCHEMA_V0,
