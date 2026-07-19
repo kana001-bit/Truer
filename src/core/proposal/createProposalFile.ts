@@ -31,6 +31,8 @@ import {
   validateProposalFile
 } from "./proposalSchema.ts";
 import type {
+  CornerSlide,
+  CornerSlideCandidate,
   IntentConfidence,
   LinkTarget,
   Point,
@@ -46,6 +48,8 @@ import type {
 } from "./proposalSchema.ts";
 import { digestEdgePoints, digestText } from "./proposalDigest.ts";
 import { buildCurveKinkFix } from "../fixes/curveKink.ts";
+import { solveCornerSlide } from "../fixes/cornerSlide.ts";
+import { roundCoord } from "../geometry-edit/index.ts";
 
 // Truer が読む Seamlint diagnostic の部分集合。この shape を作るのは Seamlint adapter
 //（Milestone 3）の責務で、core は Seamlint の厳密な JSON に依存しない。
@@ -101,12 +105,21 @@ export type ResolveTargetResult =
 // geometry: `edgeDigest` に digest され、かつ `preview.edges` にそのまま格納されるので、overlay は
 // proposal だけから再現できる（self-contained）。`edgeId` は adapter が既に string へ変換済み
 //（Seamlint は number で出す）。
+// 角を共有する同 BLOCK の隣辺（ループ順 k±1）。②corner-slide の solve にだけ使う軽量ビュー。
+export interface SeamEdgeNeighbor {
+  edgeId?: string;
+  points: Point[];
+}
+
 export interface ResolvedSeamEdge {
   blockName: string;
   edgeId?: string;
   arcRange?: [number, number];
   points: Point[];
   lengthMm: number;
+  // start = points[0]（始点角）を共有する隣辺 / end = points[最後]（終点角）を共有する隣辺。
+  // 任意（additive）: 供給が無ければ corner-slide を solve しないだけで、①structural-link 経路は不変。
+  neighbors?: { start?: SeamEdgeNeighbor; end?: SeamEdgeNeighbor };
 }
 
 // seam ペアの両 edge を解決した結果。`reference` は Loomit/人間の token が指定したとき、正とする
@@ -213,7 +226,8 @@ function seamNotes(
   lengths: SeamLengths,
   reference: "from" | "to" | undefined,
   easeMm: number,
-  targetFinishedMm: number | undefined
+  targetFinishedMm: number | undefined,
+  cornerSlide: CornerSlide | undefined
 ): string[] {
   const head = `縫い合わせる2辺の長さが ${formatMm(diffMm)} mm 食い違っています (${formatMm(lengths.fromLengthMm)} / ${formatMm(lengths.toLengthMm)} mm、宣言 ease=${formatMm(easeMm)})。`;
   const recommend =
@@ -224,12 +238,34 @@ function seamNotes(
       : targetFinishedMm === undefined
         ? "基準辺は指定済みですが、宣言 ease の向き（どちらを長くするか）が現状の測定差から決まらないため、目標長は保留です。"
         : `${reference} 辺を固定し、${reference === "from" ? "to" : "from"} 辺の finished 長を ${formatMm(targetFinishedMm)} mm に合わせてください。`;
-  return [
-    head,
-    recommend,
-    direction,
+  const lines = [head, recommend, direction];
+
+  // ②corner-slide の指示ログ（決定木の 2 行目）。①リンクが過拘束（両端が landmark 固定）だったり
+  // 今すぐ裁ちたいときの fallback として、解けた角候補を人へ渡す。角の xy は出さない（V2: 目標長と
+  // スライド量だけ）。
+  if (cornerSlide !== undefined) {
+    if (cornerSlide.candidates.length > 0) {
+      const options = cornerSlide.candidates
+        .map(
+          (candidate) =>
+            `${candidate.corner === "start" ? "始点" : "終点"}角を辺 ${candidate.slideAlong.edgeId} に沿って ${formatMm(candidate.slideDistanceMm)} mm（隣辺長 ${formatMm(candidate.neighborLengthChange.fromMm)}→${formatMm(candidate.neighborLengthChange.toMm)} mm）`
+        )
+        .join(" / ");
+      lines.push(
+        `①のリンクが過拘束になる・今すぐ裁つ、なら②corner-slide: ${options}。どの角で吸うかは低カップリング（よく合っている seam を壊さない角）を人が選んでください（Truer は決めません）。`,
+        "②はその場限りです（val 未リンクのままなら再生成で再発。恒久解は①のみ）。角スライドで notch 位置もずれうるため、当てたら再エクスポート→Seamlint 再チェックを。"
+      );
+    } else {
+      lines.push(
+        "②corner-slide はこの辺では解けません（隣辺が曲線、または幾何的に解なし）。候補は①構造リンクのみです。"
+      );
+    }
+  }
+
+  lines.push(
     "Truer は目標を提案するだけ（advisory）で、val は人が Valentina で当てます。当てたら再エクスポート→Seamlint で確認を。意図的なイセ・ギャザーなら ease を宣言してください。まだ線は引き直していません (preview-only)。"
-  ];
+  );
+  return lines;
 }
 
 // diagnostic ごとの proposal builder。各々が proposal か skip 理由のどちらかを返す;
@@ -392,6 +428,50 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
       }
     }
 
+    // ②corner-slide（fallback）の指示ログ。①linkTarget と同じゲート（reference 決定済みで目標長が
+    // 決まる）でだけ出す。conform 辺の両角を start→end の固定順で solve し（決定的, T10）、解けた角
+    // だけ候補にする。どの角で吸うかは人が選ぶ（couplingClass は seam グラフ未供給の間 "unknown",
+    // V1）。candidates が空 = どの角も解けない（曲線隣辺 / 幾何的に解なし）ことの明示。数値は emit
+    // 境界のここで丸める（roundCoord = EMIT_DECIMALS）。Δ(finished)=Δ(raw)（dart は辺内側）なので
+    // finished 目標との差をそのまま raw の polyline に適用できる。
+    let cornerSlide: CornerSlide | undefined;
+    if (linkTarget !== undefined) {
+      const conformResolved = linkTarget.conform === "from" ? pair.fromEdge : pair.toEdge;
+      const conformLen =
+        linkTarget.conform === "from" ? fromSeamEdge.lengthMm : toSeamEdge.lengthMm;
+      const signedDeltaMm = linkTarget.targetFinishedMm - conformLen;
+      const candidates: CornerSlideCandidate[] = [];
+      for (const corner of ["start", "end"] as const) {
+        const neighbor = conformResolved.neighbors?.[corner];
+        if (!neighbor || neighbor.edgeId === undefined) continue;
+        const solved = solveCornerSlide({
+          edgePoints: conformResolved.points,
+          corner,
+          neighborPoints: neighbor.points,
+          deltaMm: signedDeltaMm
+        });
+        if (!solved.ok) continue;
+        candidates.push({
+          corner,
+          slideAlong: { blockName: conformResolved.blockName, edgeId: neighbor.edgeId },
+          couplingClass: "unknown",
+          slideDistanceMm: roundCoord(solved.slideDistanceMm),
+          neighborLengthChange: {
+            fromMm: roundCoord(solved.neighborLengthBeforeMm),
+            toMm: roundCoord(solved.neighborLengthAfterMm)
+          }
+        });
+      }
+      cornerSlide = {
+        conform: linkTarget.conform,
+        targetFinishedMm: linkTarget.targetFinishedMm,
+        candidates,
+        // 角スライドは notch 位置を動かし notch 署名ペアリングが揺れうる（V3）。滑らせる候補が
+        // 実在するときだけ意味を持つ warning なので、候補ゼロなら false。
+        pairingMayDrift: candidates.length > 0
+      };
+    }
+
     const seamReconciliation: SeamReconciliation = {
       fromEdge: fromSeamEdge,
       toEdge: toSeamEdge,
@@ -399,7 +479,8 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
       easeMm,
       fixKind: "structural-link",
       ...(pair.reference !== undefined ? { reference: pair.reference } : {}),
-      ...(linkTarget !== undefined ? { linkTarget } : {})
+      ...(linkTarget !== undefined ? { linkTarget } : {}),
+      ...(cornerSlide !== undefined ? { cornerSlide } : {})
     };
 
     // target は依然 "from" edge を addressing する（表示 anchor であって、どちらを変えるかの主張では
@@ -431,7 +512,14 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
         intent: { kind: "reconcile-seam-length", confidence, reviewRequired: true },
         changes: [],
         preview: { edges: previewEdges },
-        notes: seamNotes(diffMm, lengths, pair.reference, easeMm, linkTarget?.targetFinishedMm),
+        notes: seamNotes(
+          diffMm,
+          lengths,
+          pair.reference,
+          easeMm,
+          linkTarget?.targetFinishedMm,
+          cornerSlide
+        ),
         seamReconciliation
       }
     };
