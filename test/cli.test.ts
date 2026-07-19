@@ -65,10 +65,11 @@ test("propose --reference takes multiple BLOCK names (BACK FRONT is not a stray 
   assert.doesNotMatch(result.stderr, /Expected a single/);
 });
 
-test("propose with a band-seam-only report exits 0 and records the skip (slnt not spawned)", () => {
-  // 守る仕様 (S5/T8 + exit code 契約): supported 診断が 1 件も無い report（geometry.band_seam_sum_mismatch
-  //           のみ）でも tru propose は exit 0 で proposal file を書き、band 診断は理由付きで skipped に残る。
-  //           unsupported code は resolver に届く前に skip されるので、slnt が無い環境でも成立する（lazy spawn）。
+test("propose with a bandEdge-less band report exits 0 and records the skip (slnt not spawned)", () => {
+  // 守る仕様 (B1 訂正 / T8 + exit code 契約): band 診断は supported だが、bandEdge 住所（B1 additive）を
+  //           持たない report では band 辺を addressing できず、resolver は slnt を spawn する前に not-found を
+  //           返す → proposal.missing_band_fields で skip。proposal が 1 件も無くても tru propose は exit 0 で
+  //           file を書き、理由付きで skipped に残す。slnt が無い環境でも成立（住所欠落で lazy spawn に到達しない）。
   const dir = mkdtempSync(join(tmpdir(), "truer-band-skip-"));
   const report = {
     status: "warning",
@@ -119,6 +120,6 @@ test("propose with a band-seam-only report exits 0 and records the skip (slnt no
     skipped: { code: string; diagnosticCode: string }[];
   };
   assert.equal(file.proposals.length, 0);
-  assert.equal(file.skipped[0]!.code, "proposal.unsupported_diagnostic_code");
+  assert.equal(file.skipped[0]!.code, "proposal.missing_band_fields");
   assert.equal(file.skipped[0]!.diagnosticCode, "geometry.band_seam_sum_mismatch");
 });

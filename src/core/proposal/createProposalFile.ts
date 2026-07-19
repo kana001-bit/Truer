@@ -5,7 +5,7 @@
 // fixes（`src/core/fixes/`）にあり、最小の `changes` を返す; apply と preview はそれを applyChanges で
 // 再生する（T2 / T4）。
 //
-// 対応する diagnostic code は 2 つ、それぞれ builder 1 つ（registry-lite; references/extensibility.md
+// 対応する diagnostic code は 3 つ、それぞれ builder 1 つ（registry-lite; references/extensibility.md
 // E1 の完全な `src/core/fixes/` registry は後回し）:
 //   - geometry.curve_kink: 単一 edge + `actual.point`。curveKink fix は確信を持って対応づけた内部
 //     vertex を `local-adjustment`（move-vertex、弦への射影）として滑らかにし、endpoint / 対応不能 /
@@ -15,14 +15,18 @@
 //     "from" edge を anchor にして addressing する。anchor は表示 / addressing 用だけで、どちらの edge を
 //     変えるかの主張ではない（T6）。どちらが Δ を吸収するかは未決（人間/Loomit の reference token が
 //     要る）なので、今は preview-only のまま。
+//   - geometry.band_seam_sum_mismatch: *N-ary* の band 診断（band 総周長 ↔ Σ隣接ピース仕上がり辺）。
+//     `actual.bandEdge` で band 辺を addressing し、neighbours は住所+数値を運ぶ。`--reference` で band か
+//     neighbours を固定して band が conform のとき band 長目標を出す。preview-only（bandReconciliation）。
 //
 // pure: 同じ入力 -> 同じ出力。ここには時刻・乱数・filesystem アクセスを持たない
 //（references/critical-invariants.md T10）。呼び出し側（CLI）が file IO を行い、`sourceText` と
-// `resolveTarget` / `resolveSeamPair` の callback を渡す。
+// `resolveTarget` / `resolveSeamPair` / `resolveBandSeam` の callback を渡す。
 
 import {
   PROPOSAL_SCHEMA_V0,
   SKIP_AMBIGUOUS_TARGET,
+  SKIP_MISSING_BAND_FIELDS,
   SKIP_MISSING_DIAGNOSTIC_POINT,
   SKIP_MISSING_LENGTH_FIELDS,
   SKIP_TARGET_NOT_FOUND,
@@ -31,6 +35,8 @@ import {
   validateProposalFile
 } from "./proposalSchema.ts";
 import type {
+  BandNeighbor,
+  BandReconciliation,
   CornerSlide,
   CornerSlideCandidate,
   IntentConfidence,
@@ -135,6 +141,35 @@ export type SeamPairResolution =
   | { status: "not-found" }
   | { status: "ambiguous" };
 
+// band_seam_sum_mismatch の隣接ピース 1 枚（住所 + finished + cut）。points は解決しない（band 辺
+// だけ preview に描く first slice）ので、band 辺のように net-line points は持たない。
+export interface ResolvedBandNeighbor {
+  blockName: string;
+  edgeId?: string;
+  arcRange?: [number, number];
+  finishedLengthMm: number;
+  cutQuantity: number;
+}
+
+// band 診断を解決した結果。band 辺は住所から net-line points まで解決し（digest / preview 用）、
+// neighbours は住所+数値のまま運ぶ。`reference` は `--reference` の blockName 集合と band/neighbour を
+// 照合して決める: "band"（band 固定・neighbours を直す）/ "neighbours"（band が conform・目標長あり）/
+// undefined（両方向 preview-only, T6）。measured 値（bandTotal/sum/closure）は診断から来る。
+export type BandSeamResolution =
+  | {
+      status: "resolved";
+      bandEdge: ResolvedSeamEdge; // lengthMm = band 辺 1 枚の finished 長（= bandLengthMm）
+      bandCutQuantity: number;
+      bandTotalMm: number;
+      sumMm: number;
+      closureMm: number;
+      closurePct: number;
+      neighbours: ResolvedBandNeighbor[];
+      reference?: "band" | "neighbours";
+    }
+  | { status: "not-found" }
+  | { status: "ambiguous" };
+
 export interface CreateProposalFileInput {
   // CLI で渡されたユーザー向け source path（source.file にそのまま入る）。
   sourceFile: string;
@@ -147,6 +182,9 @@ export interface CreateProposalFileInput {
   // seam ペア（seam_length_mismatch）の両 edge を解決する。任意: 無いとき seam builder は
   // 単一 anchor の preview-only 挙動に戻る（pair model なし）。DXF adapter は結線後は常に供給する。
   resolveSeamPair?: (diagnostic: DiagnosticInput) => SeamPairResolution;
+  // band 診断（band_seam_sum_mismatch）を解決する。任意: 無い / bandEdge 欠落なら band builder は
+  // 理由付き skip（推測しない）。DXF adapter は結線後は常に供給する。
+  resolveBandSeam?: (diagnostic: DiagnosticInput) => BandSeamResolution;
   createdBy?: string;
 }
 
@@ -155,6 +193,11 @@ export interface CreateProposalFileInput {
 //（medium）; 大きければ意図的なイセ/ギャザーや誤ペアの可能性が高く、人間が判断すべき（low）。
 // どちらでも reviewRequired は true のまま。調整可能な policy を 1 箇所にまとめる。
 const LENGTH_ADJUST_CANDIDATE_MAX_MM = 10;
+
+// band closure（|bandTotal − sum| / sum）の confidence 帯。Seamlint は closure が許容（既定 6%）を
+// 超えたときだけ sum-mismatch を出すので、届くのは全て許容超。残差が小さければ true-up 候補（medium）、
+// 大きければ gather/tuck や集合違いの疑いが濃く人間判断（low）。どちらでも reviewRequired は true。
+const BAND_CLOSURE_CANDIDATE_MAX_RATIO = 0.1;
 
 export function proposalId(index: number): string {
   return "prop_" + String(index).padStart(3, "0");
@@ -268,6 +311,26 @@ function seamNotes(
   return lines;
 }
 
+// band 診断の人間可読な指示ログ。①structural-link（band を Σ隣接に構築でリンク）を推す。band には
+// ②corner-slide は当たらない（バンドは長辺 1 本を隣接合計へ合わせる N-ary で、角スライドの局所解が無い）。
+function bandNotes(band: BandReconciliation): string[] {
+  const head = `バンド総周長 ${formatMm(band.bandTotalMm)} mm と隣接ピース合計 ${formatMm(band.sumMm)} mm が ${formatMm(Math.abs(band.closureMm))} mm 食い違っています（closure ${formatMm(band.closurePct * 100)}%、バンド長辺 ${formatMm(band.bandEdge.lengthMm)} mm × ${band.bandCutQuantity} 枚）。`;
+  const recommend =
+    "推奨は①構造リンク: Valentina の構築でバンド周長を隣接ピースの仕上がり辺合計にリンクし、宣言 closure（0 なら等長）を保てば、構築で保証され再発しません。";
+  const direction =
+    band.reference === undefined
+      ? "band と neighbours のどちらを固定（基準）にするかが未指定のため、目標長は未確定です（両方向が候補, T6）。"
+      : band.reference === "neighbours"
+        ? `neighbours を固定し、バンド長辺の finished 長を ${formatMm(band.targetBandLengthMm ?? 0)} mm（= 隣接合計 ÷ ${band.bandCutQuantity} 枚 + 宣言 closure）に合わせてください。`
+        : "band を固定し、隣接ピース側の仕上がり辺合計をバンド周長に合わせてください（N-ary なので各ピースへの配分は人が決めます）。";
+  return [
+    head,
+    recommend,
+    direction,
+    "Truer は目標を提案するだけ（advisory）で、val は人が Valentina で当てます。当てたら再エクスポート→Seamlint で確認を。gather/tuck など意図的な closure なら宣言してください。まだ線は引き直していません (preview-only)。"
+  ];
+}
+
 // diagnostic ごとの proposal builder。各々が proposal か skip 理由のどちらかを返す;
 // 予見できる field 欠落で throw しない（T8）。id 採番と skipped リストは loop が持つ。
 // diagnostic を足す = builder 1 つ + registry entry 1 つ。
@@ -276,6 +339,7 @@ interface BuildContext {
   diagnostic: DiagnosticInput;
   resolveTarget: (diagnostic: DiagnosticInput) => ResolveTargetResult;
   resolveSeamPair?: (diagnostic: DiagnosticInput) => SeamPairResolution;
+  resolveBandSeam?: (diagnostic: DiagnosticInput) => BandSeamResolution;
 }
 
 type SkipReason = { code: string; message: string };
@@ -550,9 +614,109 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
   };
 };
 
+const buildBandSeamMismatchProposal: ProposalBuilder = ({ id, diagnostic, resolveBandSeam }) => {
+  // resolver 未供給 / bandEdge 欠落（旧 Seamlint report）なら推測せず skip（T6/T8）。band は住所無しに
+  // 辺を addressing できない。
+  if (!resolveBandSeam) {
+    return {
+      skip: {
+        code: SKIP_MISSING_BAND_FIELDS,
+        message: `band 診断 ${diagnostic.code} を解決する手段がありません（bandEdge 住所が必要）。`
+      }
+    };
+  }
+  const band = resolveBandSeam(diagnostic);
+  if (band.status === "not-found") {
+    return {
+      skip: {
+        code: SKIP_MISSING_BAND_FIELDS,
+        message: `band 辺 (${diagnostic.target ?? "unknown"}) を解決できません（bandEdge 住所欠落、または DXF に無い）。`
+      }
+    };
+  }
+  if (band.status === "ambiguous") {
+    return {
+      skip: {
+        code: SKIP_AMBIGUOUS_TARGET,
+        message: `band 辺 (${diagnostic.target ?? "unknown"}) の候補が複数あり、一意に定まりません。`
+      }
+    };
+  }
+
+  const bandEdge = buildSeamEdge(band.bandEdge);
+  const neighbours: BandNeighbor[] = band.neighbours.map((neighbour) => ({
+    blockName: neighbour.blockName,
+    ...(neighbour.edgeId !== undefined ? { edgeId: neighbour.edgeId } : {}),
+    ...(neighbour.arcRange !== undefined ? { arcRange: neighbour.arcRange } : {}),
+    finishedLengthMm: neighbour.finishedLengthMm,
+    cutQuantity: neighbour.cutQuantity
+  }));
+
+  // 宣言 closure（既定 0）。診断が connector 由来の closure を運ぶまでは 0（＝ぴったり sumMm に揃える）。
+  const declaredClosure = diagnostic.actual?.declaredClosureMm;
+  const declaredClosureMm =
+    typeof declaredClosure === "number" && Number.isFinite(declaredClosure) && declaredClosure >= 0
+      ? declaredClosure
+      : 0;
+
+  // band conform（reference==="neighbours"）のときだけ数値目標を出す。sumMm は全 neighbour 合計＝
+  // 絶対目標なので、pairwise のような向きの曖昧さは無い（band 固定 / 未決では目標を出さない, T6）。
+  let targetBandLengthMm: number | undefined;
+  if (band.reference === "neighbours" && band.bandCutQuantity > 0) {
+    targetBandLengthMm = roundCoord((band.sumMm + declaredClosureMm) / band.bandCutQuantity);
+  }
+
+  const bandReconciliation: BandReconciliation = {
+    bandEdge,
+    bandCutQuantity: band.bandCutQuantity,
+    bandTotalMm: band.bandTotalMm,
+    sumMm: band.sumMm,
+    closureMm: band.closureMm,
+    closurePct: band.closurePct,
+    neighbours,
+    declaredClosureMm,
+    fixKind: "structural-link",
+    ...(band.reference !== undefined ? { reference: band.reference } : {}),
+    ...(targetBandLengthMm !== undefined ? { targetBandLengthMm } : {})
+  };
+
+  // target は band 辺を addressing する。digest は band 辺自身の points digest なので bandEdge と一致。
+  const target: ProposalTarget = {
+    blockName: band.bandEdge.blockName,
+    ...(band.bandEdge.edgeId !== undefined ? { edgeId: band.bandEdge.edgeId } : {}),
+    ...(band.bandEdge.arcRange !== undefined ? { arcRange: band.bandEdge.arcRange } : {}),
+    targetDigest: bandEdge.edgeDigest
+  };
+
+  // preview: band 辺だけ描く（neighbours は数値で示す first slice）。self-contained:
+  // digestEdgePoints(points) === bandEdge.edgeDigest。まだ preview-only（補正線は無い）。
+  const previewEdges: PreviewEdge[] = [{ role: "band", points: band.bandEdge.points }];
+
+  return {
+    proposal: {
+      id,
+      status: "proposed",
+      mode: "preview-only",
+      target,
+      sourceDiagnostic: toSourceDiagnostic(diagnostic),
+      // closure（隣接合計との差の割合）が大きいほど gather/tuck や集合違いの疑いが濃く、人間判断（low）。
+      intent: {
+        kind: "reconcile-band-seam",
+        confidence: band.closurePct <= BAND_CLOSURE_CANDIDATE_MAX_RATIO ? "medium" : "low",
+        reviewRequired: true
+      },
+      changes: [],
+      preview: { edges: previewEdges },
+      notes: bandNotes(bandReconciliation),
+      bandReconciliation
+    }
+  };
+};
+
 const PROPOSAL_BUILDERS: Record<string, ProposalBuilder> = {
   "geometry.curve_kink": buildCurveKinkProposal,
-  "geometry.seam_length_mismatch": buildSeamLengthMismatchProposal
+  "geometry.seam_length_mismatch": buildSeamLengthMismatchProposal,
+  "geometry.band_seam_sum_mismatch": buildBandSeamMismatchProposal
 };
 
 function skip(code: string, diagnostic: DiagnosticInput, message: string): SkippedDiagnostic {
@@ -595,7 +759,8 @@ export function createProposalFile(input: CreateProposalFileInput): ProposalFile
       id: proposalId(proposals.length + 1),
       diagnostic,
       resolveTarget: input.resolveTarget,
-      resolveSeamPair: input.resolveSeamPair
+      resolveSeamPair: input.resolveSeamPair,
+      resolveBandSeam: input.resolveBandSeam
     });
 
     if ("skip" in result) {

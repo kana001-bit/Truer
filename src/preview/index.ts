@@ -6,6 +6,7 @@
 import type { ProposalFile } from "../core/proposal/proposalSchema.ts";
 import { MUTED, PAD, PANEL_GAP, svgDocument } from "./svgUtils.ts";
 import { SEAM_PANEL_H, SEAM_PANEL_W, hasSeamOverlay, renderSeamPanel } from "./seamOverlay.ts";
+import { BAND_PANEL_W, bandPanelHeight, hasBandOverlay, renderBandPanel } from "./bandOverlay.ts";
 import { KINK_PANEL_H, KINK_PANEL_W, hasKinkOverlay, renderKinkPanel } from "./kinkOverlay.ts";
 
 interface Panel {
@@ -17,7 +18,13 @@ interface Panel {
 export function renderProposalPreview(file: ProposalFile): string {
   const panels: Panel[] = [];
   for (const proposal of file.proposals) {
-    if (hasSeamOverlay(proposal)) {
+    if (hasBandOverlay(proposal)) {
+      panels.push({
+        width: BAND_PANEL_W,
+        height: bandPanelHeight(proposal),
+        render: (y) => renderBandPanel(proposal, y)
+      });
+    } else if (hasSeamOverlay(proposal)) {
       panels.push({
         width: SEAM_PANEL_W,
         height: SEAM_PANEL_H,
