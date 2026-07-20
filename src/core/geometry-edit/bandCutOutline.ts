@@ -14,6 +14,9 @@ const CORNER_MEETING_TOL_MM = 1e-3;
 // 平行四辺形 / 台形 / 曲線は弾く程度に締める（約 1°・2%）。
 const RECT_PERP_UNIT_DOT_TOL = 0.02;
 const RECT_LEN_REL_TOL = 0.02;
+// 辺の中間頂点が端点間の直線から外れてよい距離（mm）。これを超えたら曲線とみなす。slnt edges は直線でも
+// collinear な中間頂点を持つ polyline を返しうるので、頂点数ではなく同一直線性で straight を判定する。
+const STRAIGHT_EDGE_TOL_MM = 0.5;
 
 export interface BandCutOutlineInput {
   // バンドの閉じた net-line を成す辺の点列（slnt edges 順）。straight な辺は 2 点、曲線は 3 点以上。
@@ -54,6 +57,25 @@ function vdot(a: Vec, b: Vec): number {
   return a.x * b.x + a.y * b.y;
 }
 
+// 辺が「直線」か。端点（先頭・末尾）を結ぶ直線から全中間頂点の垂直距離が許容内なら true。頂点数ではなく
+// 幾何で判定するので、直線でも中間に collinear 頂点を持つ辺（slnt edges 由来）を曲線と誤らない。
+function isStraightEdge(points: readonly Point[]): boolean {
+  if (points.length < 2) return false;
+  const a = points[0]!;
+  const b = points[points.length - 1]!;
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const length = Math.hypot(abx, aby);
+  if (length === 0) return false; // 端点が一致 = 直線を定義できない。
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const p = points[i]!;
+    // p の a→b 直線からの垂直距離 = |cross(b-a, p-a)| / |b-a|。
+    const perpDist = Math.abs(abx * (p.y - a.y) - aby * (p.x - a.x)) / length;
+    if (perpDist > STRAIGHT_EDGE_TOL_MM) return false;
+  }
+  return true;
+}
+
 // バンド輪郭 → 補正後輪郭。矩形の最長辺を targetLengthMm に合わせる一様スケール（最長辺方向のみ）。
 export function computeBandCutOutline(input: BandCutOutlineInput): BandCutOutlineResult {
   const { edges, targetLengthMm } = input;
@@ -61,8 +83,10 @@ export function computeBandCutOutline(input: BandCutOutlineInput): BandCutOutlin
   if (!Number.isFinite(targetLengthMm) || targetLengthMm <= 0) {
     return { ok: false, reason: "degenerate" };
   }
-  // straight（2 点）な辺だけを対象にする。曲線（3 点以上）は net-line を推測できないので出さない。
-  if (edges.some((edge) => edge.length !== 2)) {
+  // 各辺が直線であることを、頂点数ではなく全点の同一直線性で判定する（slnt edges は直線でも中間に
+  // collinear な頂点を持つ polyline を返しうる — それを曲線と誤って弾かない）。曲線は net-line を推測
+  // できないので出さない。
+  if (edges.some((edge) => !isStraightEdge(edge))) {
     return { ok: false, reason: "non-straight-edge" };
   }
   // 単純なバンドは 4 辺の矩形。それ以外の辺数は矩形として扱わない。
@@ -70,10 +94,12 @@ export function computeBandCutOutline(input: BandCutOutlineInput): BandCutOutlin
     return { ok: false, reason: "not-a-rectangle" };
   }
 
-  // 角 = 各辺の始点。連続（辺 i の終点 ≈ 辺 i+1 の始点）かつ閉ループを確認する。
+  // 角 = 各辺の始点（中間の collinear 頂点は無視し、端点間を辺とみなす）。連続（辺 i の終点 ≈ 辺 i+1 の
+  // 始点）かつ閉ループを確認する。
   const corners: Point[] = edges.map((edge) => edge[0]!);
   for (let i = 0; i < 4; i += 1) {
-    const end = edges[i]![1]!;
+    const edge = edges[i]!;
+    const end = edge[edge.length - 1]!;
     const nextStart = corners[(i + 1) % 4]!;
     if (Math.hypot(end.x - nextStart.x, end.y - nextStart.y) > CORNER_MEETING_TOL_MM) {
       return { ok: false, reason: "not-a-rectangle" };

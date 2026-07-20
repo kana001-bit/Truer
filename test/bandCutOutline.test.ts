@@ -66,6 +66,36 @@ test("resizes a rotated rectangle too (axis-independent)", () => {
   );
 });
 
+test("accepts a straight edge that has extra collinear vertices (P2: no false negative)", () => {
+  // 守る仕様: slnt edges は直線でも中間に collinear 頂点を持つ polyline を返しうる。頂点数（2 点ちょうど）
+  //           ではなく同一直線性で straight を判定するので、有効な矩形バンドを曲線扱いで弾かない。
+  const edges = [
+    [
+      { x: 0, y: 0 },
+      { x: 175, y: 0 }, // collinear 中間頂点（端点間の直線上）
+      { x: 350, y: 0 }
+    ],
+    [
+      { x: 350, y: 0 },
+      { x: 350, y: 40 }
+    ],
+    [
+      { x: 350, y: 40 },
+      { x: 0, y: 40 }
+    ],
+    [
+      { x: 0, y: 40 },
+      { x: 0, y: 0 }
+    ]
+  ];
+  const result = computeBandCutOutline({ edges, targetLengthMm: 300 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.outline.fromLengthMm, 350);
+  assert.equal(result.outline.toLengthMm, 300);
+  assert.equal(result.outline.heightMm, 40);
+});
+
 test("is deterministic (same input -> byte-identical output)", () => {
   // 守る仕様: pure・決定的（T10）。同じ入力から同じ輪郭。
   const input = { edges: rectEdges(WAISTBAND_CORNERS), targetLengthMm: 655 };
