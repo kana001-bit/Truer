@@ -9,14 +9,15 @@ import { basename, dirname, extname, join } from "node:path";
 
 import { createProposalFile } from "../core/proposal/createProposalFile.ts";
 import { validateProposalFile } from "../core/proposal/proposalSchema.ts";
-import type { ProposalFile } from "../core/proposal/proposalSchema.ts";
+import type { Proposal, ProposalFile } from "../core/proposal/proposalSchema.ts";
 import { planApply } from "../core/apply/applyProposal.ts";
 import {
   parseSeamlintReport,
   buildResolveSeamPair,
   buildResolveBandSeam,
   buildResolveTarget,
-  buildEdgePointsLookup
+  buildEdgePointsLookup,
+  type SlntEdgesRunner
 } from "../adapters/seamlint/index.ts";
 import {
   createSlntEdgesRunner,
@@ -34,16 +35,16 @@ import { isSameFilePath } from "./samePath.ts";
 const USAGE = `tru — Truer CLI (MVP)
 
 Usage:
-  tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--slnt <cmd>]
+  tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--cut [<cut.svg>] --scale fit-a4|actual [--seam-allowance <mm>] [--on-fold long|short]] [--slnt <cmd>]
   tru apply   [<pattern.dxf>] --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
   tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--seam-allowance <mm>] [--on-fold long|short] [--slnt <cmd>]
 
   <pattern.dxf> は省略可: 省略時は cwd 直下の *.dxf を使う（ちょうど 1 つのとき。0/複数なら明示指定を促す）。
 
 Commands:
-  propose   Seamlint 診断 (DXF) から補正案 (proposal) と preview を作る。source は書き換えない。
+  propose   Seamlint 診断 (DXF) から補正案 (proposal) と preview を作る（--cut で band を裁つ stopgap SVG も）。source は書き換えない。
   apply     採用された proposal の補正を --out の DXF に書く。source は不変・書き込みは atomic。
-  cut       band 提案から、印刷して手で裁つ stopgap の SVG を作る。正式パターン(DXF)は書き換えない。
+  cut       既存 proposal JSON から band stopgap SVG を再レンダ（新規は propose --cut を推奨）。正式パターン(DXF)は書き換えない。
 
 propose options:
   --diagnostic <file>   Seamlint report JSON (CheckReport or GeometryRequestReport).
@@ -54,6 +55,12 @@ propose options:
                         どの blockName にも一致しない / 両側一致なら向きを決めず両方向 preview-only (T6)。
   --out <file>          proposal JSON の書き出し先。省略時は output/<dxf 名>.proposal.json (親が無ければ作成)。
   --preview <file>      Optional: overlay SVG (seam Δ / band closure / curve_kink before+after).
+  --cut [<file>]        Optional・opt-in: band conform 提案を印刷 stopgap SVG に裁つ（tru cut を propose に畳んだ口）。
+                        指定時のみ band ブロックの slnt 取得＋conform を走らせる。値なしは既定 output/<dxf 名>.cut.svg。
+                        --scale が必須。band cut と同じレンダラ（矩形=一様 / 曲線帯=弧長スケール）。
+  --scale <mode>        --cut 用: fit-a4 (A4 1枚のミニチュア) / actual (1:1 実寸・10cm 四角つきカバー + A4 タイル)。
+  --seam-allowance <mm> --cut 用: 縫い代（裁ち線を仕上がり線の外へ）。既定 10。0 で仕上がり線のみ。矩形バンドのみ。
+  --on-fold <long|short> --cut 用: わ辺（縫い代 0）の代表 1 辺。long=長辺 / short=短辺。省略=全辺一様。矩形バンドのみ。
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
 apply options:
@@ -91,6 +98,13 @@ interface ProposeOptions {
   // part→BLOCK 名の翻訳は上流（Loomit の `loom match`）が持ち、CLI には解決済みの BLOCK 名が渡る
   //（例 `--reference FRONT`）。複数指定＝固定パーツ集合。照合は adapter が行い core は pure のまま。
   reference: string[];
+  // stopgap SVG（band cut を propose に畳む口）。--cut は opt-in（指定時のみ band conform を裁つ）。
+  // 値なしなら既定パス。--scale は --cut 指定時のみ必須。seam-allowance / on-fold は cut と同義。
+  cutRequested?: boolean;
+  cut?: string;
+  scale?: string;
+  seamAllowanceMm?: number;
+  onFold?: OnFold;
 }
 
 function parseProposeArgs(args: string[]): ProposeOptions {
@@ -115,6 +129,27 @@ function parseProposeArgs(args: string[]): ProposeOptions {
       if (options.reference.length === before) {
         throw new Error("--reference requires at least one BLOCK name.");
       }
+    } else if (arg === "--cut") {
+      // stopgap SVG を出す opt-in フラグ。値（出力パス）は任意: 続く token が非 flag ならパスとして取り、
+      // 無ければ既定パス（output/<dxf>.cut.svg）。指定の有無自体は cutRequested で持つ。
+      options.cutRequested = true;
+      if (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
+        options.cut = args[++index];
+      }
+    } else if (arg === "--scale") {
+      options.scale = requireValue(arg, args[++index]);
+    } else if (arg === "--seam-allowance") {
+      const parsed = Number(requireValue(arg, args[++index]));
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error("--seam-allowance must be a non-negative number (mm).");
+      }
+      options.seamAllowanceMm = parsed;
+    } else if (arg === "--on-fold") {
+      const value = requireValue(arg, args[++index]);
+      if (value !== "long" && value !== "short") {
+        throw new Error('--on-fold must be "long" or "short".');
+      }
+      options.onFold = value;
     } else if (arg.startsWith("--")) {
       throw new Error(`Unknown option: ${arg}`);
     } else if (options.dxfFile !== undefined) {
@@ -175,6 +210,11 @@ function defaultProposalOutPath(dxfFile: string): string {
   return join("output", `${basename(dxfFile, extname(dxfFile))}.proposal.json`);
 }
 
+// propose --cut / tru cut で --cut に値が無いときの既定出力先。--out の既定と同流儀（output/ 配下）。
+function defaultCutOutPath(dxfFile: string): string {
+  return join("output", `${basename(dxfFile, extname(dxfFile))}.cut.svg`);
+}
+
 // <pattern.dxf> 省略時の解決。cwd 直下（非再帰）の *.dxf を探し、ちょうど 1 つならそれを使う。
 // 「1 プロジェクト = 1 DXF（全パーツ同梱）」の通常運用を引数ゼロで通すため。0 個 / 複数個は推測せず
 // error にして明示指定を促す（複数 = シナリオ別 DXF 等）。Seamlint report は source パスを持たないので、
@@ -212,6 +252,12 @@ async function runPropose(args: string[]): Promise<number> {
 
   if (!options.diagnostic) {
     process.stderr.write("tru propose: --diagnostic is required.\n\n" + USAGE);
+    return 2;
+  }
+
+  // --cut は --scale 必須（band cut と同じ）。欠落は file も slnt も触る前に usage error（exit 2）で止める。
+  if (options.cutRequested && options.scale !== "fit-a4" && options.scale !== "actual") {
+    process.stderr.write("tru propose: --cut requires --scale fit-a4|actual.\n\n" + USAGE);
     return 2;
   }
 
@@ -270,6 +316,32 @@ async function runPropose(args: string[]): Promise<number> {
   if (options.preview) {
     await writeFile(options.preview, renderProposalPreview(file), "utf8");
     process.stdout.write(`preview: overlay -> ${options.preview}\n`);
+  }
+
+  // --cut（opt-in）: この場で band conform 提案を印刷 stopgap SVG に裁つ（tru cut を propose に畳んだ口）。
+  // read-only な派生 SVG なので propose と同居できる（apply とは別・ゲート無し）。propose 用に組んだ runEdges を
+  // そのまま流用する。scale は上で検証済み（cutRequested なら fit-a4|actual）。
+  if (options.cutRequested && (options.scale === "fit-a4" || options.scale === "actual")) {
+    const scale: CutScale = options.scale;
+    const cuttable = cuttableBandProposals(file);
+    if (cuttable.length === 0) {
+      process.stdout.write(
+        "cut: 裁断できる band 提案がありません（band conform の targetBandLengthMm が必要）。何も書きません。\n"
+      );
+    } else {
+      const cutOut = options.cut ?? defaultCutOutPath(dxfFile);
+      const cutStatus = await writeBandCutsheets({
+        cuttable,
+        runEdges,
+        scale,
+        out: cutOut,
+        ...(options.seamAllowanceMm !== undefined
+          ? { seamAllowanceMm: options.seamAllowanceMm }
+          : {}),
+        ...(options.onFold ? { onFold: options.onFold } : {})
+      });
+      if (cutStatus !== 0) return cutStatus;
+    }
   }
 
   return 0;
@@ -436,6 +508,89 @@ function cutOutPathFor(outPath: string, ...suffixes: (string | undefined)[]): st
   return `${stem}${suffix}${ext}`;
 }
 
+// 裁てるのは band conform（targetBandLengthMm がある band 提案）だけ。目標長が無い（band 固定 / 未決）提案は
+// 縮める寸法が定まらないので出さない（推測しない、T8）。propose --cut と tru cut が同じ判定を共有する。
+function cuttableBandProposals(file: ProposalFile): Proposal[] {
+  return file.proposals.filter(
+    (proposal) => proposal.bandReconciliation?.targetBandLengthMm !== undefined
+  );
+}
+
+// 裁てる band 提案を印刷 stopgap SVG（cutsheet）へ書き出す共有ルーチン。propose --cut（in-memory の proposal
+// file）と tru cut（既存 proposal JSON の再レンダ）が同じレンダラを通る＝band の裁ち方を一元化する。band ブロックの
+// 全辺を slnt edges で取り、輪郭を目標長へ縮め（矩形=一様スケール / 曲線帯=弧長スケール）SVG を書く。4 辺 ribbon
+// でない / 退化は推測せず出さない（T8）。曲線は縫い代未対応。slnt 失敗は systemic なので何か書く前に 1 で止める。
+async function writeBandCutsheets(params: {
+  cuttable: Proposal[];
+  runEdges: SlntEdgesRunner;
+  scale: CutScale;
+  out: string;
+  seamAllowanceMm?: number;
+  onFold?: OnFold;
+}): Promise<number> {
+  const { cuttable, runEdges, scale, out } = params;
+  for (const proposal of cuttable) {
+    const band = proposal.bandReconciliation!;
+    const blockName = band.bandEdge.blockName;
+    const targetLengthMm = band.targetBandLengthMm!;
+
+    // band ブロックの全辺を slnt edges で取り、閉じた輪郭を作る（A1: 辺 geometry は subprocess で取得）。
+    let edgesResult;
+    try {
+      edgesResult = runEdges(blockName);
+    } catch (error) {
+      process.stderr.write(`cut: ${errorMessage(error)}\n`);
+      return 1;
+    }
+
+    const outline = computeBandCutOutline({
+      edges: edgesResult.edges.map((edge) => edge.points),
+      targetLengthMm
+    });
+    if (!outline.ok) {
+      // 4 辺 ribbon（矩形 or 曲線帯）でない / 退化は推測せず出さない（T8）。理由を出して次の band へ。
+      process.stdout.write(
+        `cut: skipped ${blockName}（${outline.reason}）— band 輪郭（4 辺 ribbon）として扱えないため出力しません。\n`
+      );
+      continue;
+    }
+    // 曲線バンドは縫い代未対応（第一スライス）: 要求されていれば net 線のみになる旨を告げる。
+    if (outline.outline.kind === "curved" && (params.seamAllowanceMm ?? 10) > 0) {
+      process.stdout.write(
+        `cut: ${blockName} は曲線バンド — 縫い代は未対応（仕上がり線のみ）。裁つときは手で縫い代を足す。\n`
+      );
+    }
+
+    // 縫い代の既定は 10mm（cut = 布を裁つ用途）。`--seam-allowance 0` で仕上がり線のみ（0 は保持）。
+    // `--on-fold` があればわ辺だけ縫い代 0（案A・矩形のみ）。曲線バンドは kind により cutsheet が net のみにする。
+    const pages = renderBandCutsheet({
+      outline: outline.outline,
+      scale,
+      title: blockName,
+      seamAllowanceMm: params.seamAllowanceMm ?? 10,
+      ...(params.onFold ? { onFold: params.onFold } : {})
+    });
+    for (const page of pages) {
+      // ファイル名 = base +（band 複数なら .<id>）+（複数ページなら .<label>）。単票（1 提案・1 ページ・
+      // label 空）だけ素の out に書く。それ以外は衝突しないよう分ける（同一 block の上書き防止）。
+      const singleFile = cuttable.length === 1 && pages.length === 1 && page.label === "";
+      const outPath = singleFile
+        ? out
+        : cutOutPathFor(
+            out,
+            cuttable.length > 1 ? proposal.id : undefined,
+            page.label || undefined
+          );
+      await mkdir(dirname(outPath), { recursive: true });
+      await writeFileAtomic(outPath, page.svg);
+      process.stdout.write(
+        `cut: ${blockName} (${scale})${page.label ? ` [${page.label}]` : ""} -> ${outPath}\n`
+      );
+    }
+  }
+  return 0;
+}
+
 // tru cut: band 提案から、印刷して手で裁つ stopgap の SVG を作る。正式パターン(DXF)は書き換えない
 // （apply とは別・ゲート無しの使い捨てアーティファクト）。band conform（targetBandLengthMm がある band
 // 提案）だけを対象にし、band ブロックの全辺を slnt edges で取って輪郭を目標長へ縮め（矩形=一様スケール /
@@ -474,11 +629,7 @@ async function runCut(args: string[]): Promise<number> {
   }
   const file = parsed as ProposalFile;
 
-  // 裁てるのは band conform（targetBandLengthMm がある band 提案）だけ。目標長が無い（band 固定 / 未決）
-  // 提案は縮める寸法が定まらないので出さない（推測しない、T8）。
-  const cuttable = file.proposals.filter(
-    (proposal) => proposal.bandReconciliation?.targetBandLengthMm !== undefined
-  );
+  const cuttable = cuttableBandProposals(file);
   if (cuttable.length === 0) {
     process.stdout.write(
       "cut: 裁断できる band 提案がありません（band conform の targetBandLengthMm が必要）。何も書きません。\n"
@@ -502,68 +653,14 @@ async function runCut(args: string[]): Promise<number> {
     process.stderr.write(`tru cut: warning: ${cmdRisk}\n`);
   }
 
-  for (const proposal of cuttable) {
-    const band = proposal.bandReconciliation!;
-    const blockName = band.bandEdge.blockName;
-    const targetLengthMm = band.targetBandLengthMm!;
-
-    // band ブロックの全辺を slnt edges で取り、閉じた輪郭を作る（A1: 辺 geometry は subprocess で取得）。
-    let edgesResult;
-    try {
-      edgesResult = runEdges(blockName);
-    } catch (error) {
-      // slnt 実行失敗は systemic。何か書く前に失敗させる。
-      process.stderr.write(`tru cut: ${errorMessage(error)}\n`);
-      return 1;
-    }
-
-    const outline = computeBandCutOutline({
-      edges: edgesResult.edges.map((edge) => edge.points),
-      targetLengthMm
-    });
-    if (!outline.ok) {
-      // 4 辺 ribbon（矩形 or 曲線帯）でない / 退化は推測せず出さない（T8）。理由を出して次の band へ。
-      process.stdout.write(
-        `cut: skipped ${blockName}（${outline.reason}）— band 輪郭（4 辺 ribbon）として扱えないため出力しません。\n`
-      );
-      continue;
-    }
-    // 曲線バンドは縫い代未対応（第一スライス）: 要求されていれば net 線のみになる旨を告げる。
-    if (outline.outline.kind === "curved" && (options.seamAllowanceMm ?? 10) > 0) {
-      process.stdout.write(
-        `cut: ${blockName} は曲線バンド — 縫い代は未対応（仕上がり線のみ）。裁つときは手で縫い代を足す。\n`
-      );
-    }
-
-    // 縫い代の既定は 10mm（cut = 布を裁つ用途）。`--seam-allowance 0` で仕上がり線のみ（0 は保持）。
-    // `--on-fold` があればわ辺だけ縫い代 0（案A・矩形のみ）。曲線バンドは kind により cutsheet が net のみにする。
-    const pages = renderBandCutsheet({
-      outline: outline.outline,
-      scale,
-      title: blockName,
-      seamAllowanceMm: options.seamAllowanceMm ?? 10,
-      ...(options.onFold ? { onFold: options.onFold } : {})
-    });
-    for (const page of pages) {
-      // ファイル名 = base +（band 複数なら .<id>）+（複数ページなら .<label>）。単票（1 提案・1 ページ・
-      // label 空）だけ素の --out に書く。それ以外は衝突しないよう分ける（同一 block の上書き防止）。
-      const singleFile = cuttable.length === 1 && pages.length === 1 && page.label === "";
-      const outPath = singleFile
-        ? options.out
-        : cutOutPathFor(
-            options.out,
-            cuttable.length > 1 ? proposal.id : undefined,
-            page.label || undefined
-          );
-      await mkdir(dirname(outPath), { recursive: true });
-      await writeFileAtomic(outPath, page.svg);
-      process.stdout.write(
-        `cut: ${blockName} (${scale})${page.label ? ` [${page.label}]` : ""} -> ${outPath}\n`
-      );
-    }
-  }
-
-  return 0;
+  return await writeBandCutsheets({
+    cuttable,
+    runEdges,
+    scale,
+    out: options.out,
+    ...(options.seamAllowanceMm !== undefined ? { seamAllowanceMm: options.seamAllowanceMm } : {}),
+    ...(options.onFold ? { onFold: options.onFold } : {})
+  });
 }
 
 async function main(argv: string[]): Promise<number> {

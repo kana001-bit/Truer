@@ -578,3 +578,87 @@ test("cut: 同一 block を指す複数提案は proposal.id で別ファイル�
   // 複数出力なので素の --out（cut.svg）は使わない。
   assert.equal(existsSync(out), false);
 });
+
+// ---- propose --cut（band cut を propose に畳んだ口）----
+
+// band conform 診断（bandEdge 住所つき）を report ファイルに書く。propose がこれを読み、--reference で
+// neighbours を固定 → band conform（targetBandLengthMm=655/2=327.5）の提案を組む。
+function writeBandReport(dir: string): string {
+  const report = {
+    status: "warning",
+    target: "geometry-request",
+    diagnostics: [cutBandDiagnostic()],
+    reports: []
+  };
+  const path = join(dir, "band.report.json");
+  writeFileSync(path, JSON.stringify(report));
+  return path;
+}
+
+test("propose --cut: band conform 提案をその場で stopgap SVG に裁つ（tru cut を propose に畳んだ口）", () => {
+  // 守る仕様: --cut を渡すと、propose が組んだ band conform 提案を同じ cutsheet レンダラで裁つ。proposal も
+  //           従来どおり書かれる。actual は複数ページ（素の --cut パスではなく calibration + タイル）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-propose-cut-"));
+  const reportPath = writeBandReport(dir);
+  const slnt = writeFakeSlnt(dir, "rect");
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const outProposal = join(dir, "prop.json");
+  const outCut = join(dir, "cut.svg");
+  const result = runTruIn(dir, [
+    "propose",
+    "pattern.dxf",
+    "--diagnostic",
+    reportPath,
+    "--reference",
+    "FRONT",
+    "--out",
+    outProposal,
+    "--cut",
+    outCut,
+    "--scale",
+    "actual",
+    "--slnt",
+    `node ${slnt}`
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  // proposal は従来どおり書かれる。
+  assert.equal(existsSync(outProposal), true);
+  // band cut と同じ規約: actual は複数ページなので素の cut.svg は書かず calibration を出す。
+  assert.equal(existsSync(outCut), false);
+  assert.equal(existsSync(join(dir, "cut.calibration.svg")), true);
+  assert.match(result.stdout, /cut: WAISTBAND \(actual\)/);
+  assert.match(readFileSync(join(dir, "cut.calibration.svg"), "utf8"), /327\.5/); // 655/2 に縮んだ最長辺
+});
+
+test("propose --cut は --scale が必須（欠落は usage error exit 2・file も slnt も触らない）", () => {
+  // 守る仕様: --cut は --scale 必須。欠落は parse 後の早期チェックで exit 2（DXF/report を読む前に止まる）。
+  const result = runTru(["propose", "x.dxf", "--diagnostic", "r.json", "--cut", "o.svg"]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--cut requires --scale/);
+});
+
+test("propose without --cut writes no cutsheet (opt-in)", () => {
+  // 守る仕様: --cut は opt-in。渡さなければ band conform 提案があっても SVG は一切書かず、cut 用の slnt 取得も
+  //           走らせない（重い処理を既定で回さない）。proposal だけ書く。
+  const dir = mkdtempSync(join(tmpdir(), "truer-propose-nocut-"));
+  const reportPath = writeBandReport(dir);
+  const slnt = writeFakeSlnt(dir, "rect");
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const outProposal = join(dir, "prop.json");
+  const result = runTruIn(dir, [
+    "propose",
+    "pattern.dxf",
+    "--diagnostic",
+    reportPath,
+    "--reference",
+    "FRONT",
+    "--out",
+    outProposal,
+    "--slnt",
+    `node ${slnt}`
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(outProposal), true);
+  const svgs = readdirSync(dir).filter((file) => file.endsWith(".svg"));
+  assert.deepEqual(svgs, []);
+});
