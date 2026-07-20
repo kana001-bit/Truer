@@ -3,6 +3,12 @@ dist/
 .tmp/
 *.log
 
+# examples を実行した生成物（propose/apply/preview の出力）は追跡しない
+examples/*.proposal.json
+examples/*.preview.svg
+examples/*.fixed.dxf
+examples/out/
+
 # 個人のエディタ装飾（タイトルバー色など）は各自ローカルに置き、repo では追跡しない
 .vscode/settings.json
 
