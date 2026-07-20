@@ -1,7 +1,8 @@
 // geometry.band_seam_sum_mismatch の N-ary band 診断を解決する。band 辺は住所（actual.bandEdge）から
-// net-line points まで解決し（digest / preview 用）、neighbours は住所+finished+cut のまま運ぶ
-//（points 解決も preview 描画もしない first slice）。measured 値（bandTotal/sum/closure）は診断から
-// 来る。reference（固定される正）は CLI `--reference` の BLOCK 名集合と band/neighbour の blockName を
+// net-line points まで解決し（digest / preview 用）、neighbours は住所+finished+cut を運ぶ。あわせて
+// neighbour 辺の points も band 辺と同型（edgeId を join key に slnt edges）で解決し overlay に「形」で
+// 描けるようにする（表示補助。解決失敗は非致命＝描かないだけ, T8）。measured 値（bandTotal/sum/closure）は
+// 診断から来る。reference（固定される正）は CLI `--reference` の BLOCK 名集合と band/neighbour の blockName を
 // 照合して決める: band 固定 → "band"（neighbours を直す向き）/ neighbour 固定 → "neighbours"（band が
 // conform・目標長あり）/ 両方 or どちらも無し → undefined（両方向 preview-only, T6、推測しない）。
 //
@@ -14,6 +15,7 @@ import type {
   ResolvedBandNeighbor,
   ResolvedSeamEdge
 } from "../../core/proposal/createProposalFile.ts";
+import type { Point } from "../../core/proposal/proposalSchema.ts";
 import { readEdgeAddress, readArcRange } from "./edgeAddress.ts";
 import type { SlntEdgesRunner } from "./resolveSeamPair.ts";
 
@@ -25,14 +27,36 @@ function positiveInt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
+// neighbour 辺の net-line points を band 辺と同型に解決する（edgeId を join key に `slnt edges` から取る）。
+// overlay に neighbour を「形」で描くための表示補助であって apply target ではないので、解決失敗は
+// non-fatal に倒す: slnt 呼び出しが throw しても（band 辺 target と違い）propose 全体を落とさず undefined を
+// 返し「描かないだけ」にする（T8）。edge が無い / 2 点未満も同様に undefined。決定的（同 block は cache 共有）。
+function resolveNeighbourPoints(
+  runEdges: SlntEdgesRunner,
+  blockName: string,
+  edgeId: number
+): Point[] | undefined {
+  let edges: ReturnType<SlntEdgesRunner>;
+  try {
+    edges = runEdges(blockName);
+  } catch {
+    return undefined;
+  }
+  const edge = edges.edges.find((candidate) => candidate.edgeId === edgeId);
+  if (!edge || !Array.isArray(edge.points) || edge.points.length < 2) return undefined;
+  return edge.points;
+}
+
 // neighbour trace 1 件を読む。住所（blockName + edgeId/arcRange の少なくとも一方）と finished 長
 // （非負）・裁断枚数（正の整数）が揃わなければ undefined（壊れた trace は proposal に持ち込まない）。
-function readNeighbor(value: unknown): ResolvedBandNeighbor | undefined {
+// あわせて overlay 表示用に辺の points も解決する（edgeId があるときだけ・非致命, T8）。
+function readNeighbor(value: unknown, runEdges: SlntEdgesRunner): ResolvedBandNeighbor | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const raw = value as Record<string, unknown>;
   if (typeof raw.blockName !== "string" || raw.blockName.length === 0) return undefined;
-  const edgeId =
-    typeof raw.edgeId === "number" && Number.isInteger(raw.edgeId) ? String(raw.edgeId) : undefined;
+  const numericEdgeId =
+    typeof raw.edgeId === "number" && Number.isInteger(raw.edgeId) ? raw.edgeId : undefined;
+  const edgeId = numericEdgeId !== undefined ? String(numericEdgeId) : undefined;
   const arcRange = readArcRange(raw.arcRange);
   if (edgeId === undefined && arcRange === undefined) return undefined; // 住所が無い
   const finishedLengthMm = finiteNumber(raw.finishedLengthMm);
@@ -40,12 +64,19 @@ function readNeighbor(value: unknown): ResolvedBandNeighbor | undefined {
   if (finishedLengthMm === undefined || finishedLengthMm < 0 || cutQuantity === undefined) {
     return undefined;
   }
+  // preview 用 points は edgeId を join key に解決する（band 辺と同型）。edgeId 無し（arcRange 単独）は
+  // 描かない — arcRange での辺内 slice は band 辺もしない first slice の範囲外（推測しない, T8）。
+  const points =
+    numericEdgeId !== undefined
+      ? resolveNeighbourPoints(runEdges, raw.blockName, numericEdgeId)
+      : undefined;
   return {
     blockName: raw.blockName,
     ...(edgeId !== undefined ? { edgeId } : {}),
     ...(arcRange !== undefined ? { arcRange } : {}),
     finishedLengthMm,
-    cutQuantity
+    cutQuantity,
+    ...(points !== undefined ? { points } : {})
   };
 }
 
@@ -94,7 +125,7 @@ export function buildResolveBandSeam(
     if (!Array.isArray(rawNeighbours) || rawNeighbours.length === 0) return { status: "not-found" };
     const neighbours: ResolvedBandNeighbor[] = [];
     for (const raw of rawNeighbours) {
-      const neighbour = readNeighbor(raw);
+      const neighbour = readNeighbor(raw, cachedRun);
       if (!neighbour) return { status: "not-found" };
       neighbours.push(neighbour);
     }

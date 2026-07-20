@@ -141,14 +141,16 @@ export type SeamPairResolution =
   | { status: "not-found" }
   | { status: "ambiguous" };
 
-// band_seam_sum_mismatch の隣接ピース 1 枚（住所 + finished + cut）。points は解決しない（band 辺
-// だけ preview に描く first slice）ので、band 辺のように net-line points は持たない。
+// band_seam_sum_mismatch の隣接ピース 1 枚（住所 + finished + cut）。`points` は overlay に neighbour 辺を
+// 「形」で描くための net-line polyline（band 辺と同型に slnt edges から解決）。任意・追加的: 解決できない
+// neighbour（辺が無い / slnt 失敗 / 住所が edgeId 無し）は points 無し = 描かないだけ（数値は残す, T8）。
 export interface ResolvedBandNeighbor {
   blockName: string;
   edgeId?: string;
   arcRange?: [number, number];
   finishedLengthMm: number;
   cutQuantity: number;
+  points?: Point[];
 }
 
 // band 診断を解決した結果。band 辺は住所から net-line points まで解決し（digest / preview 用）、
@@ -688,9 +690,16 @@ const buildBandSeamMismatchProposal: ProposalBuilder = ({ id, diagnostic, resolv
     targetDigest: bandEdge.edgeDigest
   };
 
-  // preview: band 辺だけ描く（neighbours は数値で示す first slice）。self-contained:
-  // digestEdgePoints(points) === bandEdge.edgeDigest。まだ preview-only（補正線は無い）。
+  // preview: band 辺（role "band"）に加え、points が解決できた neighbour 辺を role "neighbour" で描く
+  // （overlay に「形」でも見せる）。band 辺は self-contained: digestEdgePoints(points) === bandEdge.edgeDigest。
+  // neighbour 辺は表示補助で digest を持たない。解決できない neighbour は積まない（描かないだけ, T8）。
+  // まだ preview-only（補正線は無い）。順序は band → band.neighbours の並び（決定的, T10）。
   const previewEdges: PreviewEdge[] = [{ role: "band", points: band.bandEdge.points }];
+  for (const neighbour of band.neighbours) {
+    if (neighbour.points && neighbour.points.length >= 2) {
+      previewEdges.push({ role: "neighbour", points: neighbour.points });
+    }
+  }
 
   return {
     proposal: {
