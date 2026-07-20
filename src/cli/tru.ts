@@ -26,6 +26,8 @@ import {
 } from "../adapters/seamlint/slntRunner.ts";
 import { DxfEditError, editNetLineVertex } from "../adapters/dxf/editNetLineVertex.ts";
 import { renderProposalPreview } from "../preview/index.ts";
+import { renderBandCutsheet, type CutScale } from "../preview/cutsheet.ts";
+import { computeBandCutOutline } from "../core/geometry-edit/bandCutOutline.ts";
 import { writeFileAtomic } from "./writeFileAtomic.ts";
 import { isSameFilePath } from "./samePath.ts";
 
@@ -34,12 +36,14 @@ const USAGE = `tru — Truer CLI (MVP)
 Usage:
   tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--slnt <cmd>]
   tru apply   [<pattern.dxf>] --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
+  tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--slnt <cmd>]
 
   <pattern.dxf> は省略可: 省略時は cwd 直下の *.dxf を使う（ちょうど 1 つのとき。0/複数なら明示指定を促す）。
 
 Commands:
   propose   Seamlint 診断 (DXF) から補正案 (proposal) と preview を作る。source は書き換えない。
   apply     採用された proposal の補正を --out の DXF に書く。source は不変・書き込みは atomic。
+  cut       band 提案から、印刷して手で裁つ stopgap の SVG を作る。正式パターン(DXF)は書き換えない。
 
 propose options:
   --diagnostic <file>   Seamlint report JSON (CheckReport or GeometryRequestReport).
@@ -56,6 +60,12 @@ apply options:
   --proposal <file>     The proposal JSON written by propose.
   --accepted <id...>    Proposal ids to apply (one or more). Nothing else is written (T3).
   --out <file>          Where to write the corrected DXF (must not be the source path).
+  --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
+
+cut options:
+  --proposal <file>     propose が書いた proposal JSON。band conform（targetBandLengthMm あり）を裁つ。
+  --scale <mode>        fit-a4 (A4 1枚のミニチュア=デザイン確認) / actual (1:1 実寸=フィット確認)。
+  --out <file>          印刷用 SVG の書き出し先。band が複数なら <base>.<BLOCK>.svg に分ける。
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
 Options:
@@ -360,6 +370,146 @@ async function runApply(args: string[]): Promise<number> {
   return 0;
 }
 
+interface CutOptions {
+  dxfFile?: string;
+  proposal?: string;
+  scale?: string;
+  out?: string;
+  slnt?: string;
+}
+
+function parseCutArgs(args: string[]): CutOptions {
+  const options: CutOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--proposal") {
+      options.proposal = requireValue(arg, args[++index]);
+    } else if (arg === "--scale") {
+      options.scale = requireValue(arg, args[++index]);
+    } else if (arg === "--out") {
+      options.out = requireValue(arg, args[++index]);
+    } else if (arg === "--slnt") {
+      options.slnt = requireValue(arg, args[++index]);
+    } else if (arg?.startsWith("--")) {
+      throw new Error(`Unknown option: ${arg}`);
+    } else if (options.dxfFile !== undefined) {
+      throw new Error("Expected a single <pattern.dxf> path.");
+    } else if (arg !== undefined) {
+      options.dxfFile = arg;
+    }
+  }
+  return options;
+}
+
+// band が複数のときの per-block 出力先。<dir>/<base>.<BLOCK><ext>。
+function cutOutPathFor(outPath: string, blockName: string): string {
+  const ext = extname(outPath);
+  return `${outPath.slice(0, outPath.length - ext.length)}.${blockName}${ext}`;
+}
+
+// tru cut: band 提案から、印刷して手で裁つ stopgap の SVG を作る。正式パターン(DXF)は書き換えない
+// （apply とは別・ゲート無しの使い捨てアーティファクト）。band conform（targetBandLengthMm がある band
+// 提案）だけを対象にし、band ブロックの全辺を slnt edges で取って輪郭を目標長へ縮め（矩形直線のみ）、
+// SVG を書く。曲線 / 非矩形 / 退化は推測せず出さない（T8）。
+async function runCut(args: string[]): Promise<number> {
+  let options: CutOptions;
+  try {
+    options = parseCutArgs(args);
+  } catch (error) {
+    process.stderr.write(`tru cut: ${errorMessage(error)}\n\n${USAGE}`);
+    return 2;
+  }
+
+  if (!options.proposal || !options.out) {
+    process.stderr.write("tru cut: --proposal and --out are required.\n\n" + USAGE);
+    return 2;
+  }
+  if (options.scale !== "fit-a4" && options.scale !== "actual") {
+    process.stderr.write("tru cut: --scale must be fit-a4 or actual.\n\n" + USAGE);
+    return 2;
+  }
+  const scale: CutScale = options.scale;
+
+  const proposalText = await readFile(options.proposal, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(proposalText);
+  } catch (error) {
+    process.stderr.write(`tru cut: could not read proposal JSON: ${errorMessage(error)}\n`);
+    return 1;
+  }
+  const validationErrors = validateProposalFile(parsed);
+  if (validationErrors.length > 0) {
+    process.stderr.write(`tru cut: invalid proposal file: ${validationErrors.join("; ")}\n`);
+    return 1;
+  }
+  const file = parsed as ProposalFile;
+
+  // 裁てるのは band conform（targetBandLengthMm がある band 提案）だけ。目標長が無い（band 固定 / 未決）
+  // 提案は縮める寸法が定まらないので出さない（推測しない、T8）。
+  const cuttable = file.proposals.filter(
+    (proposal) => proposal.bandReconciliation?.targetBandLengthMm !== undefined
+  );
+  if (cuttable.length === 0) {
+    process.stdout.write(
+      "cut: 裁断できる band 提案がありません（band conform の targetBandLengthMm が必要）。何も書きません。\n"
+    );
+    return 0;
+  }
+
+  // 裁つものがある場合だけ DXF を要求する（band ブロックの全辺を slnt edges で取るため）。
+  let dxfFile: string;
+  try {
+    dxfFile = await resolveDxfFile(options.dxfFile);
+  } catch (error) {
+    process.stderr.write(`tru cut: ${errorMessage(error)}\n\n${USAGE}`);
+    return 2;
+  }
+
+  const slntCommand = options.slnt ? tokenizeCommand(options.slnt) : resolveSlntCommand();
+  const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile });
+  const cmdRisk = detectCmdPercentRisk(slntCommand, [dxfFile]);
+  if (cmdRisk) {
+    process.stderr.write(`tru cut: warning: ${cmdRisk}\n`);
+  }
+
+  for (const proposal of cuttable) {
+    const band = proposal.bandReconciliation!;
+    const blockName = band.bandEdge.blockName;
+    const targetLengthMm = band.targetBandLengthMm!;
+
+    // band ブロックの全辺を slnt edges で取り、閉じた輪郭を作る（A1: 辺 geometry は subprocess で取得）。
+    let edgesResult;
+    try {
+      edgesResult = runEdges(blockName);
+    } catch (error) {
+      // slnt 実行失敗は systemic。何か書く前に失敗させる。
+      process.stderr.write(`tru cut: ${errorMessage(error)}\n`);
+      return 1;
+    }
+
+    const outline = computeBandCutOutline({
+      edges: edgesResult.edges.map((edge) => edge.points),
+      targetLengthMm
+    });
+    if (!outline.ok) {
+      // 曲線 / 非矩形 / 退化は推測せず出さない（T8）。理由を出して次の band へ。
+      process.stdout.write(
+        `cut: skipped ${blockName}（${outline.reason}）— 矩形の直線バンドでないため出力しません。\n`
+      );
+      continue;
+    }
+
+    const svg = renderBandCutsheet({ outline: outline.outline, scale, title: blockName });
+    const outPath = cuttable.length === 1 ? options.out : cutOutPathFor(options.out, blockName);
+    await mkdir(dirname(outPath), { recursive: true });
+    await writeFileAtomic(outPath, svg);
+    process.stdout.write(`cut: ${blockName} (${scale}) -> ${outPath}\n`);
+  }
+
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   const [command] = argv;
 
@@ -374,6 +524,10 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === "apply") {
     return await runApply(argv.slice(1));
+  }
+
+  if (command === "cut") {
+    return await runCut(argv.slice(1));
   }
 
   process.stderr.write(`Unknown command: ${command}\n\n${USAGE}`);

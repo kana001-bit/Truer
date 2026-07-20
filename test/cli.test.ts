@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+import { createProposalFile } from "../src/core/proposal/createProposalFile.ts";
+import type { DiagnosticInput } from "../src/core/proposal/createProposalFile.ts";
+import { buildResolveBandSeam } from "../src/adapters/seamlint/index.ts";
+import type { SlntEdgesRunner, SlntEdgesResult } from "../src/adapters/seamlint/index.ts";
 
 function runTru(args: string[]) {
   return spawnSync(process.execPath, ["./src/cli/tru.ts", ...args], {
@@ -197,4 +202,186 @@ test("propose explicit <pattern.dxf> overrides cwd auto-discovery", () => {
   assert.equal(result.status, 0);
   const file = JSON.parse(readFileSync(outPath, "utf8")) as { source: { file: string } };
   assert.match(file.source.file, /a\.dxf$/);
+});
+
+// ---- tru cut（band 印刷 stopgap SVG）----
+
+// band 提案を作るための stub。WAISTBAND の band 辺（propose 側の住所解決用）を返す runner。
+function cutBandRunner(): SlntEdgesRunner {
+  return (blockName): SlntEdgesResult => {
+    if (blockName === "WAISTBAND") {
+      return {
+        blockName,
+        edges: [
+          {
+            edgeId: 0,
+            points: [
+              { x: 0, y: 0 },
+              { x: 350, y: 0 }
+            ]
+          }
+        ]
+      };
+    }
+    throw new Error(`unexpected block ${blockName}`);
+  };
+}
+
+// band_seam_sum_mismatch 診断（band 700=350×2 vs Σ neighbours 655 → closure 45）。
+function cutBandDiagnostic(): DiagnosticInput {
+  return {
+    code: "geometry.band_seam_sum_mismatch",
+    severity: "warning",
+    target: "waistband",
+    expected: { checkId: "waist", kind: "band-seam" },
+    actual: {
+      bandEdge: { blockName: "WAISTBAND", edgeId: 0, arcRange: [0.0, 0.45] },
+      bandEdgeId: 0,
+      bandLengthMm: 350,
+      bandCutQuantity: 2,
+      bandTotalMm: 700,
+      sumMm: 655,
+      closureMm: 45,
+      closurePct: 0.0687,
+      neighbours: [
+        {
+          partId: "front",
+          blockName: "FRONT",
+          edgeId: 0,
+          arcRange: [0.499, 0.887],
+          finishedLengthMm: 165,
+          cutQuantity: 2
+        },
+        {
+          partId: "back",
+          blockName: "BACK",
+          edgeId: 0,
+          arcRange: [0.471, 0.899],
+          finishedLengthMm: 162.5,
+          cutQuantity: 2
+        }
+      ]
+    },
+    suggestion: ["x"]
+  };
+}
+
+// band conform（reference=neighbours → targetBandLengthMm=655/2=327.5）の valid proposal を dir に書く。
+function writeBandProposal(dir: string): string {
+  const file = createProposalFile({
+    sourceFile: "pattern.dxf",
+    sourceText: "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
+    diagnostics: [cutBandDiagnostic()],
+    resolveTarget: () => ({ status: "not-found" as const }),
+    resolveBandSeam: buildResolveBandSeam(cutBandRunner(), ["FRONT"])
+  });
+  const path = join(dir, "band.proposal.json");
+  writeFileSync(path, JSON.stringify(file));
+  return path;
+}
+
+// fake slnt: `edges <dxf> --block <name> --json` に矩形 or 三角形の edges を返す node スクリプト。
+function writeFakeSlnt(dir: string, shape: "rect" | "triangle"): string {
+  const corners = shape === "rect" ? "[[0,0],[350,0],[350,40],[0,40]]" : "[[0,0],[350,0],[175,40]]";
+  const script = [
+    "const a = process.argv.slice(2);",
+    'const bi = a.indexOf("--block");',
+    'const block = bi >= 0 ? a[bi + 1] : "?";',
+    `const c = ${corners};`,
+    "const edges = c.map((p, i) => ({ edgeId: i, points: [ { x: p[0], y: p[1] }, { x: c[(i + 1) % c.length][0], y: c[(i + 1) % c.length][1] } ] }));",
+    "process.stdout.write(JSON.stringify({ blockName: block, edges }));"
+  ].join("\n");
+  const path = join(dir, "fake-slnt.js");
+  writeFileSync(path, script);
+  return path;
+}
+
+test("cut: --scale must be fit-a4 or actual (usage error exit 2)", () => {
+  const result = runTru([
+    "cut",
+    "x.dxf",
+    "--proposal",
+    "p.json",
+    "--scale",
+    "bogus",
+    "--out",
+    "o.svg"
+  ]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--scale must be fit-a4 or actual/);
+});
+
+test("cut: --proposal and --out are required (exit 2)", () => {
+  const result = runTru(["cut", "x.dxf", "--scale", "actual"]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--proposal and --out are required/);
+});
+
+test("cut: no band-conform proposal writes nothing (exit 0, slnt not spawned)", () => {
+  // 守る仕様: targetBandLengthMm を持つ band 提案が無ければ、推測せず何も書かず exit 0（理由を出す）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-cut-none-"));
+  const file = createProposalFile({
+    sourceFile: "pattern.dxf",
+    sourceText: "x",
+    diagnostics: [],
+    resolveTarget: () => ({ status: "not-found" as const })
+  });
+  const pp = join(dir, "empty.proposal.json");
+  writeFileSync(pp, JSON.stringify(file));
+  const out = join(dir, "cut.svg");
+  const result = runTruIn(dir, ["cut", "--proposal", pp, "--scale", "actual", "--out", out]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /裁断できる band 提案がありません/);
+  assert.equal(existsSync(out), false);
+});
+
+test("cut: band-conform proposal -> mm 実寸 SVG（happy path, fake slnt）", () => {
+  // 守る仕様: band conform 提案 + 矩形バンド → 1:1 の SVG を書く。最長辺は目標長 327.5 に縮む。
+  const dir = mkdtempSync(join(tmpdir(), "truer-cut-ok-"));
+  const pp = writeBandProposal(dir);
+  const slnt = writeFakeSlnt(dir, "rect");
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const out = join(dir, "cut.svg");
+  const result = runTruIn(dir, [
+    "cut",
+    "pattern.dxf",
+    "--proposal",
+    pp,
+    "--scale",
+    "actual",
+    "--slnt",
+    `node ${slnt}`,
+    "--out",
+    out
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /cut: WAISTBAND \(actual\)/);
+  const svg = readFileSync(out, "utf8");
+  assert.match(svg, /width="[0-9.]+mm"/);
+  assert.match(svg, /327\.5/); // 655 / 2 = 327.5 に縮んだ最長辺（ラベル）
+});
+
+test("cut: non-rectangle band is skipped without writing (fake slnt returns triangle, T8)", () => {
+  // 守る仕様: 矩形の直線バンドでなければ推測せず出さない。理由を出し、ファイルは書かない。
+  const dir = mkdtempSync(join(tmpdir(), "truer-cut-tri-"));
+  const pp = writeBandProposal(dir);
+  const slnt = writeFakeSlnt(dir, "triangle");
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const out = join(dir, "cut.svg");
+  const result = runTruIn(dir, [
+    "cut",
+    "pattern.dxf",
+    "--proposal",
+    pp,
+    "--scale",
+    "actual",
+    "--slnt",
+    `node ${slnt}`,
+    "--out",
+    out
+  ]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /skipped WAISTBAND/);
+  assert.match(result.stdout, /not-a-rectangle/);
+  assert.equal(existsSync(out), false);
 });
