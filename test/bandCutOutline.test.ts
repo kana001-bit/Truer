@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { computeBandCutOutline } from "../src/core/geometry-edit/bandCutOutline.ts";
+import {
+  computeBandCutOutline,
+  offsetRectangleOutward
+} from "../src/core/geometry-edit/bandCutOutline.ts";
 import type { Point } from "../src/core/proposal/proposalSchema.ts";
 
 // 閉じた 4 角から矩形の辺列（各辺 2 点）を作る。
@@ -167,4 +170,48 @@ test("rejects a non-positive target length (degenerate)", () => {
     if (result.ok) continue;
     assert.equal(result.reason, "degenerate");
   }
+});
+
+// ---- offsetRectangleOutward（縫い代 = 裁ち線）----
+
+test("offsetRectangleOutward: 矩形を全辺 amount mm 外へ広げる（裁ち線）", () => {
+  // 守る仕様: net 矩形の各辺を外向きに amount 動かす = 縫い代を足した裁ち線。軸並行は各角が (±amount) だけ外へ。
+  const rect: Point[] = [
+    { x: 0, y: 0 },
+    { x: 300, y: 0 },
+    { x: 300, y: 50 },
+    { x: 0, y: 50 }
+  ];
+  assert.deepEqual(offsetRectangleOutward(rect, 10), [
+    { x: -10, y: -10 },
+    { x: 310, y: -10 },
+    { x: 310, y: 60 },
+    { x: -10, y: 60 }
+  ]);
+});
+
+test("offsetRectangleOutward: amount <= 0 は net 輪郭のまま（縫い代なし）", () => {
+  const rect: Point[] = [
+    { x: 0, y: 0 },
+    { x: 300, y: 0 },
+    { x: 300, y: 50 },
+    { x: 0, y: 50 }
+  ];
+  assert.deepEqual(offsetRectangleOutward(rect, 0), rect);
+  assert.deepEqual(offsetRectangleOutward(rect, -5), rect);
+});
+
+test("offsetRectangleOutward: 回転矩形でも各辺が外へ amount 動く（辺長 +2·amount）", () => {
+  const rect: Point[] = [
+    { x: 0, y: 0 },
+    { x: 300, y: 0 },
+    { x: 300, y: 50 },
+    { x: 0, y: 50 }
+  ].map((corner) => rotate(corner, Math.PI / 6));
+  const lens = edgeLengths(offsetRectangleOutward(rect, 10)).sort((a, b) => a - b);
+  assert.ok(Math.abs(lens[0]! - 70) < 0.02 && Math.abs(lens[1]! - 70) < 0.02, `short ~70: ${lens}`);
+  assert.ok(
+    Math.abs(lens[2]! - 320) < 0.02 && Math.abs(lens[3]! - 320) < 0.02,
+    `long ~320: ${lens}`
+  );
 });

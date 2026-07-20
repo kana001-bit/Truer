@@ -169,3 +169,42 @@ export function computeBandCutOutline(input: BandCutOutlineInput): BandCutOutlin
     }
   };
 }
+
+// 矩形の閉じた輪郭を外側へ amount mm オフセットする（= 縫い代を足した「裁ち線」）。各辺を外向き法線へ
+// amount 動かし、角を再交差させる（矩形は隣辺が直交するので、角 = 角 + amount·(隣接2辺の外向き法線和) で
+// 正確に出る）。amount <= 0 は net corners をそのまま返す（縫い代なし）。回転矩形でも成立（軸に依らず法線で
+// 扱う）。pure・決定的、丸めは roundPoint の emit 境界だけ（T10）。呼び出し側は矩形（computeBandCutOutline の
+// 出力）だけに使う。
+export function offsetRectangleOutward(corners: readonly Point[], amount: number): Point[] {
+  if (!(amount > 0) || corners.length < 3) {
+    return corners.map((corner) => ({ x: corner.x, y: corner.y }));
+  }
+  const count = corners.length;
+  const centerX = corners.reduce((sum, corner) => sum + corner.x, 0) / count;
+  const centerY = corners.reduce((sum, corner) => sum + corner.y, 0) / count;
+  // 各辺 i（corner i -> i+1）の外向き単位法線（中心から見て外を向く側を選ぶ）。
+  const outward: Vec[] = corners.map((corner, i) => {
+    const next = corners[(i + 1) % count]!;
+    const dx = next.x - corner.x;
+    const dy = next.y - corner.y;
+    const length = Math.hypot(dx, dy) || 1;
+    let nx = -dy / length;
+    let ny = dx / length;
+    const midX = (corner.x + next.x) / 2;
+    const midY = (corner.y + next.y) / 2;
+    if (nx * (midX - centerX) + ny * (midY - centerY) < 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    return { x: nx, y: ny };
+  });
+  // 角 i は 辺(i-1) と 辺 i の交点。両辺を外へ amount 動かした交点 = 角 + amount·(n_{i-1} + n_i)。
+  return corners.map((corner, i) => {
+    const nPrev = outward[(i - 1 + count) % count]!;
+    const nCur = outward[i]!;
+    return roundPoint({
+      x: corner.x + amount * (nPrev.x + nCur.x),
+      y: corner.y + amount * (nPrev.y + nCur.y)
+    });
+  });
+}
