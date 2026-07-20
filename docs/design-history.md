@@ -212,8 +212,7 @@ Seamlint は自信の持てない住所を一切出さず、Truer は住所が�
 効いているのは二重の防御だ。Seamlint が入口で分類し（notch 射影の onCorner / ambiguous 機構を流用して、一意な
 内部kink だけを住所付きにする）、Truer の側でも endpoint ガード（T7）と頂点マッチの tolerance（T8）が backstop に
 なる。片方が漏らしても、もう片方が止める。境界を「賢く広く」ではなく「臆病に狭く」引いたことで、コーナー潰し
-という最悪の誤補正を、機構で二重に閉じた。この往復の記録は `seamlint-request-curve-kink-edge.md`（末尾「確定」節）
-と Seamlint 側の返信にある。案A の実装は Seamlint 側で、まだ landing していない。
+という最悪の誤補正を、機構で二重に閉じた。この往復の記録は Seamlint 側の返信にある。案A の実装は Seamlint 側で、まだ landing していない。
 
 ## 【2026-07-18】このままでは試作した一部の変更を取り入れて、引き続き別の修正をすることができない
 
@@ -294,7 +293,7 @@ Truer は「①低カップリングの角で吸い、②目標長で指示し�
   **Slice 1**＝①構造リンク推奨の指示ログ（preview-only・DXF 書かない・Seamlint 改修なし。
   `feature/seam-length-adjustment` で着手）、**cross-repo**＝宣言 ease の threading（Loomit connector→Seamlint
   →Truer）と過拘束判定（Loomit グラフ check）、**Slice 2**＝②corner-slide の緊急 DXF 焼き（`move-corner` ＋
-  狭い T7 例外）。それまで seam_length は preview-only 固定。詳細は `branch/feature/seam-length-adjustment.md`。
+  狭い T7 例外）。それまで seam_length は preview-only 固定。
 - **Seamlint が curve_kink に辺住所を自動で載せること（cross-repo・shape=案A で合意済み、実装は Seamlint 待ち）。**
   一意な内部kinkにだけ住所、コーナー/ダート先端は住所なし（上の 2026-07-16 章）。今は診断が `actual.edge` を運べば
   propose→apply が通る（確認済み）。Seamlint 側が案A を実装すれば、レポートを手書きせずに済む（S0）。
@@ -308,7 +307,4 @@ Truer は「①低カップリングの角で吸い、②目標長で指示し�
 ## Related Documents
 
 - `../AGENTS.md` — エージェント向け規約の**正本**（常に守る境界 / 行動原則）。
-- `README-public-draft.md` / `README.ja-public-draft.md` — 公開 README ドラフト（安全モデルの
-  読み物版）。
 - `../.claude/skills/truer-implementation/references/critical-invariants.md` — invariant の実装ルール。
-- `loomit-status-message.md` — Loomit からの source-of-truth 共有（apply 書き先の背景）。

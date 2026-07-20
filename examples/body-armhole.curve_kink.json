@@ -1,0 +1,19 @@
+{
+  "status": "warning",
+  "target": "BODY",
+  "diagnostics": [
+    {
+      "severity": "warning",
+      "code": "geometry.curve_kink",
+      "target": "BODY",
+      "message": "Path direction changes sharply near the armhole net line.",
+      "expected": { "maxAngleDeg": 25 },
+      "actual": {
+        "angleDeg": 73.74,
+        "point": { "x": 80, "y": 70 },
+        "edge": { "blockName": "BODY", "edgeId": 0, "vertexIndex": 2 }
+      },
+      "suggestion": ["Check whether this is an intentional corner or an unwanted kink."]
+    }
+  ]
+}
