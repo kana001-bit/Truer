@@ -449,6 +449,50 @@ test("cut: --seam-allowance が負なら usage error (exit 2)", () => {
   assert.match(result.stderr, /seam-allowance must be a non-negative number/);
 });
 
+test("cut: --on-fold long でわ辺（縫い代 0）をカバーに反映", () => {
+  // 守る仕様: --on-fold long が cutsheet に通り、わ辺の裁ち方（縫い代 0）がカバーに明記される。
+  const dir = mkdtempSync(join(tmpdir(), "truer-cut-fold-"));
+  const pp = writeBandProposal(dir);
+  const slnt = writeFakeSlnt(dir, "rect");
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const out = join(dir, "cut.svg");
+  const result = runTruIn(dir, [
+    "cut",
+    "pattern.dxf",
+    "--proposal",
+    pp,
+    "--scale",
+    "actual",
+    "--seam-allowance",
+    "10",
+    "--on-fold",
+    "long",
+    "--slnt",
+    `node ${slnt}`,
+    "--out",
+    out
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(join(dir, "cut.calibration.svg"), "utf8"), /わ辺（fold）は縫い代 0/);
+});
+
+test("cut: --on-fold が long/short 以外なら usage error (exit 2)", () => {
+  const result = runTru([
+    "cut",
+    "x.dxf",
+    "--proposal",
+    "p.json",
+    "--scale",
+    "actual",
+    "--on-fold",
+    "diagonal",
+    "--out",
+    "o.svg"
+  ]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--on-fold must be "long" or "short"/);
+});
+
 test("cut: 同一 block を指す複数提案は proposal.id で別ファイルに分ける（上書きしない, P2）", () => {
   // 守る仕様: blockName は一意でない。同じ band block（WAISTBAND）への cut 対象が複数あっても、
   //           一意な proposal.id でファイル名を分け、先に書いた成果物を静かに上書きしない。

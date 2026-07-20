@@ -3,7 +3,8 @@ import test from "node:test";
 
 import {
   computeBandCutOutline,
-  offsetRectangleOutward
+  offsetRectangleOutward,
+  foldEdgeIndex
 } from "../src/core/geometry-edit/bandCutOutline.ts";
 import type { Point } from "../src/core/proposal/proposalSchema.ts";
 
@@ -213,5 +214,51 @@ test("offsetRectangleOutward: 回転矩形でも各辺が外へ amount 動く（
   assert.ok(
     Math.abs(lens[2]! - 320) < 0.02 && Math.abs(lens[3]! - 320) < 0.02,
     `long ~320: ${lens}`
+  );
+});
+
+const RECT_300x50: Point[] = [
+  { x: 0, y: 0 }, // edge0 下（長辺）
+  { x: 300, y: 0 }, // edge1 右（短辺）
+  { x: 300, y: 50 }, // edge2 上（長辺）
+  { x: 0, y: 50 } // edge3 左（短辺）
+];
+
+test("offsetRectangleOutward: 辺ごとの縫い代 — わ辺(0)はその辺だけ仕上がり線に一致（案A）", () => {
+  // 守る仕様: わ辺（縫い代 0）はその辺の裁ち線が仕上がり線に重なる（法線方向へ動かない）。他辺は amount 外へ。
+  //           形は変えない（ミラーしない）。edge0（下）をわ辺=0、他 3 辺=10。
+  assert.deepEqual(offsetRectangleOutward(RECT_300x50, [0, 10, 10, 10]), [
+    { x: -10, y: 0 }, // 下辺の裁ち線は y=0 = 仕上がり線に一致（縫い代 0）
+    { x: 310, y: 0 },
+    { x: 310, y: 60 },
+    { x: -10, y: 60 }
+  ]);
+});
+
+test("offsetRectangleOutward: 全辺同値の配列は scalar と一致（後方互換）", () => {
+  // 守る仕様: number と「全辺同値の配列」は同じ裁ち線。per-edge 一般化が一様ケースを壊さない。
+  assert.deepEqual(
+    offsetRectangleOutward(RECT_300x50, [10, 10, 10, 10]),
+    offsetRectangleOutward(RECT_300x50, 10)
+  );
+  // 全辺 0 の配列は net のまま。
+  assert.deepEqual(offsetRectangleOutward(RECT_300x50, [0, 0, 0, 0]), RECT_300x50);
+});
+
+test("foldEdgeIndex: long=最長辺 / short=端辺 の代表 1 辺を決定的に選ぶ", () => {
+  // 守る仕様: 対辺 2 本のうち midpoint が下（min y, tie は左 min x）の辺を代表に選ぶ（対称なので合同）。
+  //           long → edge0(下, mid y=0)、short → edge3(左, mid x=0)。4 辺でなければ undefined。
+  assert.equal(foldEdgeIndex(RECT_300x50, "long"), 0);
+  assert.equal(foldEdgeIndex(RECT_300x50, "short"), 3);
+  assert.equal(
+    foldEdgeIndex(
+      [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+        { x: 0, y: 1 }
+      ],
+      "long"
+    ),
+    undefined
   );
 });
