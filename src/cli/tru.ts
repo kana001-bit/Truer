@@ -36,7 +36,7 @@ const USAGE = `tru — Truer CLI (MVP)
 Usage:
   tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--slnt <cmd>]
   tru apply   [<pattern.dxf>] --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
-  tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--slnt <cmd>]
+  tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--seam-allowance <mm>] [--slnt <cmd>]
 
   <pattern.dxf> は省略可: 省略時は cwd 直下の *.dxf を使う（ちょうど 1 つのとき。0/複数なら明示指定を促す）。
 
@@ -68,6 +68,8 @@ cut options:
                         確認。10cm 実寸四角つきカバー + A4 タイル複数枚)。
   --out <file>          印刷用 SVG の基底パス。actual は <base>.calibration.svg / <base>.tile-NofM.svg を、
                         band 複数なら proposal.id も挟んで書く（1 band の actual でも複数ファイル）。
+  --seam-allowance <mm> 縫い代（裁ち線を仕上がり線の外へ）。既定 10。0 で仕上がり線のみ。実線=裁ち線 /
+                        破線=仕上がり線。矩形バンドのみ・全辺一様（わ辺があれば要調整）。
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
 Options:
@@ -378,6 +380,7 @@ interface CutOptions {
   scale?: string;
   out?: string;
   slnt?: string;
+  seamAllowanceMm?: number;
 }
 
 function parseCutArgs(args: string[]): CutOptions {
@@ -392,6 +395,12 @@ function parseCutArgs(args: string[]): CutOptions {
       options.out = requireValue(arg, args[++index]);
     } else if (arg === "--slnt") {
       options.slnt = requireValue(arg, args[++index]);
+    } else if (arg === "--seam-allowance") {
+      const parsed = Number(requireValue(arg, args[++index]));
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error("--seam-allowance must be a non-negative number (mm).");
+      }
+      options.seamAllowanceMm = parsed;
     } else if (arg?.startsWith("--")) {
       throw new Error(`Unknown option: ${arg}`);
     } else if (options.dxfFile !== undefined) {
@@ -509,7 +518,13 @@ async function runCut(args: string[]): Promise<number> {
       continue;
     }
 
-    const pages = renderBandCutsheet({ outline: outline.outline, scale, title: blockName });
+    // 縫い代の既定は 10mm（cut = 布を裁つ用途）。`--seam-allowance 0` で仕上がり線のみ（0 は保持）。
+    const pages = renderBandCutsheet({
+      outline: outline.outline,
+      scale,
+      title: blockName,
+      seamAllowanceMm: options.seamAllowanceMm ?? 10
+    });
     for (const page of pages) {
       // ファイル名 = base +（band 複数なら .<id>）+（複数ページなら .<label>）。単票（1 提案・1 ページ・
       // label 空）だけ素の --out に書く。それ以外は衝突しないよう分ける（同一 block の上書き防止）。
