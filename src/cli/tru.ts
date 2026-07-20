@@ -64,8 +64,10 @@ apply options:
 
 cut options:
   --proposal <file>     propose が書いた proposal JSON。band conform（targetBandLengthMm あり）を裁つ。
-  --scale <mode>        fit-a4 (A4 1枚のミニチュア=デザイン確認) / actual (1:1 実寸=フィット確認)。
-  --out <file>          印刷用 SVG の書き出し先。band が複数なら proposal.id で <base>.<id>.svg に分ける。
+  --scale <mode>        fit-a4 (A4 1枚のミニチュア=デザイン確認・単一ファイル) / actual (1:1 実寸=フィット
+                        確認。10cm 実寸四角つきカバー + A4 タイル複数枚)。
+  --out <file>          印刷用 SVG の基底パス。actual は <base>.calibration.svg / <base>.tile-NofM.svg を、
+                        band 複数なら proposal.id も挟んで書く（1 band の actual でも複数ファイル）。
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
 Options:
