@@ -78,3 +78,54 @@ test("seam allowance 省略（=0）は仕上がり線のみ（型紙の破線な
   // content 境界の破線（"2 2"）はあるが、型紙の破線（"4 2"）は無い。
   assert.doesNotMatch(tile.svg, /stroke-dasharray="4 2"/);
 });
+
+test("on-fold: わ辺だけ縫い代 0。fit-a4 に「わ (fold)」ラベルと dimText 注記を出す", () => {
+  // 守る仕様: --on-fold でわ辺の裁ち線を仕上がり線に一致させる（案A: 形は不変）。人に分かるよう「わ (fold)」
+  //           ラベルと dimText の「わ辺=縫い代 0」を出す。
+  const pages = renderBandCutsheet({
+    outline: OUTLINE,
+    scale: "fit-a4",
+    seamAllowanceMm: 10,
+    onFold: "long"
+  });
+  const svg = pages[0]!.svg;
+  assert.match(svg, /わ \(fold\)/);
+  assert.match(svg, /わ辺=縫い代 0/);
+});
+
+test("on-fold: actual カバーにわ辺の裁ち方（縫い代 0）を明記", () => {
+  const pages = renderBandCutsheet({
+    outline: OUTLINE,
+    scale: "actual",
+    seamAllowanceMm: 10,
+    onFold: "short"
+  });
+  const cover = pages[0]!.svg;
+  assert.match(cover, /わ辺（fold）は縫い代 0/);
+  assert.match(cover, /わ辺=縫い代 0/); // dimText 注記
+});
+
+test("on-fold 無し（既定）は「わ」ラベル/注記を出さない（従来どおり全辺一様）", () => {
+  const pages = renderBandCutsheet({ outline: OUTLINE, scale: "actual", seamAllowanceMm: 10 });
+  const all = pages.map((page) => page.svg).join("");
+  assert.doesNotMatch(all, /わ \(fold\)/);
+  assert.doesNotMatch(all, /わ辺/);
+});
+
+test("on-fold: 縫い代 0 では効かない（裁ち代が無いのでわ表記なし）", () => {
+  const pages = renderBandCutsheet({
+    outline: OUTLINE,
+    scale: "fit-a4",
+    seamAllowanceMm: 0,
+    onFold: "long"
+  });
+  assert.doesNotMatch(pages[0]!.svg, /わ \(fold\)/);
+  assert.doesNotMatch(pages[0]!.svg, /わ辺/);
+});
+
+test("on-fold determinism: 同じ入力 -> 同一ページ配列（T10）", () => {
+  assert.deepEqual(
+    renderBandCutsheet({ outline: OUTLINE, scale: "actual", seamAllowanceMm: 10, onFold: "long" }),
+    renderBandCutsheet({ outline: OUTLINE, scale: "actual", seamAllowanceMm: 10, onFold: "long" })
+  );
+});

@@ -170,16 +170,24 @@ export function computeBandCutOutline(input: BandCutOutlineInput): BandCutOutlin
   };
 }
 
-// 矩形の閉じた輪郭を外側へ amount mm オフセットする（= 縫い代を足した「裁ち線」）。各辺を外向き法線へ
-// amount 動かし、角を再交差させる（矩形は隣辺が直交するので、角 = 角 + amount·(隣接2辺の外向き法線和) で
-// 正確に出る）。amount <= 0 は net corners をそのまま返す（縫い代なし）。回転矩形でも成立（軸に依らず法線で
+// 矩形の閉じた輪郭を外側へオフセットする（= 縫い代を足した「裁ち線」）。`amount` は全辺一様の mm
+// （number）でも、**辺ごと**の mm 配列（辺 i = corner i -> i+1）でもよい。辺ごとにすると「わ辺（on the
+// fold）は縫い代 0」を表せる（わ辺の裁ち線を仕上がり線に一致させる）。各辺を外向き法線へ自分の縫い代ぶん
+// 動かし、角を再交差させる（矩形は隣辺が直交するので、角 = 角 + a_{i-1}·n_{i-1} + a_i·n_i で正確に出る）。
+// 全辺が非正 / 3 点未満なら net corners をそのまま返す（縫い代なし）。回転矩形でも成立（軸に依らず法線で
 // 扱う）。pure・決定的、丸めは roundPoint の emit 境界だけ（T10）。呼び出し側は矩形（computeBandCutOutline の
 // 出力）だけに使う。
-export function offsetRectangleOutward(corners: readonly Point[], amount: number): Point[] {
-  if (!(amount > 0) || corners.length < 3) {
+export function offsetRectangleOutward(
+  corners: readonly Point[],
+  amount: number | readonly number[]
+): Point[] {
+  const count = corners.length;
+  // 辺ごとの縫い代 mm（number は全辺一様、配列は辺 i ごと。欠けは 0）。
+  const amounts: number[] =
+    typeof amount === "number" ? corners.map(() => amount) : corners.map((_, i) => amount[i] ?? 0);
+  if (count < 3 || amounts.every((value) => !(value > 0))) {
     return corners.map((corner) => ({ x: corner.x, y: corner.y }));
   }
-  const count = corners.length;
   const centerX = corners.reduce((sum, corner) => sum + corner.x, 0) / count;
   const centerY = corners.reduce((sum, corner) => sum + corner.y, 0) / count;
   // 各辺 i（corner i -> i+1）の外向き単位法線（中心から見て外を向く側を選ぶ）。
@@ -198,13 +206,43 @@ export function offsetRectangleOutward(corners: readonly Point[], amount: number
     }
     return { x: nx, y: ny };
   });
-  // 角 i は 辺(i-1) と 辺 i の交点。両辺を外へ amount 動かした交点 = 角 + amount·(n_{i-1} + n_i)。
+  // 角 i は 辺(i-1) と 辺 i の交点。各辺を自分の縫い代ぶん外へ動かした交点 = 角 + a_{i-1}·n_{i-1} + a_i·n_i
+  //（矩形は n_{i-1} ⟂ n_i なので各法線方向の移動が独立）。わ辺（a=0）は法線方向に動かず仕上がり線に一致する。
   return corners.map((corner, i) => {
-    const nPrev = outward[(i - 1 + count) % count]!;
+    const prev = (i - 1 + count) % count;
+    const nPrev = outward[prev]!;
     const nCur = outward[i]!;
+    const aPrev = amounts[prev]!;
+    const aCur = amounts[i]!;
     return roundPoint({
-      x: corner.x + amount * (nPrev.x + nCur.x),
-      y: corner.y + amount * (nPrev.y + nCur.y)
+      x: corner.x + aPrev * nPrev.x + aCur * nCur.x,
+      y: corner.y + aPrev * nPrev.y + aCur * nCur.y
     });
   });
+}
+
+// 矩形輪郭のどの辺が「わ辺（on the fold）」かを決める。`onFold` は long=長辺 / short=端辺（短辺）の向き。
+// 矩形は対辺 2 本ずつなので、その向きの**代表 1 辺**を決定的に選ぶ（対称なので合同・どちらでも裁ち結果は
+// 同じ）: 辺 midpoint が pattern 空間で下（min y）、tie は左（min x）を選ぶ。4 辺でないときは undefined
+// （非矩形は cut 自体が出ないので通常来ない）。
+export function foldEdgeIndex(
+  corners: readonly Point[],
+  onFold: "long" | "short"
+): number | undefined {
+  if (corners.length !== 4) return undefined;
+  const edgeLen = (i: number): number =>
+    Math.hypot(corners[(i + 1) % 4]!.x - corners[i]!.x, corners[(i + 1) % 4]!.y - corners[i]!.y);
+  let longest = 0;
+  for (let i = 1; i < 4; i += 1) if (edgeLen(i) > edgeLen(longest)) longest = i;
+  const candidates =
+    onFold === "long" ? [longest, (longest + 2) % 4] : [(longest + 1) % 4, (longest + 3) % 4];
+  const mid = (i: number): Point => ({
+    x: (corners[i]!.x + corners[(i + 1) % 4]!.x) / 2,
+    y: (corners[i]!.y + corners[(i + 1) % 4]!.y) / 2
+  });
+  return candidates.reduce((best, i) => {
+    const a = mid(i);
+    const b = mid(best);
+    return a.y < b.y || (a.y === b.y && a.x < b.x) ? i : best;
+  }, candidates[0]!);
 }
