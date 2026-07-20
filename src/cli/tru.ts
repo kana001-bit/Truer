@@ -36,7 +36,7 @@ const USAGE = `tru — Truer CLI (MVP)
 Usage:
   tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--slnt <cmd>]
   tru apply   [<pattern.dxf>] --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
-  tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--slnt <cmd>]
+  tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--seam-allowance <mm>] [--slnt <cmd>]
 
   <pattern.dxf> は省略可: 省略時は cwd 直下の *.dxf を使う（ちょうど 1 つのとき。0/複数なら明示指定を促す）。
 
