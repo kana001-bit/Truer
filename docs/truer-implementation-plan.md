@@ -5,7 +5,6 @@
 
 - 規約の正本は [`AGENTS.md`](../AGENTS.md)。守る境界（non-negotiables）はそこ。
 - 設計がどう決まったかの物語は [design-history.md](design-history.md)。
-- `apply` 書き先を巡る cross-repo の背景は [loomit-status-message.md](loomit-status-message.md)。
 
 ---
 
@@ -130,6 +129,3 @@ curve_kink の A→B は通った（B のレール完成）。次の候補は 2 
 
 - [AGENTS.md](../AGENTS.md) — 守る境界（non-negotiables）の正本。
 - [design-history.md](design-history.md) — 設計判断の物語（apply 書き先の決着を節に足す）。
-- [loomit-status-message.md](loomit-status-message.md) — apply 書き先を巡る cross-repo 背景。
-- `docs/branch/` — 各マイルストーンの詳細ログ（`feature__proposal-schema-dxf` /
-  `feature__seam-length-adjustment` / `feature__seam-length-overlay`）。

@@ -8,3 +8,9 @@ dist/
 
 # ツール固有のポインタは各自ローカル。クロスツールの正本メタは .claude/skills/*/agents/*.yaml が担う
 .codex/
+
+# 作業メモ・タスク仕様・ブランチ記録は非公開。公開するのは docs/ 直下の設計/リファレンスだけ。
+# うっかり `git add .` で private ノートを追跡しないよう明示的に無視する。
+docs/work/
+docs/task-specs/
+docs/branch/
