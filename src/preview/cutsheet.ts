@@ -1,20 +1,26 @@
 // band cutsheet の SVG レンダラ。用途は「印刷して手で裁つ stopgap」— 正式パターン(DXF)は書き換えない
 // （apply ではない・別アーティファクト）。preview の overlay（レビュー用・px 座標）とは別に、ここは
 // mm 実寸の SVG（width/height を mm・viewBox も mm）を吐くので、100% 印刷で原寸になる。pure: 補正後
-// 輪郭（computeBandCutOutline の結果）と scale から SVG ページ配列を返すだけ（IO なし・決定的）。型紙は
-// y-up、SVG は y-down なので y を反転する。
+// 輪郭（computeBandCutOutline の結果）と scale / 縫い代から SVG ページ配列を返すだけ（IO なし・決定的）。
+// 型紙は y-up、SVG は y-down なので y を反転する。
 //
 // scale:
 //   fit-a4 : A4 1 ページに縮小して収める（1 ページ）。デザイン/シルエット確認用（寸法精度は不問）。
 //   actual : 1:1（実寸）。フィット/可動確認用。A4 に収まらないので **カバーページ（実寸確認の 10cm 四角 +
 //            貼り合わせ手順 + タイル地図）+ A4 タイル複数枚** を返す。各ページを 100% 印刷して貼り合わせる。
 //
+// seamAllowanceMm > 0 のとき、輪郭を外側へオフセットした **裁ち線**（実線）を主線にし、元の仕上がり線を
+// 内側に **破線** で残す。裁ち線で裁ち、仕上がり線で縫う。0 / 省略なら仕上がり線のみ（従来）。
+//
 // 実寸印刷の生命線は「印刷倍率」。ビューア/プリンタが勝手に用紙に合わせて縮小すると数 mm ずれて着られない
 // パターンになる。業界標準の calibration square（10cm×10cm）を必ずカバーに載せ、印刷後に定規で測って
 // 100% を検証させる（市販ソーイング PDF と同じ）。
 
 import type { Point } from "../core/proposal/proposalSchema.ts";
-import type { BandCutOutline } from "../core/geometry-edit/bandCutOutline.ts";
+import {
+  offsetRectangleOutward,
+  type BandCutOutline
+} from "../core/geometry-edit/bandCutOutline.ts";
 import { boxOf, xmlEscape, type Box } from "./svgUtils.ts";
 
 export type CutScale = "fit-a4" | "actual";
@@ -23,6 +29,8 @@ export interface BandCutsheetInput {
   readonly outline: BandCutOutline;
   readonly scale: CutScale;
   readonly title?: string; // 見出し（band block 名 / part 名など。任意）
+  // 縫い代（mm）。裁ち線を仕上がり線の外へこの幅で出す。0 / 省略 = 仕上がり線のみ（従来）。
+  readonly seamAllowanceMm?: number;
 }
 
 // 1 出力ページ。label はファイル名の suffix（"" = 単票）。CLI が <base>.<label>.svg に書く。
@@ -44,6 +52,17 @@ const DRAW_MARGIN_MM = 8; // 輪郭の周囲に付ける余白（タイル対象
 const CALIB_MM = 100; // calibration square = 10cm。
 const INK = "#111827";
 const MUTED = "#6b7280";
+
+// レンダリングに要る派生値をまとめる。cut = 裁ち線（外側・実線）、net = 仕上がり線（内側・破線、縫い代>0 時のみ）。
+interface Frame {
+  readonly input: BandCutsheetInput;
+  readonly box: Box; // extent は裁ち線（外側）で取る。
+  readonly contentW: number;
+  readonly contentH: number;
+  readonly cutCorners: readonly Point[];
+  readonly netCorners: readonly Point[];
+  readonly allowance: number;
+}
 
 // SVG 数値の決定的な整形（3 桁で丸め、末尾ゼロは String に任せる）。
 function n(value: number): string {
@@ -74,17 +93,45 @@ function text(
   return `<text x="${n(x)}" y="${n(y)}" font-size="${n(size)}" fill="${fill}" text-anchor="${anchor}" font-family="sans-serif">${xmlEscape(content)}</text>`;
 }
 
-function dimText(outline: BandCutOutline): string {
-  return `補正後バンド ${n(outline.toLengthMm)} × ${n(outline.heightMm)} mm（元 ${n(outline.fromLengthMm)} → ${n(outline.toLengthMm)} mm）`;
+// 閉じた輪郭を projector 経由で polygon にする。裁ち線（実線）と仕上がり線（破線）で共有。
+function closedPath(
+  corners: readonly Point[],
+  toXY: (point: Point) => { x: number; y: number },
+  stroke: string,
+  width: number,
+  dashed = false,
+  clipId = ""
+): string {
+  const pts = corners
+    .map((corner) => {
+      const q = toXY(corner);
+      return `${n(q.x)},${n(q.y)}`;
+    })
+    .join(" ");
+  const dash = dashed ? ` stroke-dasharray="4 2"` : "";
+  const clip = clipId ? ` clip-path="url(#${clipId})"` : "";
+  return `<polygon points="${pts}" fill="none" stroke="${stroke}" stroke-width="${width}"${dash}${clip} />`;
+}
+
+function dimText(outline: BandCutOutline, allowance: number): string {
+  const base = `補正後バンド ${n(outline.toLengthMm)} × ${n(outline.heightMm)} mm（元 ${n(outline.fromLengthMm)} → ${n(outline.toLengthMm)} mm）`;
+  return allowance > 0
+    ? `${base} · 縫い代 ${n(allowance)}mm（実線=裁ち線 / 破線=仕上がり線）`
+    : base;
 }
 
 export function renderBandCutsheet(input: BandCutsheetInput): CutsheetPage[] {
-  const box = boxOf(input.outline.corners);
+  const netCorners = input.outline.corners;
+  const allowance = input.seamAllowanceMm && input.seamAllowanceMm > 0 ? input.seamAllowanceMm : 0;
+  // 裁ち線 = net を外側へ縫い代ぶんオフセット（矩形）。縫い代 0 なら net と同一。
+  const cutCorners = allowance > 0 ? offsetRectangleOutward(netCorners, allowance) : netCorners;
+  const box = boxOf(cutCorners); // extent は外側（裁ち線）で取る。
   const contentW = Math.max(box.maxX - box.minX, 1e-6);
   const contentH = Math.max(box.maxY - box.minY, 1e-6);
+  const frame: Frame = { input, box, contentW, contentH, cutCorners, netCorners, allowance };
   return input.scale === "fit-a4"
-    ? [{ label: "", svg: renderFitA4(input, box, contentW, contentH) }]
-    : renderActualPages(input, box, contentW, contentH);
+    ? [{ label: "", svg: renderFitA4(frame) }]
+    : renderActualPages(frame);
 }
 
 // ---- fit-a4（デザイン確認用ミニチュア・1 ページ）----
@@ -92,22 +139,6 @@ export function renderBandCutsheet(input: BandCutsheetInput): CutsheetPage[] {
 // 型紙点（y-up）→ SVG mm 座標（y-down）。box.min を原点に寄せ、scale 倍し、(ox,oy) だけ移動する。
 function project(point: Point, box: Box, scale: number, ox: number, oy: number): Point {
   return { x: ox + (point.x - box.minX) * scale, y: oy + (box.maxY - point.y) * scale };
-}
-
-function fitPolygon(
-  corners: readonly Point[],
-  box: Box,
-  scale: number,
-  ox: number,
-  oy: number
-): string {
-  const pts = corners
-    .map((corner) => {
-      const q = project(corner, box, scale, ox, oy);
-      return `${n(q.x)},${n(q.y)}`;
-    })
-    .join(" ");
-  return `<polygon points="${pts}" fill="none" stroke="${INK}" stroke-width="0.4" />`;
 }
 
 // 縮尺バー（fit-a4 用）。実長 RULER_MM を輪郭と同じ縮尺で描き、縮尺の目安にする（原寸検証ではない）。
@@ -128,12 +159,8 @@ function scaleBar(x: number, y: number, scale: number): string {
   return parts.join("");
 }
 
-function renderFitA4(
-  input: BandCutsheetInput,
-  box: Box,
-  contentW: number,
-  contentH: number
-): string {
+function renderFitA4(frame: Frame): string {
+  const { input, box, contentW, contentH, cutCorners, netCorners, allowance } = frame;
   const landscape = contentW >= contentH;
   const pageW = landscape ? A4_LONG_MM : A4_SHORT_MM;
   const pageH = landscape ? A4_SHORT_MM : A4_LONG_MM;
@@ -142,13 +169,15 @@ function renderFitA4(
   const scale = Math.min(availW / contentW, availH / contentH);
   const ox = MARGIN_MM + (availW - contentW * scale) / 2;
   const oy = MARGIN_MM + (availH - contentH * scale) / 2;
+  const toXY = (point: Point): Point => project(point, box, scale, ox, oy);
 
   const ratio = scale > 0 ? 1 / scale : 0;
   const labelY = pageH - LABEL_BAND_MM + 6;
   const body = [
-    fitPolygon(input.outline.corners, box, scale, ox, oy),
+    closedPath(cutCorners, toXY, INK, 0.4), // 裁ち線（外側・実線）。縫い代 0 なら net と同一。
+    allowance > 0 ? closedPath(netCorners, toXY, MUTED, 0.3, true) : "", // 仕上がり線（内側・破線）。
     input.title ? text(MARGIN_MM, MARGIN_MM - 3, 4, MUTED, input.title) : "",
-    text(MARGIN_MM, labelY, 4, INK, dimText(input.outline)),
+    text(MARGIN_MM, labelY, 4, INK, dimText(input.outline, allowance)),
     text(
       MARGIN_MM,
       labelY + 6,
@@ -182,12 +211,8 @@ function gridFor(drawW: number, drawH: number, pageW: number, pageH: number): Gr
   return { pageW, pageH, usableW, usableH, cols, rows, total: cols * rows };
 }
 
-function renderActualPages(
-  input: BandCutsheetInput,
-  box: Box,
-  contentW: number,
-  contentH: number
-): CutsheetPage[] {
+function renderActualPages(frame: Frame): CutsheetPage[] {
+  const { input, box, contentW, contentH, cutCorners, netCorners, allowance } = frame;
   const drawW = contentW + 2 * DRAW_MARGIN_MM;
   const drawH = contentH + 2 * DRAW_MARGIN_MM;
   // 向きは総ページ数が少ない方を選ぶ（同数なら portrait）。
@@ -195,27 +220,31 @@ function renderActualPages(
   const landscape = gridFor(drawW, drawH, A4_LONG_MM, A4_SHORT_MM);
   const grid = landscape.total < portrait.total ? landscape : portrait;
 
-  // 輪郭を 1:1 の描画フレーム [0,drawW]×[0,drawH]（y 反転済み）へ。中間の collinear 頂点は輪郭に無い。
-  const drawn = input.outline.corners.map((corner) => ({
+  // 輪郭を 1:1 の描画フレーム [0,drawW]×[0,drawH]（y 反転済み）へ。cut / net を同じ box で写す。
+  const toDraw = (corner: Point): Point => ({
     x: DRAW_MARGIN_MM + (corner.x - box.minX),
     y: DRAW_MARGIN_MM + (box.maxY - corner.y)
-  }));
+  });
+  const drawnCut = cutCorners.map(toDraw);
+  const drawnNet = allowance > 0 ? netCorners.map(toDraw) : [];
 
-  const pages: CutsheetPage[] = [{ label: "calibration", svg: renderCoverPage(input, grid) }];
+  const pages: CutsheetPage[] = [
+    { label: "calibration", svg: renderCoverPage(input, grid, allowance) }
+  ];
   let index = 0;
   for (let r = 0; r < grid.rows; r += 1) {
     for (let c = 0; c < grid.cols; c += 1) {
       index += 1;
       pages.push({
         label: `tile-${index}of${grid.total}`,
-        svg: renderTilePage(drawn, grid, c, r, index)
+        svg: renderTilePage(drawnCut, drawnNet, grid, c, r, index)
       });
     }
   }
   return pages;
 }
 
-// 実寸確認の四角（10cm×10cm）。印刷後に定規で測って 100% を検証する。上辺に 10mm ごとの目盛りも打つ。
+// 実寸確認の四角（10cm×10cm）。印刷後に定規で測って 100% を検証する。上辺・左辺に 10mm ごとの目盛りも打つ。
 function calibrationSquare(x: number, y: number): string {
   const parts: string[] = [
     `<rect x="${n(x)}" y="${n(y)}" width="${CALIB_MM}" height="${CALIB_MM}" fill="none" stroke="${INK}" stroke-width="0.4" />`
@@ -232,7 +261,7 @@ function calibrationSquare(x: number, y: number): string {
 }
 
 // カバーページ（A4 portrait）: 実寸確認の四角 + 貼り合わせ手順 + タイル地図。
-function renderCoverPage(input: BandCutsheetInput, grid: Grid): string {
+function renderCoverPage(input: BandCutsheetInput, grid: Grid, allowance: number): string {
   const x = PAGE_MARGIN_MM + 6;
   let y = PAGE_MARGIN_MM + 12;
   const parts: string[] = [text(x, y, 6, INK, "band cutsheet — 実寸(1:1) 印刷")];
@@ -241,7 +270,7 @@ function renderCoverPage(input: BandCutsheetInput, grid: Grid): string {
     parts.push(text(x, y, 4, MUTED, input.title));
     y += 6;
   }
-  parts.push(text(x, y, 4, INK, dimText(input.outline)));
+  parts.push(text(x, y, 4, INK, dimText(input.outline, allowance)));
   y += 10;
 
   parts.push(text(x, y, 4.5, INK, "① 実寸確認 — この四角を印刷後に定規で測る"));
@@ -273,7 +302,20 @@ function renderCoverPage(input: BandCutsheetInput, grid: Grid): string {
       `番号順に並べ、のりしろ ${TILE_OVERLAP_MM}mm を重ねて柄線を合わせて貼る。`
     )
   );
-  y += 8;
+  y += 6;
+  if (allowance > 0) {
+    parts.push(
+      text(
+        x,
+        y,
+        3.8,
+        MUTED,
+        `実線 = 裁ち線（縫い代 ${n(allowance)}mm 込み・ここで裁つ）／破線 = 仕上がり線。`
+      )
+    );
+    y += 6;
+  }
+  y += 2;
   parts.push(tileMap(x, y, grid));
   return mmSvgDocument(A4_SHORT_MM, A4_LONG_MM, parts.join(""));
 }
@@ -316,8 +358,10 @@ function registrationCrosses(x: number, y: number, w: number, h: number): string
 }
 
 // タイルページ（A4）: 描画フレームの窓 (c,r) を切り出し、content 矩形にクリップして 1:1 で描く。
+// 裁ち線（実線）と、縫い代>0 なら仕上がり線（破線）の両方を描く。
 function renderTilePage(
-  drawn: readonly Point[],
+  drawnCut: readonly Point[],
+  drawnNet: readonly Point[],
   grid: Grid,
   c: number,
   r: number,
@@ -327,18 +371,19 @@ function renderTilePage(
   const windowY = r * (grid.usableH - TILE_OVERLAP_MM);
   const contentX = PAGE_MARGIN_MM;
   const contentY = PAGE_MARGIN_MM;
-
-  const pts = drawn
-    .map((d) => `${n(contentX + (d.x - windowX))},${n(contentY + (d.y - windowY))}`)
-    .join(" ");
+  const toXY = (d: Point): Point => ({
+    x: contentX + (d.x - windowX),
+    y: contentY + (d.y - windowY)
+  });
 
   const footerY = grid.pageH - TILE_FOOTER_MM + 6;
   const body = [
     `<defs><clipPath id="tileclip"><rect x="${n(contentX)}" y="${n(contentY)}" width="${n(grid.usableW)}" height="${n(grid.usableH)}" /></clipPath></defs>`,
     // content 境界（トリミング / 位置合わせのガイド）。
     `<rect x="${n(contentX)}" y="${n(contentY)}" width="${n(grid.usableW)}" height="${n(grid.usableH)}" fill="none" stroke="${MUTED}" stroke-width="0.2" stroke-dasharray="2 2" />`,
-    // 型紙線（content にクリップ）。隣接タイルと重なり部で線が連続するので、線を合わせて貼る。
-    `<polygon points="${pts}" fill="none" stroke="${INK}" stroke-width="0.4" clip-path="url(#tileclip)" />`,
+    // 型紙線（content にクリップ）。裁ち線=実線、仕上がり線=破線。重なり部で線が連続するので線を合わせて貼る。
+    closedPath(drawnCut, toXY, INK, 0.4, false, "tileclip"),
+    drawnNet.length > 0 ? closedPath(drawnNet, toXY, MUTED, 0.3, true, "tileclip") : "",
     registrationCrosses(contentX, contentY, grid.usableW, grid.usableH),
     text(
       PAGE_MARGIN_MM,
