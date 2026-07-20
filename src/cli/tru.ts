@@ -401,12 +401,17 @@ function parseCutArgs(args: string[]): CutOptions {
   return options;
 }
 
-// band が複数のときの衝突しない出力先。<base>.<suffix><ext>。suffix は proposal.id（file 内で一意）を
-// 使うので、同じ band block を指す提案が複数あっても静かに上書きしない（blockName は一意でない — 同一
-// バンドへの複数 advisory が同じパスに書かれ、先の成果物が消えるのを防ぐ）。
-function cutOutPathFor(outPath: string, suffix: string): string {
+// 衝突しない出力先。<base>.<suffix1>.<suffix2><ext>（undefined/空は除く）。band が複数のときは
+// proposal.id（file 内で一意 — blockName は一意でない）で、actual のように複数ページのときは page label
+// （calibration / tile-NofM）で分ける。同一バンドの複数 advisory が同じパスへ書かれ上書きされるのを防ぐ。
+function cutOutPathFor(outPath: string, ...suffixes: (string | undefined)[]): string {
   const ext = extname(outPath);
-  return `${outPath.slice(0, outPath.length - ext.length)}.${suffix}${ext}`;
+  const stem = outPath.slice(0, outPath.length - ext.length);
+  const suffix = suffixes
+    .filter((part): part is string => part !== undefined && part.length > 0)
+    .map((part) => `.${part}`)
+    .join("");
+  return `${stem}${suffix}${ext}`;
 }
 
 // tru cut: band 提案から、印刷して手で裁つ stopgap の SVG を作る。正式パターン(DXF)は書き換えない
@@ -502,13 +507,24 @@ async function runCut(args: string[]): Promise<number> {
       continue;
     }
 
-    const svg = renderBandCutsheet({ outline: outline.outline, scale, title: blockName });
-    // band が複数なら proposal.id（file 内で一意）でファイル名を分ける。blockName は一意でないので使わない
-    // （同一 block を指す複数提案が同じパスに書かれて上書きされるのを防ぐ）。
-    const outPath = cuttable.length === 1 ? options.out : cutOutPathFor(options.out, proposal.id);
-    await mkdir(dirname(outPath), { recursive: true });
-    await writeFileAtomic(outPath, svg);
-    process.stdout.write(`cut: ${blockName} (${scale}) -> ${outPath}\n`);
+    const pages = renderBandCutsheet({ outline: outline.outline, scale, title: blockName });
+    for (const page of pages) {
+      // ファイル名 = base +（band 複数なら .<id>）+（複数ページなら .<label>）。単票（1 提案・1 ページ・
+      // label 空）だけ素の --out に書く。それ以外は衝突しないよう分ける（同一 block の上書き防止）。
+      const singleFile = cuttable.length === 1 && pages.length === 1 && page.label === "";
+      const outPath = singleFile
+        ? options.out
+        : cutOutPathFor(
+            options.out,
+            cuttable.length > 1 ? proposal.id : undefined,
+            page.label || undefined
+          );
+      await mkdir(dirname(outPath), { recursive: true });
+      await writeFileAtomic(outPath, page.svg);
+      process.stdout.write(
+        `cut: ${blockName} (${scale})${page.label ? ` [${page.label}]` : ""} -> ${outPath}\n`
+      );
+    }
   }
 
   return 0;

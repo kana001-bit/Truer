@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -349,8 +349,9 @@ test("cut: no band-conform proposal writes nothing (exit 0, slnt not spawned)", 
   assert.equal(existsSync(out), false);
 });
 
-test("cut: band-conform proposal -> mm 実寸 SVG（happy path, fake slnt）", () => {
-  // 守る仕様: band conform 提案 + 矩形バンド → 1:1 の SVG を書く。最長辺は目標長 327.5 に縮む。
+test("cut: band-conform proposal -> 実寸カバー + タイル（happy path, fake slnt）", () => {
+  // 守る仕様: band conform 提案 + 矩形バンド → actual は calibration カバー + A4 タイルを書く。素の
+  //           --out は書かず、カバーに 10cm 実寸四角と目標長 327.5（655/2）を載せる。
   const dir = mkdtempSync(join(tmpdir(), "truer-cut-ok-"));
   const pp = writeBandProposal(dir);
   const slnt = writeFakeSlnt(dir, "rect");
@@ -370,9 +371,15 @@ test("cut: band-conform proposal -> mm 実寸 SVG（happy path, fake slnt）", (
   ]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /cut: WAISTBAND \(actual\)/);
-  const svg = readFileSync(out, "utf8");
-  assert.match(svg, /width="[0-9.]+mm"/);
-  assert.match(svg, /327\.5/); // 655 / 2 = 327.5 に縮んだ最長辺（ラベル）
+  // actual は複数ファイル（カバー + タイル）。素の --out は書かれない。
+  assert.equal(existsSync(out), false);
+  const cover = join(dir, "cut.calibration.svg");
+  assert.equal(existsSync(cover), true);
+  const coverSvg = readFileSync(cover, "utf8");
+  assert.match(coverSvg, /10cm/); // calibration square
+  assert.match(coverSvg, /327\.5/); // 655/2 に縮んだ最長辺（dimText）
+  const tiles = readdirSync(dir).filter((file) => /^cut\.tile-\d+of\d+\.svg$/.test(file));
+  assert.ok(tiles.length >= 1, `tiles: ${tiles}`);
 });
 
 test("cut: non-rectangle band is skipped without writing (fake slnt returns triangle, T8)", () => {
@@ -426,9 +433,13 @@ test("cut: 同一 block を指す複数提案は proposal.id で別ファイル�
     .proposals;
   assert.equal(proposals.length, 2);
   assert.notEqual(proposals[0]!.id, proposals[1]!.id);
-  // 各提案が一意な <base>.<id>.svg に書かれ、両方残る（同一 WAISTBAND でも衝突しない）。
+  // 各提案が一意な proposal.id で分かれ、両方のカバーが残る（同一 WAISTBAND でも衝突しない）。
   for (const proposal of proposals) {
-    assert.equal(existsSync(join(dir, `cut.${proposal.id}.svg`)), true, `cut.${proposal.id}.svg`);
+    assert.equal(
+      existsSync(join(dir, `cut.${proposal.id}.calibration.svg`)),
+      true,
+      `cut.${proposal.id}.calibration.svg`
+    );
   }
   // 複数出力なので素の --out（cut.svg）は使わない。
   assert.equal(existsSync(out), false);
