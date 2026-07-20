@@ -26,7 +26,7 @@ import {
 } from "../adapters/seamlint/slntRunner.ts";
 import { DxfEditError, editNetLineVertex } from "../adapters/dxf/editNetLineVertex.ts";
 import { renderProposalPreview } from "../preview/index.ts";
-import { renderBandCutsheet, type CutScale } from "../preview/cutsheet.ts";
+import { renderBandCutsheet, type CutScale, type OnFold } from "../preview/cutsheet.ts";
 import { computeBandCutOutline } from "../core/geometry-edit/bandCutOutline.ts";
 import { writeFileAtomic } from "./writeFileAtomic.ts";
 import { isSameFilePath } from "./samePath.ts";
@@ -36,7 +36,7 @@ const USAGE = `tru — Truer CLI (MVP)
 Usage:
   tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--slnt <cmd>]
   tru apply   [<pattern.dxf>] --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
-  tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--seam-allowance <mm>] [--slnt <cmd>]
+  tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--seam-allowance <mm>] [--on-fold long|short] [--slnt <cmd>]
 
   <pattern.dxf> は省略可: 省略時は cwd 直下の *.dxf を使う（ちょうど 1 つのとき。0/複数なら明示指定を促す）。
 
@@ -69,7 +69,9 @@ cut options:
   --out <file>          印刷用 SVG の基底パス。actual は <base>.calibration.svg / <base>.tile-NofM.svg を、
                         band 複数なら proposal.id も挟んで書く（1 band の actual でも複数ファイル）。
   --seam-allowance <mm> 縫い代（裁ち線を仕上がり線の外へ）。既定 10。0 で仕上がり線のみ。実線=裁ち線 /
-                        破線=仕上がり線。矩形バンドのみ・全辺一様（わ辺があれば要調整）。
+                        破線=仕上がり線。矩形バンドのみ。既定は全辺一様（--on-fold でわ辺のみ 0 にできる）。
+  --on-fold <long|short> わ辺（on the fold）の向き。long=長辺 / short=端辺（短辺）の代表 1 辺を「わ」とし、
+                        その辺だけ縫い代 0（裁ち線=仕上がり線）にして「わ」ラベルを付ける。省略=全辺一様。
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
 Options:
@@ -381,6 +383,7 @@ interface CutOptions {
   out?: string;
   slnt?: string;
   seamAllowanceMm?: number;
+  onFold?: OnFold;
 }
 
 function parseCutArgs(args: string[]): CutOptions {
@@ -401,6 +404,12 @@ function parseCutArgs(args: string[]): CutOptions {
         throw new Error("--seam-allowance must be a non-negative number (mm).");
       }
       options.seamAllowanceMm = parsed;
+    } else if (arg === "--on-fold") {
+      const value = requireValue(arg, args[++index]);
+      if (value !== "long" && value !== "short") {
+        throw new Error('--on-fold must be "long" or "short".');
+      }
+      options.onFold = value;
     } else if (arg?.startsWith("--")) {
       throw new Error(`Unknown option: ${arg}`);
     } else if (options.dxfFile !== undefined) {
@@ -519,11 +528,13 @@ async function runCut(args: string[]): Promise<number> {
     }
 
     // 縫い代の既定は 10mm（cut = 布を裁つ用途）。`--seam-allowance 0` で仕上がり線のみ（0 は保持）。
+    // `--on-fold` があればわ辺だけ縫い代 0（案A: 形は変えない）。
     const pages = renderBandCutsheet({
       outline: outline.outline,
       scale,
       title: blockName,
-      seamAllowanceMm: options.seamAllowanceMm ?? 10
+      seamAllowanceMm: options.seamAllowanceMm ?? 10,
+      ...(options.onFold ? { onFold: options.onFold } : {})
     });
     for (const page of pages) {
       // ファイル名 = base +（band 複数なら .<id>）+（複数ページなら .<label>）。単票（1 提案・1 ページ・

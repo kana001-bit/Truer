@@ -19,11 +19,13 @@
 import type { Point } from "../core/proposal/proposalSchema.ts";
 import {
   offsetRectangleOutward,
+  foldEdgeIndex,
   type BandCutOutline
 } from "../core/geometry-edit/bandCutOutline.ts";
 import { boxOf, xmlEscape, type Box } from "./svgUtils.ts";
 
 export type CutScale = "fit-a4" | "actual";
+export type OnFold = "long" | "short";
 
 export interface BandCutsheetInput {
   readonly outline: BandCutOutline;
@@ -31,6 +33,9 @@ export interface BandCutsheetInput {
   readonly title?: string; // 見出し（band block 名 / part 名など。任意）
   // 縫い代（mm）。裁ち線を仕上がり線の外へこの幅で出す。0 / 省略 = 仕上がり線のみ（従来）。
   readonly seamAllowanceMm?: number;
+  // わ辺（on the fold）の向き。指定すると矩形の長辺 or 端辺（短辺）の代表 1 辺を「わ」とし、その辺だけ
+  // 縫い代 0 にする（裁ち線を仕上がり線に一致させる）。省略 = 全辺一様（従来）。案A: 形は変えない（ミラーしない）。
+  readonly onFold?: OnFold;
 }
 
 // 1 出力ページ。label はファイル名の suffix（"" = 単票）。CLI が <base>.<label>.svg に書く。
@@ -62,6 +67,8 @@ interface Frame {
   readonly cutCorners: readonly Point[];
   readonly netCorners: readonly Point[];
   readonly allowance: number;
+  // わ辺（縫い代 0）の netCorners index。onFold 指定 + 縫い代>0 のときだけ。ラベル・注記に使う。
+  readonly foldIndex?: number;
 }
 
 // SVG 数値の決定的な整形（3 桁で丸め、末尾ゼロは String に任せる）。
@@ -113,22 +120,63 @@ function closedPath(
   return `<polygon points="${pts}" fill="none" stroke="${stroke}" stroke-width="${width}"${dash}${clip} />`;
 }
 
-function dimText(outline: BandCutOutline, allowance: number): string {
+function dimText(outline: BandCutOutline, allowance: number, hasFold = false): string {
   const base = `補正後バンド ${n(outline.toLengthMm)} × ${n(outline.heightMm)} mm（元 ${n(outline.fromLengthMm)} → ${n(outline.toLengthMm)} mm）`;
-  return allowance > 0
-    ? `${base} · 縫い代 ${n(allowance)}mm（実線=裁ち線 / 破線=仕上がり線）`
-    : base;
+  if (allowance <= 0) return base;
+  const fold = hasFold ? " · わ辺=縫い代 0" : "";
+  return `${base} · 縫い代 ${n(allowance)}mm（実線=裁ち線 / 破線=仕上がり線）${fold}`;
+}
+
+// わ辺（on the fold）のラベル。その辺は裁ち線が仕上がり線に一致する（縫い代 0）ことを人に示す。projected
+// midpoint に「わ (fold)」を置き、輪郭中心へ少しずらして線に重ならないようにする。fold 無しなら空。
+function foldLabel(frame: Frame, toXY: (point: Point) => Point, fontSize: number): string {
+  if (frame.foldIndex === undefined) return "";
+  const corners = frame.netCorners;
+  const a = corners[frame.foldIndex]!;
+  const b = corners[(frame.foldIndex + 1) % corners.length]!;
+  const mid = toXY({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  const cx = corners.reduce((sum, corner) => sum + corner.x, 0) / corners.length;
+  const cy = corners.reduce((sum, corner) => sum + corner.y, 0) / corners.length;
+  const center = toXY({ x: cx, y: cy });
+  const dx = center.x - mid.x;
+  const dy = center.y - mid.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const nudge = fontSize * 1.4; // 線から少し内側へ
+  const lx = mid.x + (dx / length) * nudge;
+  const ly = mid.y + (dy / length) * nudge;
+  return text(lx, ly, fontSize, INK, "わ (fold)", "middle");
 }
 
 export function renderBandCutsheet(input: BandCutsheetInput): CutsheetPage[] {
   const netCorners = input.outline.corners;
   const allowance = input.seamAllowanceMm && input.seamAllowanceMm > 0 ? input.seamAllowanceMm : 0;
-  // 裁ち線 = net を外側へ縫い代ぶんオフセット（矩形）。縫い代 0 なら net と同一。
-  const cutCorners = allowance > 0 ? offsetRectangleOutward(netCorners, allowance) : netCorners;
+  // わ辺（on the fold）は縫い代 0。onFold 指定 + 縫い代>0 のときだけ、その辺の allowance を 0 にする（案A:
+  // 形は変えず裁ち線を出さないだけ）。指定が無ければ従来どおり全辺一様。
+  const foldIndex =
+    allowance > 0 && input.onFold ? foldEdgeIndex(netCorners, input.onFold) : undefined;
+  // 裁ち線 = net を外側へ縫い代ぶんオフセット（矩形）。わ辺は 0、他辺は allowance。縫い代 0 なら net と同一。
+  const cutCorners =
+    allowance > 0
+      ? offsetRectangleOutward(
+          netCorners,
+          foldIndex === undefined
+            ? allowance
+            : netCorners.map((_, i) => (i === foldIndex ? 0 : allowance))
+        )
+      : netCorners;
   const box = boxOf(cutCorners); // extent は外側（裁ち線）で取る。
   const contentW = Math.max(box.maxX - box.minX, 1e-6);
   const contentH = Math.max(box.maxY - box.minY, 1e-6);
-  const frame: Frame = { input, box, contentW, contentH, cutCorners, netCorners, allowance };
+  const frame: Frame = {
+    input,
+    box,
+    contentW,
+    contentH,
+    cutCorners,
+    netCorners,
+    allowance,
+    ...(foldIndex !== undefined ? { foldIndex } : {})
+  };
   return input.scale === "fit-a4"
     ? [{ label: "", svg: renderFitA4(frame) }]
     : renderActualPages(frame);
@@ -176,8 +224,15 @@ function renderFitA4(frame: Frame): string {
   const body = [
     closedPath(cutCorners, toXY, INK, 0.4), // 裁ち線（外側・実線）。縫い代 0 なら net と同一。
     allowance > 0 ? closedPath(netCorners, toXY, MUTED, 0.3, true) : "", // 仕上がり線（内側・破線）。
+    foldLabel(frame, toXY, 4), // わ辺ラベル（fold のときだけ）。
     input.title ? text(MARGIN_MM, MARGIN_MM - 3, 4, MUTED, input.title) : "",
-    text(MARGIN_MM, labelY, 4, INK, dimText(input.outline, allowance)),
+    text(
+      MARGIN_MM,
+      labelY,
+      4,
+      INK,
+      dimText(input.outline, allowance, frame.foldIndex !== undefined)
+    ),
     text(
       MARGIN_MM,
       labelY + 6,
@@ -229,7 +284,10 @@ function renderActualPages(frame: Frame): CutsheetPage[] {
   const drawnNet = allowance > 0 ? netCorners.map(toDraw) : [];
 
   const pages: CutsheetPage[] = [
-    { label: "calibration", svg: renderCoverPage(input, grid, allowance) }
+    {
+      label: "calibration",
+      svg: renderCoverPage(input, grid, allowance, frame.foldIndex !== undefined)
+    }
   ];
   let index = 0;
   for (let r = 0; r < grid.rows; r += 1) {
@@ -261,7 +319,12 @@ function calibrationSquare(x: number, y: number): string {
 }
 
 // カバーページ（A4 portrait）: 実寸確認の四角 + 貼り合わせ手順 + タイル地図。
-function renderCoverPage(input: BandCutsheetInput, grid: Grid, allowance: number): string {
+function renderCoverPage(
+  input: BandCutsheetInput,
+  grid: Grid,
+  allowance: number,
+  hasFold: boolean
+): string {
   const x = PAGE_MARGIN_MM + 6;
   let y = PAGE_MARGIN_MM + 12;
   const parts: string[] = [text(x, y, 6, INK, "band cutsheet — 実寸(1:1) 印刷")];
@@ -270,7 +333,7 @@ function renderCoverPage(input: BandCutsheetInput, grid: Grid, allowance: number
     parts.push(text(x, y, 4, MUTED, input.title));
     y += 6;
   }
-  parts.push(text(x, y, 4, INK, dimText(input.outline, allowance)));
+  parts.push(text(x, y, 4, INK, dimText(input.outline, allowance, hasFold)));
   y += 10;
 
   parts.push(text(x, y, 4.5, INK, "① 実寸確認 — この四角を印刷後に定規で測る"));
@@ -311,6 +374,18 @@ function renderCoverPage(input: BandCutsheetInput, grid: Grid, allowance: number
         3.8,
         MUTED,
         `実線 = 裁ち線（縫い代 ${n(allowance)}mm 込み・ここで裁つ）／破線 = 仕上がり線。`
+      )
+    );
+    y += 6;
+  }
+  if (hasFold) {
+    parts.push(
+      text(
+        x,
+        y,
+        3.8,
+        MUTED,
+        "わ辺（fold）は縫い代 0 — その辺を布のわ（折り山）に合わせて裁つ（裁ち線=仕上がり線）。"
       )
     );
     y += 6;
