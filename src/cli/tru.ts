@@ -4,7 +4,7 @@
 // 作る。`apply` は accept された proposal の補正 geometry を、--out の Truer 所有 DXF に書く
 //（M3: 書き先はこの裁断用の補正済み DXF であって、.val/Loomit ではない）。
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
 import { createProposalFile } from "../core/proposal/createProposalFile.ts";
@@ -26,18 +26,24 @@ import {
 } from "../adapters/seamlint/slntRunner.ts";
 import { DxfEditError, editNetLineVertex } from "../adapters/dxf/editNetLineVertex.ts";
 import { renderProposalPreview } from "../preview/index.ts";
+import { renderBandCutsheet, type CutScale } from "../preview/cutsheet.ts";
+import { computeBandCutOutline } from "../core/geometry-edit/bandCutOutline.ts";
 import { writeFileAtomic } from "./writeFileAtomic.ts";
 import { isSameFilePath } from "./samePath.ts";
 
 const USAGE = `tru — Truer CLI (MVP)
 
 Usage:
-  tru propose <pattern.dxf> --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--slnt <cmd>]
-  tru apply   <pattern.dxf> --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
+  tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--slnt <cmd>]
+  tru apply   [<pattern.dxf>] --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
+  tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--slnt <cmd>]
+
+  <pattern.dxf> は省略可: 省略時は cwd 直下の *.dxf を使う（ちょうど 1 つのとき。0/複数なら明示指定を促す）。
 
 Commands:
   propose   Seamlint 診断 (DXF) から補正案 (proposal) と preview を作る。source は書き換えない。
   apply     採用された proposal の補正を --out の DXF に書く。source は不変・書き込みは atomic。
+  cut       band 提案から、印刷して手で裁つ stopgap の SVG を作る。正式パターン(DXF)は書き換えない。
 
 propose options:
   --diagnostic <file>   Seamlint report JSON (CheckReport or GeometryRequestReport).
@@ -54,6 +60,14 @@ apply options:
   --proposal <file>     The proposal JSON written by propose.
   --accepted <id...>    Proposal ids to apply (one or more). Nothing else is written (T3).
   --out <file>          Where to write the corrected DXF (must not be the source path).
+  --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
+
+cut options:
+  --proposal <file>     propose が書いた proposal JSON。band conform（targetBandLengthMm あり）を裁つ。
+  --scale <mode>        fit-a4 (A4 1枚のミニチュア=デザイン確認・単一ファイル) / actual (1:1 実寸=フィット
+                        確認。10cm 実寸四角つきカバー + A4 タイル複数枚)。
+  --out <file>          印刷用 SVG の基底パス。actual は <base>.calibration.svg / <base>.tile-NofM.svg を、
+                        band 複数なら proposal.id も挟んで書く（1 band の actual でも複数ファイル）。
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
 Options:
@@ -155,6 +169,32 @@ function defaultProposalOutPath(dxfFile: string): string {
   return join("output", `${basename(dxfFile, extname(dxfFile))}.proposal.json`);
 }
 
+// <pattern.dxf> 省略時の解決。cwd 直下（非再帰）の *.dxf を探し、ちょうど 1 つならそれを使う。
+// 「1 プロジェクト = 1 DXF（全パーツ同梱）」の通常運用を引数ゼロで通すため。0 個 / 複数個は推測せず
+// error にして明示指定を促す（複数 = シナリオ別 DXF 等）。Seamlint report は source パスを持たないので、
+// 探索元は filesystem（実行ディレクトリ）だけ。orchestration の loom は常に明示パスを渡すので影響なし。
+async function resolveDxfFile(explicit: string | undefined): Promise<string> {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const entries = await readdir(process.cwd(), { withFileTypes: true });
+  const dxfs = entries
+    .filter((entry) => entry.isFile() && extname(entry.name).toLowerCase() === ".dxf")
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+  if (dxfs.length === 1) {
+    return dxfs[0]!;
+  }
+  if (dxfs.length === 0) {
+    throw new Error(
+      "カレントディレクトリに DXF が見つかりません。<pattern.dxf> でパスを指定してください。"
+    );
+  }
+  throw new Error(
+    `カレントディレクトリに DXF が複数あります (${dxfs.join(", ")})。<pattern.dxf> でどれを使うか指定してください。`
+  );
+}
+
 async function runPropose(args: string[]): Promise<number> {
   let options: ProposeOptions;
   try {
@@ -164,12 +204,20 @@ async function runPropose(args: string[]): Promise<number> {
     return 2;
   }
 
-  if (!options.dxfFile || !options.diagnostic) {
-    process.stderr.write("tru propose: <pattern.dxf> and --diagnostic are required.\n\n" + USAGE);
+  if (!options.diagnostic) {
+    process.stderr.write("tru propose: --diagnostic is required.\n\n" + USAGE);
     return 2;
   }
 
-  const dxfText = await readFile(options.dxfFile, "utf8");
+  let dxfFile: string;
+  try {
+    dxfFile = await resolveDxfFile(options.dxfFile);
+  } catch (error) {
+    process.stderr.write(`tru propose: ${errorMessage(error)}\n\n${USAGE}`);
+    return 2;
+  }
+
+  const dxfText = await readFile(dxfFile, "utf8");
   const reportText = await readFile(options.diagnostic, "utf8");
 
   let diagnostics;
@@ -181,15 +229,15 @@ async function runPropose(args: string[]): Promise<number> {
   }
 
   const slntCommand = options.slnt ? tokenizeCommand(options.slnt) : resolveSlntCommand();
-  const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile: options.dxfFile });
+  const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile });
   // Windows で slnt が .cmd/.bat かつ dxf パスに定義済み %VAR% があると cmd.exe が展開して失敗しうる。事前に警告。
-  const cmdRisk = detectCmdPercentRisk(slntCommand, [options.dxfFile]);
+  const cmdRisk = detectCmdPercentRisk(slntCommand, [dxfFile]);
   if (cmdRisk) {
     process.stderr.write(`tru propose: warning: ${cmdRisk}\n`);
   }
 
   const file = createProposalFile({
-    sourceFile: options.dxfFile,
+    sourceFile: dxfFile,
     sourceText: dxfText,
     diagnostics,
     // curve_kink は単一 edge を diagnostic の actual.edge address から解決する（Seamlint
@@ -206,7 +254,7 @@ async function runPropose(args: string[]): Promise<number> {
   // --out は任意。省略時は output/<dxf 名>.proposal.json を既定にし、親ディレクトリが無ければ作る。
   // loom 経由の match では loom が常に絶対 --out（<outputs.dir>/match/<from>-<to>.proposal.json）を
   // 渡すので、この既定は直叩きデバッグ用。指定パスの親も無ければ作る（loom の match/ サブディレクトリ対応）。
-  const outPath = options.out ?? defaultProposalOutPath(options.dxfFile);
+  const outPath = options.out ?? defaultProposalOutPath(dxfFile);
   await mkdir(dirname(outPath), { recursive: true });
   await writeFile(outPath, JSON.stringify(file, null, 2) + "\n", "utf8");
   process.stdout.write(
@@ -230,23 +278,29 @@ async function runApply(args: string[]): Promise<number> {
     return 2;
   }
 
-  if (!options.dxfFile || !options.proposal || !options.out) {
-    process.stderr.write(
-      "tru apply: <pattern.dxf>, --proposal, and --out are required.\n\n" + USAGE
-    );
+  if (!options.proposal || !options.out) {
+    process.stderr.write("tru apply: --proposal and --out are required.\n\n" + USAGE);
+    return 2;
+  }
+
+  let dxfFile: string;
+  try {
+    dxfFile = await resolveDxfFile(options.dxfFile);
+  } catch (error) {
+    process.stderr.write(`tru apply: ${errorMessage(error)}\n\n${USAGE}`);
     return 2;
   }
 
   // source の上書きは決してしない: apply は --out のみ、in-place は禁止（T1）。Windows では
   // case を無視するので、大文字小文字だけの違い（C:\Foo と c:\foo = 同じ file）でも guard に掛かる。
-  if (isSameFilePath(options.out, options.dxfFile)) {
+  if (isSameFilePath(options.out, dxfFile)) {
     process.stderr.write(
       "tru apply: apply.out_overwrites_source: --out must not be the source DXF path.\n"
     );
     return 1;
   }
 
-  const dxfText = await readFile(options.dxfFile, "utf8");
+  const dxfText = await readFile(dxfFile, "utf8");
   const proposalText = await readFile(options.proposal, "utf8");
 
   let parsed: unknown;
@@ -264,8 +318,8 @@ async function runApply(args: string[]): Promise<number> {
   const file = parsed as ProposalFile;
 
   const slntCommand = options.slnt ? tokenizeCommand(options.slnt) : resolveSlntCommand();
-  const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile: options.dxfFile });
-  const cmdRisk = detectCmdPercentRisk(slntCommand, [options.dxfFile]);
+  const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile });
+  const cmdRisk = detectCmdPercentRisk(slntCommand, [dxfFile]);
   if (cmdRisk) {
     process.stderr.write(`tru apply: warning: ${cmdRisk}\n`);
   }
@@ -318,6 +372,166 @@ async function runApply(args: string[]): Promise<number> {
   return 0;
 }
 
+interface CutOptions {
+  dxfFile?: string;
+  proposal?: string;
+  scale?: string;
+  out?: string;
+  slnt?: string;
+}
+
+function parseCutArgs(args: string[]): CutOptions {
+  const options: CutOptions = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--proposal") {
+      options.proposal = requireValue(arg, args[++index]);
+    } else if (arg === "--scale") {
+      options.scale = requireValue(arg, args[++index]);
+    } else if (arg === "--out") {
+      options.out = requireValue(arg, args[++index]);
+    } else if (arg === "--slnt") {
+      options.slnt = requireValue(arg, args[++index]);
+    } else if (arg?.startsWith("--")) {
+      throw new Error(`Unknown option: ${arg}`);
+    } else if (options.dxfFile !== undefined) {
+      throw new Error("Expected a single <pattern.dxf> path.");
+    } else if (arg !== undefined) {
+      options.dxfFile = arg;
+    }
+  }
+  return options;
+}
+
+// 衝突しない出力先。<base>.<suffix1>.<suffix2><ext>（undefined/空は除く）。band が複数のときは
+// proposal.id（file 内で一意 — blockName は一意でない）で、actual のように複数ページのときは page label
+// （calibration / tile-NofM）で分ける。同一バンドの複数 advisory が同じパスへ書かれ上書きされるのを防ぐ。
+function cutOutPathFor(outPath: string, ...suffixes: (string | undefined)[]): string {
+  const ext = extname(outPath);
+  const stem = outPath.slice(0, outPath.length - ext.length);
+  const suffix = suffixes
+    .filter((part): part is string => part !== undefined && part.length > 0)
+    .map((part) => `.${part}`)
+    .join("");
+  return `${stem}${suffix}${ext}`;
+}
+
+// tru cut: band 提案から、印刷して手で裁つ stopgap の SVG を作る。正式パターン(DXF)は書き換えない
+// （apply とは別・ゲート無しの使い捨てアーティファクト）。band conform（targetBandLengthMm がある band
+// 提案）だけを対象にし、band ブロックの全辺を slnt edges で取って輪郭を目標長へ縮め（矩形直線のみ）、
+// SVG を書く。曲線 / 非矩形 / 退化は推測せず出さない（T8）。
+async function runCut(args: string[]): Promise<number> {
+  let options: CutOptions;
+  try {
+    options = parseCutArgs(args);
+  } catch (error) {
+    process.stderr.write(`tru cut: ${errorMessage(error)}\n\n${USAGE}`);
+    return 2;
+  }
+
+  if (!options.proposal || !options.out) {
+    process.stderr.write("tru cut: --proposal and --out are required.\n\n" + USAGE);
+    return 2;
+  }
+  if (options.scale !== "fit-a4" && options.scale !== "actual") {
+    process.stderr.write("tru cut: --scale must be fit-a4 or actual.\n\n" + USAGE);
+    return 2;
+  }
+  const scale: CutScale = options.scale;
+
+  const proposalText = await readFile(options.proposal, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(proposalText);
+  } catch (error) {
+    process.stderr.write(`tru cut: could not read proposal JSON: ${errorMessage(error)}\n`);
+    return 1;
+  }
+  const validationErrors = validateProposalFile(parsed);
+  if (validationErrors.length > 0) {
+    process.stderr.write(`tru cut: invalid proposal file: ${validationErrors.join("; ")}\n`);
+    return 1;
+  }
+  const file = parsed as ProposalFile;
+
+  // 裁てるのは band conform（targetBandLengthMm がある band 提案）だけ。目標長が無い（band 固定 / 未決）
+  // 提案は縮める寸法が定まらないので出さない（推測しない、T8）。
+  const cuttable = file.proposals.filter(
+    (proposal) => proposal.bandReconciliation?.targetBandLengthMm !== undefined
+  );
+  if (cuttable.length === 0) {
+    process.stdout.write(
+      "cut: 裁断できる band 提案がありません（band conform の targetBandLengthMm が必要）。何も書きません。\n"
+    );
+    return 0;
+  }
+
+  // 裁つものがある場合だけ DXF を要求する（band ブロックの全辺を slnt edges で取るため）。
+  let dxfFile: string;
+  try {
+    dxfFile = await resolveDxfFile(options.dxfFile);
+  } catch (error) {
+    process.stderr.write(`tru cut: ${errorMessage(error)}\n\n${USAGE}`);
+    return 2;
+  }
+
+  const slntCommand = options.slnt ? tokenizeCommand(options.slnt) : resolveSlntCommand();
+  const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile });
+  const cmdRisk = detectCmdPercentRisk(slntCommand, [dxfFile]);
+  if (cmdRisk) {
+    process.stderr.write(`tru cut: warning: ${cmdRisk}\n`);
+  }
+
+  for (const proposal of cuttable) {
+    const band = proposal.bandReconciliation!;
+    const blockName = band.bandEdge.blockName;
+    const targetLengthMm = band.targetBandLengthMm!;
+
+    // band ブロックの全辺を slnt edges で取り、閉じた輪郭を作る（A1: 辺 geometry は subprocess で取得）。
+    let edgesResult;
+    try {
+      edgesResult = runEdges(blockName);
+    } catch (error) {
+      // slnt 実行失敗は systemic。何か書く前に失敗させる。
+      process.stderr.write(`tru cut: ${errorMessage(error)}\n`);
+      return 1;
+    }
+
+    const outline = computeBandCutOutline({
+      edges: edgesResult.edges.map((edge) => edge.points),
+      targetLengthMm
+    });
+    if (!outline.ok) {
+      // 曲線 / 非矩形 / 退化は推測せず出さない（T8）。理由を出して次の band へ。
+      process.stdout.write(
+        `cut: skipped ${blockName}（${outline.reason}）— 矩形の直線バンドでないため出力しません。\n`
+      );
+      continue;
+    }
+
+    const pages = renderBandCutsheet({ outline: outline.outline, scale, title: blockName });
+    for (const page of pages) {
+      // ファイル名 = base +（band 複数なら .<id>）+（複数ページなら .<label>）。単票（1 提案・1 ページ・
+      // label 空）だけ素の --out に書く。それ以外は衝突しないよう分ける（同一 block の上書き防止）。
+      const singleFile = cuttable.length === 1 && pages.length === 1 && page.label === "";
+      const outPath = singleFile
+        ? options.out
+        : cutOutPathFor(
+            options.out,
+            cuttable.length > 1 ? proposal.id : undefined,
+            page.label || undefined
+          );
+      await mkdir(dirname(outPath), { recursive: true });
+      await writeFileAtomic(outPath, page.svg);
+      process.stdout.write(
+        `cut: ${blockName} (${scale})${page.label ? ` [${page.label}]` : ""} -> ${outPath}\n`
+      );
+    }
+  }
+
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   const [command] = argv;
 
@@ -332,6 +546,10 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === "apply") {
     return await runApply(argv.slice(1));
+  }
+
+  if (command === "cut") {
+    return await runCut(argv.slice(1));
   }
 
   process.stderr.write(`Unknown command: ${command}\n\n${USAGE}`);
