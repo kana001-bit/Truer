@@ -27,6 +27,32 @@ function rotate(corner: Point, radians: number): Point {
   return { x: corner.x * c - corner.y * s, y: corner.x * s + corner.y * c };
 }
 
+// 半径 radius の円弧上に angle0..angle1 を m 点で。曲線バンド（円環扇形）の合成に使う。
+function arcPoints(radius: number, angle0: number, angle1: number, m: number): Point[] {
+  return Array.from({ length: m }, (_unused, i) => {
+    const phi = angle0 + (angle1 - angle0) * (i / (m - 1));
+    return { x: radius * Math.cos(phi), y: radius * Math.sin(phi) };
+  });
+}
+
+// 円環扇形バンドの 4 辺（外弧=長辺・端=短辺2本・内弧=長辺）。閉ループ順（slnt edges 風）。
+function annularBandEdges(
+  rInner: number,
+  rOuter: number,
+  angle0: number,
+  angle1: number,
+  m: number
+): Point[][] {
+  const outer = arcPoints(rOuter, angle0, angle1, m);
+  const inner = arcPoints(rInner, angle0, angle1, m);
+  return [
+    outer, // e0: 外弧 forward
+    [outer[outer.length - 1]!, inner[inner.length - 1]!], // e1: angle1 端
+    [...inner].reverse(), // e2: 内弧 reverse
+    [inner[0]!, outer[0]!] // e3: angle0 端
+  ];
+}
+
 // 実データ WAISTBAND と同じ 860×50 の軸並行矩形。
 const WAISTBAND_CORNERS: Point[] = [
   { x: 381.2, y: 1074.5 },
@@ -43,6 +69,7 @@ test("resizes an axis-aligned rectangle: longest edge -> target, height unchange
   });
   assert.equal(result.ok, true);
   if (!result.ok) return;
+  assert.equal(result.outline.kind, "rectangle");
   assert.equal(result.outline.fromLengthMm, 860);
   assert.equal(result.outline.toLengthMm, 655);
   assert.equal(result.outline.heightMm, 50);
@@ -106,31 +133,57 @@ test("is deterministic (same input -> byte-identical output)", () => {
   assert.deepEqual(computeBandCutOutline(input), computeBandCutOutline(input));
 });
 
-test("rejects a curved edge (does not guess a net line, T8)", () => {
-  // 守る仕様: 曲線辺（3 点以上）は輪郭を推測しない。
-  const edges = [
-    [
-      { x: 0, y: 0 },
-      { x: 100, y: 0 }
-    ],
-    [
-      { x: 100, y: 0 },
-      { x: 100, y: 50 }
-    ],
-    [
-      { x: 100, y: 50 },
-      { x: 50, y: 60 },
-      { x: 0, y: 50 }
-    ], // 曲線（3 点）
-    [
-      { x: 0, y: 50 },
-      { x: 0, y: 0 }
-    ]
-  ];
-  const result = computeBandCutOutline({ edges, targetLengthMm: 655 });
+test("conforms a curved band by arc-length scale: outer -> target, width preserved, kind curved", () => {
+  // 守る仕様 (案A): 曲線バンド（4 辺 ribbon で 1 本以上が曲線）は弧長スケール。参照辺（最長=外弧）を目標弧長へ
+  //           相似スケールし、幅は局所保持（内弧は局所幅ぶん内側）。円環扇形 r100/R140/90°: 外弧 140·π/2≈219.9。
+  const edges = annularBandEdges(100, 140, 0, Math.PI / 2, 40);
+  const result = computeBandCutOutline({ edges, targetLengthMm: 165 });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.outline.kind, "curved");
+  assert.ok(
+    Math.abs(result.outline.fromLengthMm - 219.9) < 1,
+    `from ~219.9: ${result.outline.fromLengthMm}`
+  );
+  assert.ok(Math.abs(result.outline.toLengthMm - 165) < 1, `to ~165: ${result.outline.toLengthMm}`);
+  assert.ok(Math.abs(result.outline.heightMm - 40) < 1, `height ~40: ${result.outline.heightMm}`); // 幅 R-r=40 保持
+  // 密 polyline（角 4 点ではない）。
+  assert.ok(result.outline.corners.length > 4, `dense polyline: ${result.outline.corners.length}`);
+});
+
+test("curved conform is deterministic (T10)", () => {
+  // 守る仕様: pure・決定的（固定サンプル数・決定的 anchor）。同じ入力から同じ輪郭。
+  const edges = annularBandEdges(100, 140, 0, Math.PI / 2, 40);
+  assert.deepEqual(
+    computeBandCutOutline({ edges, targetLengthMm: 165 }),
+    computeBandCutOutline({ edges, targetLengthMm: 165 })
+  );
+});
+
+test("rejects an over-shrunk curved band whose inner contour would fold/self-intersect (T8, P1)", () => {
+  // 守る仕様 (T8): 幅が縮小後の局所曲率半径を超えると内辺が反転して裁断不能になる。静かに success で出さず
+  //           degenerate で reject する。R140/r100 の 90° 帯を target 60 へ → 縮小後外半径≈38 < 幅 40。
+  const edges = annularBandEdges(100, 140, 0, Math.PI / 2, 40);
+  const result = computeBandCutOutline({ edges, targetLengthMm: 60 });
   assert.equal(result.ok, false);
   if (result.ok) return;
-  assert.equal(result.reason, "non-straight-edge");
+  assert.equal(result.reason, "degenerate");
+});
+
+test("rejects a 4-edge curved shape that is not a closed ribbon (T8)", () => {
+  // 守る仕様 (T8): 曲線でも 4 辺が閉ループを成さなければ band 輪郭として扱わない（推測しない）。
+  const outer = arcPoints(140, 0, Math.PI / 2, 10);
+  const inner = arcPoints(100, 0, Math.PI / 2, 10);
+  const edges = [
+    outer,
+    [outer[9]!, { x: 5, y: 5 }], // 端が inner 端に届かず閉じない
+    [...inner].reverse(),
+    [inner[0]!, outer[0]!]
+  ];
+  const result = computeBandCutOutline({ edges, targetLengthMm: 165 });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, "not-a-rectangle");
 });
 
 test("rejects a non-rectangle (trapezoid) (T8)", () => {

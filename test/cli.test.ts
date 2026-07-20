@@ -294,16 +294,37 @@ function writeTwoBandProposals(dir: string): string {
   return path;
 }
 
-// fake slnt: `edges <dxf> --block <name> --json` に矩形 or 三角形の edges を返す node スクリプト。
-function writeFakeSlnt(dir: string, shape: "rect" | "triangle"): string {
-  const corners = shape === "rect" ? "[[0,0],[350,0],[350,40],[0,40]]" : "[[0,0],[350,0],[175,40]]";
+// fake slnt: `edges <dxf> --block <name> --json` に矩形 / 三角形 / 曲線帯（円環扇形）の edges を返す node
+// スクリプト。curved は外弧・端・内弧・端の 4 辺 ribbon（長辺が多点の曲線）を返す。
+function writeFakeSlnt(dir: string, shape: "rect" | "triangle" | "curved"): string {
+  let body: string;
+  if (shape === "curved") {
+    body = [
+      "const R = 200, r = 160, a0 = 0, a1 = 2, m = 8;",
+      "const arc = (rad) => Array.from({ length: m }, (_u, i) => { const phi = a0 + (a1 - a0) * (i / (m - 1)); return { x: rad * Math.cos(phi), y: rad * Math.sin(phi) }; });",
+      "const outer = arc(R), inner = arc(r);",
+      "const edges = [",
+      "  { edgeId: 0, points: outer },",
+      "  { edgeId: 1, points: [outer[m - 1], inner[m - 1]] },",
+      "  { edgeId: 2, points: [...inner].reverse() },",
+      "  { edgeId: 3, points: [inner[0], outer[0]] }",
+      "];",
+      "process.stdout.write(JSON.stringify({ blockName: block, edges }));"
+    ].join("\n");
+  } else {
+    const corners =
+      shape === "rect" ? "[[0,0],[350,0],[350,40],[0,40]]" : "[[0,0],[350,0],[175,40]]";
+    body = [
+      `const c = ${corners};`,
+      "const edges = c.map((p, i) => ({ edgeId: i, points: [ { x: p[0], y: p[1] }, { x: c[(i + 1) % c.length][0], y: c[(i + 1) % c.length][1] } ] }));",
+      "process.stdout.write(JSON.stringify({ blockName: block, edges }));"
+    ].join("\n");
+  }
   const script = [
     "const a = process.argv.slice(2);",
     'const bi = a.indexOf("--block");',
     'const block = bi >= 0 ? a[bi + 1] : "?";',
-    `const c = ${corners};`,
-    "const edges = c.map((p, i) => ({ edgeId: i, points: [ { x: p[0], y: p[1] }, { x: c[(i + 1) % c.length][0], y: c[(i + 1) % c.length][1] } ] }));",
-    "process.stdout.write(JSON.stringify({ blockName: block, edges }));"
+    body
   ].join("\n");
   const path = join(dir, "fake-slnt.js");
   writeFileSync(path, script);
@@ -380,6 +401,33 @@ test("cut: band-conform proposal -> 実寸カバー + タイル（happy path, fa
   assert.match(coverSvg, /327\.5/); // 655/2 に縮んだ最長辺（dimText）
   const tiles = readdirSync(dir).filter((file) => /^cut\.tile-\d+of\d+\.svg$/.test(file));
   assert.ok(tiles.length >= 1, `tiles: ${tiles}`);
+});
+
+test("cut: 曲線バンドを弧長スケールで裁つ（仕上がり線のみ・縫い代注記, fake slnt curved）", () => {
+  // 守る仕様: 曲線バンド（4 辺 ribbon）は弧長スケールで conform して cutsheet を出す。縫い代は未対応なので
+  //           仕上がり線のみ + 注記。skip はしない。
+  const dir = mkdtempSync(join(tmpdir(), "truer-cut-curved-"));
+  const pp = writeBandProposal(dir);
+  const slnt = writeFakeSlnt(dir, "curved");
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const out = join(dir, "cut.svg");
+  const result = runTruIn(dir, [
+    "cut",
+    "pattern.dxf",
+    "--proposal",
+    pp,
+    "--scale",
+    "actual",
+    "--slnt",
+    `node ${slnt}`,
+    "--out",
+    out
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /cut: WAISTBAND \(actual\)/); // skip ではなく出力
+  assert.match(result.stdout, /曲線バンド — 縫い代は未対応/); // 注記
+  const cover = readFileSync(join(dir, "cut.calibration.svg"), "utf8");
+  assert.match(cover, /曲線バンドは縫い代未対応/);
 });
 
 test("cut: non-rectangle band is skipped without writing (fake slnt returns triangle, T8)", () => {
