@@ -280,6 +280,20 @@ function writeBandProposal(dir: string): string {
   return path;
 }
 
+// 同一 band block（WAISTBAND）を指す band conform 提案を 2 件持つ valid proposal を書く。
+function writeTwoBandProposals(dir: string): string {
+  const file = createProposalFile({
+    sourceFile: "pattern.dxf",
+    sourceText: "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
+    diagnostics: [cutBandDiagnostic(), cutBandDiagnostic()],
+    resolveTarget: () => ({ status: "not-found" as const }),
+    resolveBandSeam: buildResolveBandSeam(cutBandRunner(), ["FRONT"])
+  });
+  const path = join(dir, "two.proposal.json");
+  writeFileSync(path, JSON.stringify(file));
+  return path;
+}
+
 // fake slnt: `edges <dxf> --block <name> --json` に矩形 or 三角形の edges を返す node スクリプト。
 function writeFakeSlnt(dir: string, shape: "rect" | "triangle"): string {
   const corners = shape === "rect" ? "[[0,0],[350,0],[350,40],[0,40]]" : "[[0,0],[350,0],[175,40]]";
@@ -383,5 +397,39 @@ test("cut: non-rectangle band is skipped without writing (fake slnt returns tria
   assert.equal(result.status, 0);
   assert.match(result.stdout, /skipped WAISTBAND/);
   assert.match(result.stdout, /not-a-rectangle/);
+  assert.equal(existsSync(out), false);
+});
+
+test("cut: 同一 block を指す複数提案は proposal.id で別ファイルに分ける（上書きしない, P2）", () => {
+  // 守る仕様: blockName は一意でない。同じ band block（WAISTBAND）への cut 対象が複数あっても、
+  //           一意な proposal.id でファイル名を分け、先に書いた成果物を静かに上書きしない。
+  const dir = mkdtempSync(join(tmpdir(), "truer-cut-dup-"));
+  const pp = writeTwoBandProposals(dir);
+  const slnt = writeFakeSlnt(dir, "rect");
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const out = join(dir, "cut.svg");
+  const result = runTruIn(dir, [
+    "cut",
+    "pattern.dxf",
+    "--proposal",
+    pp,
+    "--scale",
+    "actual",
+    "--slnt",
+    `node ${slnt}`,
+    "--out",
+    out
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+
+  const proposals = (JSON.parse(readFileSync(pp, "utf8")) as { proposals: { id: string }[] })
+    .proposals;
+  assert.equal(proposals.length, 2);
+  assert.notEqual(proposals[0]!.id, proposals[1]!.id);
+  // 各提案が一意な <base>.<id>.svg に書かれ、両方残る（同一 WAISTBAND でも衝突しない）。
+  for (const proposal of proposals) {
+    assert.equal(existsSync(join(dir, `cut.${proposal.id}.svg`)), true, `cut.${proposal.id}.svg`);
+  }
+  // 複数出力なので素の --out（cut.svg）は使わない。
   assert.equal(existsSync(out), false);
 });
