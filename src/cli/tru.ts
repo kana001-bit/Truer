@@ -69,9 +69,11 @@ cut options:
   --out <file>          印刷用 SVG の基底パス。actual は <base>.calibration.svg / <base>.tile-NofM.svg を、
                         band 複数なら proposal.id も挟んで書く（1 band の actual でも複数ファイル）。
   --seam-allowance <mm> 縫い代（裁ち線を仕上がり線の外へ）。既定 10。0 で仕上がり線のみ。実線=裁ち線 /
-                        破線=仕上がり線。矩形バンドのみ。既定は全辺一様（--on-fold でわ辺のみ 0 にできる）。
+                        破線=仕上がり線。既定は全辺一様（--on-fold でわ辺のみ 0）。**矩形バンドのみ** —
+                        曲線バンドは縫い代未対応で仕上がり線のみ（裁つときに手で足す）。
   --on-fold <long|short> わ辺（on the fold）の向き。long=長辺 / short=端辺（短辺）の代表 1 辺を「わ」とし、
                         その辺だけ縫い代 0（裁ち線=仕上がり線）にして「わ」ラベルを付ける。省略=全辺一様。
+                        矩形バンドのみ（曲線バンドには効かない）。
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
 Options:
@@ -436,8 +438,8 @@ function cutOutPathFor(outPath: string, ...suffixes: (string | undefined)[]): st
 
 // tru cut: band 提案から、印刷して手で裁つ stopgap の SVG を作る。正式パターン(DXF)は書き換えない
 // （apply とは別・ゲート無しの使い捨てアーティファクト）。band conform（targetBandLengthMm がある band
-// 提案）だけを対象にし、band ブロックの全辺を slnt edges で取って輪郭を目標長へ縮め（矩形直線のみ）、
-// SVG を書く。曲線 / 非矩形 / 退化は推測せず出さない（T8）。
+// 提案）だけを対象にし、band ブロックの全辺を slnt edges で取って輪郭を目標長へ縮め（矩形=一様スケール /
+// 曲線帯=弧長スケール）、SVG を書く。4 辺 ribbon でない / 退化は推測せず出さない（T8）。曲線は縫い代未対応。
 async function runCut(args: string[]): Promise<number> {
   let options: CutOptions;
   try {
@@ -520,15 +522,21 @@ async function runCut(args: string[]): Promise<number> {
       targetLengthMm
     });
     if (!outline.ok) {
-      // 曲線 / 非矩形 / 退化は推測せず出さない（T8）。理由を出して次の band へ。
+      // 4 辺 ribbon（矩形 or 曲線帯）でない / 退化は推測せず出さない（T8）。理由を出して次の band へ。
       process.stdout.write(
-        `cut: skipped ${blockName}（${outline.reason}）— 矩形の直線バンドでないため出力しません。\n`
+        `cut: skipped ${blockName}（${outline.reason}）— band 輪郭（4 辺 ribbon）として扱えないため出力しません。\n`
       );
       continue;
     }
+    // 曲線バンドは縫い代未対応（第一スライス）: 要求されていれば net 線のみになる旨を告げる。
+    if (outline.outline.kind === "curved" && (options.seamAllowanceMm ?? 10) > 0) {
+      process.stdout.write(
+        `cut: ${blockName} は曲線バンド — 縫い代は未対応（仕上がり線のみ）。裁つときは手で縫い代を足す。\n`
+      );
+    }
 
     // 縫い代の既定は 10mm（cut = 布を裁つ用途）。`--seam-allowance 0` で仕上がり線のみ（0 は保持）。
-    // `--on-fold` があればわ辺だけ縫い代 0（案A: 形は変えない）。
+    // `--on-fold` があればわ辺だけ縫い代 0（案A・矩形のみ）。曲線バンドは kind により cutsheet が net のみにする。
     const pages = renderBandCutsheet({
       outline: outline.outline,
       scale,

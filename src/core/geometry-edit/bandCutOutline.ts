@@ -1,9 +1,11 @@
 // バンドの閉じた net-line 輪郭を、band conform の目標長（最長辺 = targetLengthMm）へ縮める pure 関数。
 // 用途は「印刷して手で裁つ stopgap の輪郭」— 正式パターン(DXF)は書き換えない（apply ではない）。
-// 矩形（直線 4 辺・対辺平行等長・隣辺直交）のバンドだけを対象にし、最長辺の方向に沿って一様スケール
-// する（＝長さだけ縮め、高さと角は保つ）。曲線・非矩形・退化は推測せず理由付きで「出さない」を返す（T8）。
-// IO なし・決定的（T10、丸めは roundPoint/roundCoord の emit 境界だけ）。回転した矩形でも成立するよう
-// 軸に依らずベクトルで扱う。全パーツ輪郭の描画（SVG）は別（呼び出し側）で、ここは幾何だけ。
+// 2 経路: (1) 矩形（直線 4 辺・対辺平行等長・隣辺直交）は最長辺方向に一様スケール（長さだけ縮め高さ・角は保つ）。
+// (2) 曲線バンド（4 辺 ribbon で 1 本以上が曲線）は弧長スケール（案A）: 参照辺（最長 = band 辺）を目標弧長へ
+// 相似スケールし、内辺を局所幅ぶん内側へオフセットして作る（弧長は厳密に target、幅は局所保持、曲率は 1/σ で
+// 変わる。矩形なら結果は矩形経路に一致）。非 ribbon（3 辺など）・退化は推測せず理由付きで出さない（T8）。
+// IO なし・決定的（T10、丸めは roundPoint/roundCoord の emit 境界だけ）。回転しても軸に依らずベクトルで扱う。
+// 全パーツ輪郭の描画（SVG）は別（呼び出し側）で、ここは幾何だけ。
 
 import type { Point } from "../proposal/proposalSchema.ts";
 import { roundCoord, roundPoint } from "./index.ts";
@@ -17,6 +19,8 @@ const RECT_LEN_REL_TOL = 0.02;
 // 辺の中間頂点が端点間の直線から外れてよい距離（mm）。これを超えたら曲線とみなす。slnt edges は直線でも
 // collinear な中間頂点を持つ polyline を返しうるので、頂点数ではなく同一直線性で straight を判定する。
 const STRAIGHT_EDGE_TOL_MM = 0.5;
+// 曲線バンドの長辺を再サンプルする点数（決定的）。密 polyline として cutsheet がそのまま描く。
+const CURVED_SAMPLES = 64;
 
 export interface BandCutOutlineInput {
   // バンドの閉じた net-line を成す辺の点列（slnt edges 順）。straight な辺は 2 点、曲線は 3 点以上。
@@ -29,11 +33,14 @@ export interface BandCutOutlineInput {
 export type BandCutOutlineReject = "non-straight-edge" | "not-a-rectangle" | "degenerate";
 
 export interface BandCutOutline {
-  // 補正後の閉じた輪郭（角の点列、4 点、始点は末尾で繰り返さない）。
+  // 補正後の閉じた輪郭。rectangle は 4 角、curved は密な polyline（始点は末尾で繰り返さない）。
   readonly corners: readonly Point[];
-  readonly fromLengthMm: number; // 元の最長辺長。
+  readonly fromLengthMm: number; // 元の最長辺長（弧長）。
   readonly toLengthMm: number; // 補正後の最長辺長（≈ targetLengthMm）。
-  readonly heightMm: number; // 短辺長（変えない）。
+  readonly heightMm: number; // 短辺長 / バンド幅（curved は平均局所幅。変えない）。
+  // rectangle: 一様スケール（角 4 点・seam-allowance 対応）。curved: 弧長スケール（密 polyline・seam-allowance
+  // 未対応）。cutsheet がこの kind で seam-allowance / わ辺の可否を判定する。
+  readonly kind: "rectangle" | "curved";
 }
 
 export type BandCutOutlineResult =
@@ -76,26 +83,32 @@ function isStraightEdge(points: readonly Point[]): boolean {
   return true;
 }
 
-// バンド輪郭 → 補正後輪郭。矩形の最長辺を targetLengthMm に合わせる一様スケール（最長辺方向のみ）。
+// バンド輪郭 → 補正後輪郭。全辺直線なら矩形経路（一様スケール）、1 本でも曲線なら曲線 ribbon 経路
+// （弧長スケール）。どちらも 4 辺 ribbon 前提。3 辺などの非 ribbon・退化は推測せず出さない（T8）。
 export function computeBandCutOutline(input: BandCutOutlineInput): BandCutOutlineResult {
   const { edges, targetLengthMm } = input;
 
   if (!Number.isFinite(targetLengthMm) || targetLengthMm <= 0) {
     return { ok: false, reason: "degenerate" };
   }
-  // 各辺が直線であることを、頂点数ではなく全点の同一直線性で判定する（slnt edges は直線でも中間に
-  // collinear な頂点を持つ polyline を返しうる — それを曲線と誤って弾かない）。曲線は net-line を推測
-  // できないので出さない。
-  if (edges.some((edge) => !isStraightEdge(edge))) {
-    return { ok: false, reason: "non-straight-edge" };
-  }
-  // 単純なバンドは 4 辺の矩形。それ以外の辺数は矩形として扱わない。
+  // 単純なバンドは 4 辺の ribbon（矩形も曲線帯も）。それ以外の辺数は band 輪郭として扱わない。
   if (edges.length !== 4) {
     return { ok: false, reason: "not-a-rectangle" };
   }
+  // 各辺が直線かは頂点数ではなく同一直線性で判定（slnt edges は直線でも collinear 中間頂点を持ちうる）。
+  // 全辺直線 → 矩形経路（従来）。1 本でも曲線 → 曲線 ribbon 経路。直線だが矩形でない（台形等）は矩形経路が
+  // not-a-rectangle で弾く（高さが定義できず conform が曖昧なため、従来どおり出さない）。
+  return edges.every((edge) => isStraightEdge(edge))
+    ? computeRectangleOutline(edges, targetLengthMm)
+    : computeCurvedRibbonOutline(edges, targetLengthMm);
+}
 
-  // 角 = 各辺の始点（中間の collinear 頂点は無視し、端点間を辺とみなす）。連続（辺 i の終点 ≈ 辺 i+1 の
-  // 始点）かつ閉ループを確認する。
+// 矩形バンド: 最長辺を targetLengthMm に合わせる一様スケール（最長辺方向のみ、高さ・角は保つ）。
+function computeRectangleOutline(
+  edges: readonly (readonly Point[])[],
+  targetLengthMm: number
+): BandCutOutlineResult {
+  // 角 = 各辺の始点。連続（辺 i の終点 ≈ 辺 i+1 の始点）かつ閉ループを確認する。
   const corners: Point[] = edges.map((edge) => edge[0]!);
   for (let i = 0; i < 4; i += 1) {
     const edge = edges[i]!;
@@ -165,7 +178,145 @@ export function computeBandCutOutline(input: BandCutOutlineInput): BandCutOutlin
       corners: resized,
       fromLengthMm: roundCoord(longLength),
       toLengthMm: roundCoord(longLength * scale),
-      heightMm: roundCoord(heightMm)
+      heightMm: roundCoord(heightMm),
+      kind: "rectangle"
+    }
+  };
+}
+
+function dist(a: Point, b: Point): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function polylineLength(points: readonly Point[]): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) total += dist(points[i]!, points[i - 1]!);
+  return total;
+}
+
+// polyline を弧長で n 点に等間隔再サンプル（両端点を含む、n>=2）。退化（長さ 0）は先頭点の複製。
+function resampleByArcLength(points: readonly Point[], n: number): Point[] {
+  const first = points[0]!;
+  if (points.length < 2) return Array.from({ length: n }, () => ({ x: first.x, y: first.y }));
+  const cum: number[] = [0];
+  for (let i = 1; i < points.length; i += 1)
+    cum.push(cum[i - 1]! + dist(points[i]!, points[i - 1]!));
+  const total = cum[cum.length - 1]!;
+  if (total === 0) return Array.from({ length: n }, () => ({ x: first.x, y: first.y }));
+  const out: Point[] = [];
+  let seg = 1;
+  for (let k = 0; k < n; k += 1) {
+    const target = (k / (n - 1)) * total;
+    while (seg < points.length - 1 && cum[seg]! < target) seg += 1;
+    const a = points[seg - 1]!;
+    const b = points[seg]!;
+    const segLen = cum[seg]! - cum[seg - 1]!;
+    const t = segLen > 0 ? (target - cum[seg - 1]!) / segLen : 0;
+    out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+  }
+  return out;
+}
+
+// 再サンプル済み polyline の点 i の単位接線（中央差分、端点は片側）。
+function tangentAt(points: readonly Point[], i: number): Vec {
+  const a = points[Math.max(0, i - 1)]!;
+  const b = points[Math.min(points.length - 1, i + 1)]!;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length = Math.hypot(dx, dy) || 1;
+  return { x: dx / length, y: dy / length };
+}
+
+// 曲線バンド（4 辺 ribbon で 1 本以上が曲線）を弧長スケールで conform（案A）。参照辺（最長 = band 辺）を
+// 目標弧長へ相似スケールし、内辺は各点で局所幅ぶん内側へオフセット。弧長は厳密に target、幅は局所保持。
+function computeCurvedRibbonOutline(
+  edges: readonly (readonly Point[])[],
+  targetLengthMm: number
+): BandCutOutlineResult {
+  // 閉ループ確認（辺 i の終点 ≈ 辺 i+1 の始点）。ribbon でなければ出さない。
+  for (let i = 0; i < 4; i += 1) {
+    const edge = edges[i]!;
+    const end = edge[edge.length - 1]!;
+    const nextStart = edges[(i + 1) % 4]![0]!;
+    if (dist(end, nextStart) > CORNER_MEETING_TOL_MM) {
+      return { ok: false, reason: "not-a-rectangle" };
+    }
+  }
+  const arcs = edges.map(polylineLength);
+  if (arcs.some((arc) => !(arc > 0))) return { ok: false, reason: "degenerate" };
+
+  // 長辺ペア = 対辺 {0,2} か {1,3} の、合計弧長が大きい方（バンドの長さ方向）。矩形の longIndex 一般化。
+  const longFirst = arcs[0]! + arcs[2]! >= arcs[1]! + arcs[3]! ? 0 : 1;
+  const edgeA = edges[longFirst]!;
+  const edgeB = edges[longFirst + 2]!;
+  // 参照辺 R = 長い方（= band 辺 = 最長 finished 辺）、Other = 短い方。
+  const reference = polylineLength(edgeA) >= polylineLength(edgeB) ? edgeA : edgeB;
+  const otherRaw = reference === edgeA ? edgeB : edgeA;
+  // Other を R と同じ進行方向に揃える（近い端どうしをペアにする）。
+  const last = (points: readonly Point[]): Point => points[points.length - 1]!;
+  const near = dist(reference[0]!, otherRaw[0]!) + dist(last(reference), last(otherRaw));
+  const far = dist(reference[0]!, last(otherRaw)) + dist(last(reference), otherRaw[0]!);
+  const other = far < near ? [...otherRaw].reverse() : otherRaw;
+
+  const refSamples = resampleByArcLength(reference, CURVED_SAMPLES);
+  const otherSamples = resampleByArcLength(other, CURVED_SAMPLES);
+  const widths = refSamples.map((point, i) => dist(point, otherSamples[i]!));
+  const avgWidth = widths.reduce((sum, w) => sum + w, 0) / widths.length;
+  if (!(avgWidth > 0)) return { ok: false, reason: "degenerate" };
+
+  // σ = target / 参照弧長。R を anchor（辞書順最小）中心に相似スケール → 弧長が厳密に target になる。
+  const arcRef = polylineLength(reference);
+  const sigma = targetLengthMm / arcRef;
+  const anchor = refSamples.reduce((min, point) =>
+    point.x < min.x || (point.x === min.x && point.y < min.y) ? point : min
+  );
+  const refScaled = refSamples.map((point) => ({
+    x: anchor.x + sigma * (point.x - anchor.x),
+    y: anchor.y + sigma * (point.y - anchor.y)
+  }));
+
+  // inward 符号: i=0 で Other 側を向く法線を選び、以後その回転方向で統一（単純な帯なので一貫）。
+  const tangent0 = tangentAt(refScaled, 0);
+  const inward0 = {
+    x: otherSamples[0]!.x - refSamples[0]!.x,
+    y: otherSamples[0]!.y - refSamples[0]!.y
+  };
+  const sign = -tangent0.y * inward0.x + tangent0.x * inward0.y >= 0 ? 1 : -1;
+
+  // 内辺 = 参照辺（スケール後）を各点で局所幅ぶん inward へ動かす。
+  const inner = refScaled.map((point, i) => {
+    const tangent = tangentAt(refScaled, i);
+    const nx = -tangent.y * sign;
+    const ny = tangent.x * sign;
+    return { x: point.x + nx * widths[i]!, y: point.y + ny * widths[i]! };
+  });
+
+  // 幅が縮小後の局所曲率半径を超えると内辺が中心側へ折り返して自己交差し、裁断不能な形になる（例: R140/r100
+  // の 90° 帯を target 60 へ → 縮小後外半径≈38 なのに幅≈40）。内辺が参照辺に対して逆行したら fold とみなし、
+  // 推測で不正形状を出さず reject（T8: 静かに裁断不能を出さない）。隣接 1 区間だけ見ると、粗い弧を再サンプル
+  // した弦の凸角で微小な逆行が出て誤検知するので、数区間の窓で向きを見る（実 fold は全長で逆行、弦角のノイズは
+  // 窓で消える）。
+  const foldWindow = 4;
+  for (let i = 0; i + 1 < refScaled.length; i += 1) {
+    const j = Math.min(i + foldWindow, refScaled.length - 1);
+    const refSeg = { x: refScaled[j]!.x - refScaled[i]!.x, y: refScaled[j]!.y - refScaled[i]!.y };
+    const innerSeg = { x: inner[j]!.x - inner[i]!.x, y: inner[j]!.y - inner[i]!.y };
+    if (refSeg.x * innerSeg.x + refSeg.y * innerSeg.y <= 0) {
+      return { ok: false, reason: "degenerate" };
+    }
+  }
+
+  // 輪郭 = 参照辺（前進）+ 内辺（後退）の密 polyline。端は直線で繋がる。
+  const corners: Point[] = [...refScaled.map(roundPoint), ...[...inner].reverse().map(roundPoint)];
+
+  return {
+    ok: true,
+    outline: {
+      corners,
+      fromLengthMm: roundCoord(arcRef),
+      toLengthMm: roundCoord(polylineLength(refScaled)),
+      heightMm: roundCoord(avgWidth),
+      kind: "curved"
     }
   };
 }

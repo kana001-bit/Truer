@@ -14,7 +14,24 @@ const OUTLINE: BandCutOutline = {
   ],
   fromLengthMm: 860,
   toLengthMm: 655,
-  heightMm: 50
+  heightMm: 50,
+  kind: "rectangle"
+};
+
+// 曲線バンドの輪郭（密 polyline・kind curved）。seam-allowance 未対応の分岐を試す。
+const CURVED_OUTLINE: BandCutOutline = {
+  corners: [
+    { x: 0, y: 0 },
+    { x: 50, y: 6 },
+    { x: 100, y: 0 },
+    { x: 100, y: -40 },
+    { x: 50, y: -34 },
+    { x: 0, y: -40 }
+  ],
+  fromLengthMm: 220,
+  toLengthMm: 165,
+  heightMm: 40,
+  kind: "curved"
 };
 
 test("actual: カバー（10cm calibration square）+ A4 タイル複数枚を返す", () => {
@@ -128,4 +145,36 @@ test("on-fold determinism: 同じ入力 -> 同一ページ配列（T10）", () =
     renderBandCutsheet({ outline: OUTLINE, scale: "actual", seamAllowanceMm: 10, onFold: "long" }),
     renderBandCutsheet({ outline: OUTLINE, scale: "actual", seamAllowanceMm: 10, onFold: "long" })
   );
+});
+
+test("curved outline: seam-allowance は無視され仕上がり線のみ + 注記（第一スライス）", () => {
+  // 守る仕様: 曲線バンドは縫い代未対応。--seam-allowance>0 でも net 線のみにし、dimText とカバーに注記する。
+  //           型紙の破線（裁ち線 vs 仕上がり線の 2 本）は出ない。
+  const pages = renderBandCutsheet({
+    outline: CURVED_OUTLINE,
+    scale: "actual",
+    seamAllowanceMm: 10
+  });
+  const cover = pages[0]!.svg;
+  assert.match(cover, /曲線バンド（縫い代未対応・仕上がり線のみ）/); // dimText 注記
+  assert.match(cover, /曲線バンドは縫い代未対応/); // カバー手順の注記
+  assert.doesNotMatch(cover, /縫い代 10mm/); // 縫い代の寸法表記は出さない
+  const tile = pages.find((page) => page.label.startsWith("tile-"))!;
+  assert.doesNotMatch(tile.svg, /stroke-dasharray="4 2"/); // 仕上がり線 vs 裁ち線の 2 本は無い
+});
+
+test("curved outline: fit-a4 も仕上がり線のみ（縮尺ラベルは出る）", () => {
+  const pages = renderBandCutsheet({
+    outline: CURVED_OUTLINE,
+    scale: "fit-a4",
+    seamAllowanceMm: 10
+  });
+  assert.equal(pages.length, 1);
+  assert.match(pages[0]!.svg, /曲線バンド（縫い代未対応/);
+  assert.match(pages[0]!.svg, /縮尺 ≈ 1:/);
+});
+
+test("curved outline: seam-allowance 無しは注記なし（普通に仕上がり線）", () => {
+  const pages = renderBandCutsheet({ outline: CURVED_OUTLINE, scale: "fit-a4" });
+  assert.doesNotMatch(pages[0]!.svg, /縫い代未対応/);
 });
