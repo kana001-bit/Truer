@@ -255,6 +255,21 @@ async function runPropose(args: string[]): Promise<number> {
     return 2;
   }
 
+  // --cut 系オプション（--scale / --seam-allowance / --on-fold）は --cut と組でないと意味を持たない。
+  // --cut 無しで渡されたら silent に無視せず usage error にする（打ち間違いを exit 0 で見逃さないため）。
+  if (
+    !options.cutRequested &&
+    (options.scale !== undefined ||
+      options.seamAllowanceMm !== undefined ||
+      options.onFold !== undefined)
+  ) {
+    process.stderr.write(
+      "tru propose: --scale / --seam-allowance / --on-fold は --cut と一緒に指定してください。\n\n" +
+        USAGE
+    );
+    return 2;
+  }
+
   // --cut は --scale 必須（band cut と同じ）。欠落は file も slnt も触る前に usage error（exit 2）で止める。
   if (options.cutRequested && options.scale !== "fit-a4" && options.scale !== "actual") {
     process.stderr.write("tru propose: --cut requires --scale fit-a4|actual.\n\n" + USAGE);

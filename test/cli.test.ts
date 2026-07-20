@@ -662,3 +662,17 @@ test("propose without --cut writes no cutsheet (opt-in)", () => {
   const svgs = readdirSync(dir).filter((file) => file.endsWith(".svg"));
   assert.deepEqual(svgs, []);
 });
+
+test("propose: --scale / --seam-allowance / --on-fold は --cut 無しだと usage error (exit 2)", () => {
+  // 守る仕様 (P2): cut 専用オプションを --cut 無しで渡す打ち間違いを silent 無視せず exit 2 にする。
+  //           diagnostic チェックの直後・file も slnt も触る前で止まる（x.dxf / r.json は存在不要）。
+  for (const extra of [
+    ["--scale", "actual"],
+    ["--seam-allowance", "10"],
+    ["--on-fold", "long"]
+  ]) {
+    const result = runTru(["propose", "x.dxf", "--diagnostic", "r.json", ...extra]);
+    assert.equal(result.status, 2, `${extra.join(" ")}: ${result.stdout}${result.stderr}`);
+    assert.match(result.stderr, /--cut と一緒に指定/);
+  }
+});
