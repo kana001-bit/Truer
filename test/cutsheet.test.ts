@@ -62,3 +62,19 @@ test("title を出す（任意見出し・カバーに）", () => {
   const pages = renderBandCutsheet({ outline: OUTLINE, scale: "actual", title: "WAISTBAND" });
   assert.match(pages[0]!.svg, /WAISTBAND/);
 });
+
+test("seam allowance: 裁ち線（実線）+ 仕上がり線（破線）を出し、カバーに縫い代を明記", () => {
+  // 守る仕様: seamAllowanceMm>0 で裁ち線（net の外）を主線に、仕上がり線を破線で残す。カバーに縫い代表示。
+  const pages = renderBandCutsheet({ outline: OUTLINE, scale: "actual", seamAllowanceMm: 10 });
+  assert.match(pages[0]!.svg, /縫い代 10mm/);
+  const tile = pages.find((page) => page.label.startsWith("tile-"))!;
+  assert.match(tile.svg, /stroke-dasharray="4 2"/); // 仕上がり線（破線・型紙線）
+});
+
+test("seam allowance 省略（=0）は仕上がり線のみ（型紙の破線なし・縫い代表示なし）", () => {
+  const pages = renderBandCutsheet({ outline: OUTLINE, scale: "actual" });
+  assert.doesNotMatch(pages[0]!.svg, /縫い代/);
+  const tile = pages.find((page) => page.label.startsWith("tile-"))!;
+  // content 境界の破線（"2 2"）はあるが、型紙の破線（"4 2"）は無い。
+  assert.doesNotMatch(tile.svg, /stroke-dasharray="4 2"/);
+});
