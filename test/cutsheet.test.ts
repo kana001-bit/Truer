@@ -17,38 +17,48 @@ const OUTLINE: BandCutOutline = {
   heightMm: 50
 };
 
-test("actual: mm 実寸の SVG（1:1・原寸検証用の 100mm 定規つき）", () => {
-  // 守る仕様: actual は 1:1。ページは輪郭＋余白＋ラベル帯の mm 実寸で、100% 印刷が原寸になる。
-  const svg = renderBandCutsheet({ outline: OUTLINE, scale: "actual" });
-  // 幅 = 655 + 余白 2×12 = 679mm、viewBox も mm 同値（1 unit = 1mm）。
-  assert.match(svg, /width="679mm"/);
-  assert.match(svg, /viewBox="0 0 679 100"/);
-  // 輪郭は 1:1: 左上角 (381.2,1074.5)→(12,12)、右上角 (1036.2,1074.5)→(667,12)。
-  assert.match(svg, /<polygon points="[^"]*12,12[^"]*667,12/);
-  // 寸法ラベルと 100mm スケール定規（倍率検証）。
-  assert.match(svg, /補正後バンド 655 × 50 mm/);
-  assert.match(svg, /100mm/);
+test("actual: カバー（10cm calibration square）+ A4 タイル複数枚を返す", () => {
+  // 守る仕様: actual は 1:1。A4 に収まらないので、実寸確認の 10cm 四角つきカバー + A4 タイルを返す。
+  //           印刷倍率の担保（calibration square）を必ず載せる。
+  const pages = renderBandCutsheet({ outline: OUTLINE, scale: "actual" });
+  assert.ok(pages.length >= 2, `cover + tiles: ${pages.length}`);
+
+  const cover = pages[0]!;
+  assert.equal(cover.label, "calibration");
+  assert.match(cover.svg, /width="210mm" height="297mm"/); // A4 portrait
+  assert.match(cover.svg, /10cm/); // calibration square の見出し
+  assert.match(cover.svg, /width="100" height="100"/); // 10cm×10cm の実寸四角
+  assert.match(cover.svg, /補正後バンド 655 × 50 mm/);
+
+  const tiles = pages.slice(1);
+  assert.ok(tiles.length >= 1, "at least one tile");
+  for (const tile of tiles) {
+    assert.match(tile.label, /^tile-\d+of\d+$/);
+    assert.match(tile.svg, /width="\d+(\.\d+)?mm" height="\d+(\.\d+)?mm"/);
+    assert.match(tile.svg, /clip-path="url\(#tileclip\)"/); // 型紙線を content にクリップ
+  }
 });
 
-test("fit-a4: A4 1 ページに収める（縮尺ラベルつきミニチュア）", () => {
-  // 守る仕様: fit-a4 は A4 1 枚。横長の帯なので landscape（297×210mm）を選び、縮尺を明記する。
-  const svg = renderBandCutsheet({ outline: OUTLINE, scale: "fit-a4" });
+test("fit-a4: A4 1 ページに収める（縮尺ラベルつきミニチュア・1 ページ）", () => {
+  const pages = renderBandCutsheet({ outline: OUTLINE, scale: "fit-a4" });
+  assert.equal(pages.length, 1);
+  assert.equal(pages[0]!.label, "");
+  const svg = pages[0]!.svg;
   assert.match(svg, /width="297mm"/);
   assert.match(svg, /height="210mm"/);
-  assert.match(svg, /viewBox="0 0 297 210"/);
   assert.match(svg, /縮尺 ≈ 1:/);
   assert.match(svg, /ミニチュア/);
 });
 
-test("determinism: 同じ入力 -> 同一 SVG 文字列", () => {
-  // 守る仕様: pure・決定的。同じ入力から byte 一致。
-  assert.equal(
+test("determinism: 同じ入力 -> 同一ページ配列", () => {
+  // 守る仕様: pure・決定的。同じ入力から byte 一致のページ配列。
+  assert.deepEqual(
     renderBandCutsheet({ outline: OUTLINE, scale: "actual", title: "WAISTBAND" }),
     renderBandCutsheet({ outline: OUTLINE, scale: "actual", title: "WAISTBAND" })
   );
 });
 
-test("title を出す（任意見出し）", () => {
-  const svg = renderBandCutsheet({ outline: OUTLINE, scale: "fit-a4", title: "WAISTBAND" });
-  assert.match(svg, /WAISTBAND/);
+test("title を出す（任意見出し・カバーに）", () => {
+  const pages = renderBandCutsheet({ outline: OUTLINE, scale: "actual", title: "WAISTBAND" });
+  assert.match(pages[0]!.svg, /WAISTBAND/);
 });
