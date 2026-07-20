@@ -123,3 +123,78 @@ test("propose with a bandEdge-less band report exits 0 and records the skip (sln
   assert.equal(file.skipped[0]!.code, "proposal.missing_band_fields");
   assert.equal(file.skipped[0]!.diagnosticCode, "geometry.band_seam_sum_mismatch");
 });
+
+// ---- <pattern.dxf> optional 化（cwd 単一 DXF 探索）----
+
+// tru.ts の絶対パス。cwd を temp dir に差し替えて起動するため、相対パスではなく絶対で渡す。
+const TRU_ABS = join(process.cwd(), "src/cli/tru.ts");
+function runTruIn(cwd: string, args: string[]) {
+  return spawnSync(process.execPath, [TRU_ABS, ...args], { cwd, encoding: "utf8" });
+}
+// 診断ゼロの report（slnt を spawn せず 0 proposal で exit 0 になる最小形）。dxf 解決だけを検証する。
+const EMPTY_REPORT = { status: "ok", target: "geometry-request", diagnostics: [], reports: [] };
+
+test("usage shows <pattern.dxf> is optional", () => {
+  // 守る仕様: propose/apply の usage が <pattern.dxf> を [ ] 付き（省略可）で示す。
+  const result = runTru(["--help"]);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /\[<pattern\.dxf>\]/);
+});
+
+test("propose omits <pattern.dxf>: resolves the single DXF in cwd", () => {
+  // 守る仕様: 「1 プロジェクト = 1 DXF」の通常運用は引数ゼロで通る。cwd 直下に *.dxf が 1 つなら
+  //           それを source にして propose が成立する（proposal.source.file がその DXF を指す）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-dxf-solo-"));
+  writeFileSync(join(dir, "solo.dxf"), "x");
+  writeFileSync(join(dir, "empty.report.json"), JSON.stringify(EMPTY_REPORT));
+  const outPath = join(dir, "p.json");
+
+  const result = runTruIn(dir, ["propose", "--diagnostic", "empty.report.json", "--out", outPath]);
+  assert.equal(result.status, 0);
+
+  const file = JSON.parse(readFileSync(outPath, "utf8")) as { source: { file: string } };
+  assert.match(file.source.file, /solo\.dxf$/);
+});
+
+test("propose omits <pattern.dxf>: multiple DXFs in cwd is a usage error (exit 2)", () => {
+  // 守る仕様: cwd に *.dxf が複数あるときは推測せず exit 2 で明示指定を促す（両ファイル名を挙げる）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-dxf-multi-"));
+  writeFileSync(join(dir, "a.dxf"), "x");
+  writeFileSync(join(dir, "b.dxf"), "x");
+
+  const result = runTruIn(dir, ["propose", "--diagnostic", "whatever.json"]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /複数あります/);
+  assert.match(result.stderr, /a\.dxf/);
+  assert.match(result.stderr, /b\.dxf/);
+});
+
+test("propose omits <pattern.dxf>: no DXF in cwd is a usage error (exit 2)", () => {
+  // 守る仕様: cwd に *.dxf が無ければ exit 2 でパス指定を促す（黙って 0 件処理にしない）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-dxf-none-"));
+
+  const result = runTruIn(dir, ["propose", "--diagnostic", "whatever.json"]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /DXF が見つかりません/);
+});
+
+test("propose explicit <pattern.dxf> overrides cwd auto-discovery", () => {
+  // 守る仕様: 明示パスを渡せば cwd に複数 DXF があっても曖昧にならない（override として存続、廃止しない）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-dxf-override-"));
+  writeFileSync(join(dir, "a.dxf"), "x");
+  writeFileSync(join(dir, "b.dxf"), "x");
+  writeFileSync(join(dir, "empty.report.json"), JSON.stringify(EMPTY_REPORT));
+  const outPath = join(dir, "p.json");
+
+  const result = runTruIn(dir, [
+    "propose",
+    "a.dxf",
+    "--diagnostic",
+    "empty.report.json",
+    "--out",
+    outPath
+  ]);
+  assert.equal(result.status, 0);
+  const file = JSON.parse(readFileSync(outPath, "utf8")) as { source: { file: string } };
+  assert.match(file.source.file, /a\.dxf$/);
+});

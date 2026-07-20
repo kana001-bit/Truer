@@ -4,7 +4,7 @@
 // 作る。`apply` は accept された proposal の補正 geometry を、--out の Truer 所有 DXF に書く
 //（M3: 書き先はこの裁断用の補正済み DXF であって、.val/Loomit ではない）。
 
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
 import { createProposalFile } from "../core/proposal/createProposalFile.ts";
@@ -32,8 +32,10 @@ import { isSameFilePath } from "./samePath.ts";
 const USAGE = `tru — Truer CLI (MVP)
 
 Usage:
-  tru propose <pattern.dxf> --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--slnt <cmd>]
-  tru apply   <pattern.dxf> --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
+  tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--slnt <cmd>]
+  tru apply   [<pattern.dxf>] --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
+
+  <pattern.dxf> は省略可: 省略時は cwd 直下の *.dxf を使う（ちょうど 1 つのとき。0/複数なら明示指定を促す）。
 
 Commands:
   propose   Seamlint 診断 (DXF) から補正案 (proposal) と preview を作る。source は書き換えない。
@@ -155,6 +157,32 @@ function defaultProposalOutPath(dxfFile: string): string {
   return join("output", `${basename(dxfFile, extname(dxfFile))}.proposal.json`);
 }
 
+// <pattern.dxf> 省略時の解決。cwd 直下（非再帰）の *.dxf を探し、ちょうど 1 つならそれを使う。
+// 「1 プロジェクト = 1 DXF（全パーツ同梱）」の通常運用を引数ゼロで通すため。0 個 / 複数個は推測せず
+// error にして明示指定を促す（複数 = シナリオ別 DXF 等）。Seamlint report は source パスを持たないので、
+// 探索元は filesystem（実行ディレクトリ）だけ。orchestration の loom は常に明示パスを渡すので影響なし。
+async function resolveDxfFile(explicit: string | undefined): Promise<string> {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const entries = await readdir(process.cwd(), { withFileTypes: true });
+  const dxfs = entries
+    .filter((entry) => entry.isFile() && extname(entry.name).toLowerCase() === ".dxf")
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+  if (dxfs.length === 1) {
+    return dxfs[0]!;
+  }
+  if (dxfs.length === 0) {
+    throw new Error(
+      "カレントディレクトリに DXF が見つかりません。<pattern.dxf> でパスを指定してください。"
+    );
+  }
+  throw new Error(
+    `カレントディレクトリに DXF が複数あります (${dxfs.join(", ")})。<pattern.dxf> でどれを使うか指定してください。`
+  );
+}
+
 async function runPropose(args: string[]): Promise<number> {
   let options: ProposeOptions;
   try {
@@ -164,12 +192,20 @@ async function runPropose(args: string[]): Promise<number> {
     return 2;
   }
 
-  if (!options.dxfFile || !options.diagnostic) {
-    process.stderr.write("tru propose: <pattern.dxf> and --diagnostic are required.\n\n" + USAGE);
+  if (!options.diagnostic) {
+    process.stderr.write("tru propose: --diagnostic is required.\n\n" + USAGE);
     return 2;
   }
 
-  const dxfText = await readFile(options.dxfFile, "utf8");
+  let dxfFile: string;
+  try {
+    dxfFile = await resolveDxfFile(options.dxfFile);
+  } catch (error) {
+    process.stderr.write(`tru propose: ${errorMessage(error)}\n\n${USAGE}`);
+    return 2;
+  }
+
+  const dxfText = await readFile(dxfFile, "utf8");
   const reportText = await readFile(options.diagnostic, "utf8");
 
   let diagnostics;
@@ -181,15 +217,15 @@ async function runPropose(args: string[]): Promise<number> {
   }
 
   const slntCommand = options.slnt ? tokenizeCommand(options.slnt) : resolveSlntCommand();
-  const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile: options.dxfFile });
+  const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile });
   // Windows で slnt が .cmd/.bat かつ dxf パスに定義済み %VAR% があると cmd.exe が展開して失敗しうる。事前に警告。
-  const cmdRisk = detectCmdPercentRisk(slntCommand, [options.dxfFile]);
+  const cmdRisk = detectCmdPercentRisk(slntCommand, [dxfFile]);
   if (cmdRisk) {
     process.stderr.write(`tru propose: warning: ${cmdRisk}\n`);
   }
 
   const file = createProposalFile({
-    sourceFile: options.dxfFile,
+    sourceFile: dxfFile,
     sourceText: dxfText,
     diagnostics,
     // curve_kink は単一 edge を diagnostic の actual.edge address から解決する（Seamlint
@@ -206,7 +242,7 @@ async function runPropose(args: string[]): Promise<number> {
   // --out は任意。省略時は output/<dxf 名>.proposal.json を既定にし、親ディレクトリが無ければ作る。
   // loom 経由の match では loom が常に絶対 --out（<outputs.dir>/match/<from>-<to>.proposal.json）を
   // 渡すので、この既定は直叩きデバッグ用。指定パスの親も無ければ作る（loom の match/ サブディレクトリ対応）。
-  const outPath = options.out ?? defaultProposalOutPath(options.dxfFile);
+  const outPath = options.out ?? defaultProposalOutPath(dxfFile);
   await mkdir(dirname(outPath), { recursive: true });
   await writeFile(outPath, JSON.stringify(file, null, 2) + "\n", "utf8");
   process.stdout.write(
@@ -230,23 +266,29 @@ async function runApply(args: string[]): Promise<number> {
     return 2;
   }
 
-  if (!options.dxfFile || !options.proposal || !options.out) {
-    process.stderr.write(
-      "tru apply: <pattern.dxf>, --proposal, and --out are required.\n\n" + USAGE
-    );
+  if (!options.proposal || !options.out) {
+    process.stderr.write("tru apply: --proposal and --out are required.\n\n" + USAGE);
+    return 2;
+  }
+
+  let dxfFile: string;
+  try {
+    dxfFile = await resolveDxfFile(options.dxfFile);
+  } catch (error) {
+    process.stderr.write(`tru apply: ${errorMessage(error)}\n\n${USAGE}`);
     return 2;
   }
 
   // source の上書きは決してしない: apply は --out のみ、in-place は禁止（T1）。Windows では
   // case を無視するので、大文字小文字だけの違い（C:\Foo と c:\foo = 同じ file）でも guard に掛かる。
-  if (isSameFilePath(options.out, options.dxfFile)) {
+  if (isSameFilePath(options.out, dxfFile)) {
     process.stderr.write(
       "tru apply: apply.out_overwrites_source: --out must not be the source DXF path.\n"
     );
     return 1;
   }
 
-  const dxfText = await readFile(options.dxfFile, "utf8");
+  const dxfText = await readFile(dxfFile, "utf8");
   const proposalText = await readFile(options.proposal, "utf8");
 
   let parsed: unknown;
@@ -264,8 +306,8 @@ async function runApply(args: string[]): Promise<number> {
   const file = parsed as ProposalFile;
 
   const slntCommand = options.slnt ? tokenizeCommand(options.slnt) : resolveSlntCommand();
-  const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile: options.dxfFile });
-  const cmdRisk = detectCmdPercentRisk(slntCommand, [options.dxfFile]);
+  const runEdges = createSlntEdgesRunner({ slntCommand, dxfFile });
+  const cmdRisk = detectCmdPercentRisk(slntCommand, [dxfFile]);
   if (cmdRisk) {
     process.stderr.write(`tru apply: warning: ${cmdRisk}\n`);
   }
