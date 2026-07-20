@@ -407,6 +407,48 @@ test("cut: non-rectangle band is skipped without writing (fake slnt returns tria
   assert.equal(existsSync(out), false);
 });
 
+test("cut: --seam-allowance をカバーに反映", () => {
+  // 守る仕様: --seam-allowance <mm> が cutsheet に通り、カバーに縫い代が明記される。
+  const dir = mkdtempSync(join(tmpdir(), "truer-cut-sa-"));
+  const pp = writeBandProposal(dir);
+  const slnt = writeFakeSlnt(dir, "rect");
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const out = join(dir, "cut.svg");
+  const result = runTruIn(dir, [
+    "cut",
+    "pattern.dxf",
+    "--proposal",
+    pp,
+    "--scale",
+    "actual",
+    "--seam-allowance",
+    "15",
+    "--slnt",
+    `node ${slnt}`,
+    "--out",
+    out
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(readFileSync(join(dir, "cut.calibration.svg"), "utf8"), /縫い代 15mm/);
+});
+
+test("cut: --seam-allowance が負なら usage error (exit 2)", () => {
+  const result = runTru([
+    "cut",
+    "x.dxf",
+    "--proposal",
+    "p.json",
+    "--scale",
+    "actual",
+    "--seam-allowance",
+    "-5",
+    "--out",
+    "o.svg"
+  ]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /seam-allowance must be a non-negative number/);
+});
+
 test("cut: 同一 block を指す複数提案は proposal.id で別ファイルに分ける（上書きしない, P2）", () => {
   // 守る仕様: blockName は一意でない。同じ band block（WAISTBAND）への cut 対象が複数あっても、
   //           一意な proposal.id でファイル名を分け、先に書いた成果物を静かに上書きしない。
