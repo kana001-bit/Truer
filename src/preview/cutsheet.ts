@@ -69,6 +69,8 @@ interface Frame {
   readonly allowance: number;
   // わ辺（縫い代 0）の netCorners index。onFold 指定 + 縫い代>0 のときだけ。ラベル・注記に使う。
   readonly foldIndex?: number;
+  // 曲線バンドで --seam-allowance>0 が要求されたが未対応で無視した（net 線のみ）ときの注記フラグ。
+  readonly curvedSeamAllowanceIgnored: boolean;
 }
 
 // SVG 数値の決定的な整形（3 桁で丸め、末尾ゼロは String に任せる）。
@@ -120,8 +122,14 @@ function closedPath(
   return `<polygon points="${pts}" fill="none" stroke="${stroke}" stroke-width="${width}"${dash}${clip} />`;
 }
 
-function dimText(outline: BandCutOutline, allowance: number, hasFold = false): string {
+function dimText(
+  outline: BandCutOutline,
+  allowance: number,
+  hasFold = false,
+  curvedNote = false
+): string {
   const base = `補正後バンド ${n(outline.toLengthMm)} × ${n(outline.heightMm)} mm（元 ${n(outline.fromLengthMm)} → ${n(outline.toLengthMm)} mm）`;
+  if (curvedNote) return `${base} · 曲線バンド（縫い代未対応・仕上がり線のみ）`;
   if (allowance <= 0) return base;
   const fold = hasFold ? " · わ辺=縫い代 0" : "";
   return `${base} · 縫い代 ${n(allowance)}mm（実線=裁ち線 / 破線=仕上がり線）${fold}`;
@@ -149,9 +157,14 @@ function foldLabel(frame: Frame, toXY: (point: Point) => Point, fontSize: number
 
 export function renderBandCutsheet(input: BandCutsheetInput): CutsheetPage[] {
   const netCorners = input.outline.corners;
-  const allowance = input.seamAllowanceMm && input.seamAllowanceMm > 0 ? input.seamAllowanceMm : 0;
-  // わ辺（on the fold）は縫い代 0。onFold 指定 + 縫い代>0 のときだけ、その辺の allowance を 0 にする（案A:
-  // 形は変えず裁ち線を出さないだけ）。指定が無ければ従来どおり全辺一様。
+  // 曲線バンドは seam-allowance / わ辺が未対応（第一スライス）: net 線のみ。要求されていれば注記する。
+  const isCurved = input.outline.kind === "curved";
+  const requestedAllowance =
+    input.seamAllowanceMm && input.seamAllowanceMm > 0 ? input.seamAllowanceMm : 0;
+  const allowance = isCurved ? 0 : requestedAllowance;
+  const curvedSeamAllowanceIgnored = isCurved && requestedAllowance > 0;
+  // わ辺（on the fold）は縫い代 0。onFold 指定 + 縫い代>0（＝矩形）のときだけ、その辺の allowance を 0 にする
+  // （案A: 形は変えず裁ち線を出さないだけ）。指定が無ければ従来どおり全辺一様。
   const foldIndex =
     allowance > 0 && input.onFold ? foldEdgeIndex(netCorners, input.onFold) : undefined;
   // 裁ち線 = net を外側へ縫い代ぶんオフセット（矩形）。わ辺は 0、他辺は allowance。縫い代 0 なら net と同一。
@@ -175,6 +188,7 @@ export function renderBandCutsheet(input: BandCutsheetInput): CutsheetPage[] {
     cutCorners,
     netCorners,
     allowance,
+    curvedSeamAllowanceIgnored,
     ...(foldIndex !== undefined ? { foldIndex } : {})
   };
   return input.scale === "fit-a4"
@@ -231,7 +245,12 @@ function renderFitA4(frame: Frame): string {
       labelY,
       4,
       INK,
-      dimText(input.outline, allowance, frame.foldIndex !== undefined)
+      dimText(
+        input.outline,
+        allowance,
+        frame.foldIndex !== undefined,
+        frame.curvedSeamAllowanceIgnored
+      )
     ),
     text(
       MARGIN_MM,
@@ -286,7 +305,13 @@ function renderActualPages(frame: Frame): CutsheetPage[] {
   const pages: CutsheetPage[] = [
     {
       label: "calibration",
-      svg: renderCoverPage(input, grid, allowance, frame.foldIndex !== undefined)
+      svg: renderCoverPage(
+        input,
+        grid,
+        allowance,
+        frame.foldIndex !== undefined,
+        frame.curvedSeamAllowanceIgnored
+      )
     }
   ];
   let index = 0;
@@ -323,7 +348,8 @@ function renderCoverPage(
   input: BandCutsheetInput,
   grid: Grid,
   allowance: number,
-  hasFold: boolean
+  hasFold: boolean,
+  curvedNote: boolean
 ): string {
   const x = PAGE_MARGIN_MM + 6;
   let y = PAGE_MARGIN_MM + 12;
@@ -333,8 +359,21 @@ function renderCoverPage(
     parts.push(text(x, y, 4, MUTED, input.title));
     y += 6;
   }
-  parts.push(text(x, y, 4, INK, dimText(input.outline, allowance, hasFold)));
-  y += 10;
+  parts.push(text(x, y, 4, INK, dimText(input.outline, allowance, hasFold, curvedNote)));
+  y += 6;
+  if (curvedNote) {
+    parts.push(
+      text(
+        x,
+        y,
+        3.8,
+        MUTED,
+        "曲線バンドは縫い代未対応（仕上がり線のみ）。裁つときは手で縫い代を足す。"
+      )
+    );
+    y += 6;
+  }
+  y += 4;
 
   parts.push(text(x, y, 4.5, INK, "① 実寸確認 — この四角を印刷後に定規で測る"));
   y += 5;
