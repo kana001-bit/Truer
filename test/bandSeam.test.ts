@@ -14,13 +14,40 @@ const BAND_POINTS = [
   { x: 0, y: 0 },
   { x: 350, y: 0 }
 ];
+// neighbour 辺の net-line points（overlay に「形」で描く。FRONT は 3 点でわずかに曲がる、BACK は直線）。
+const FRONT_POINTS = [
+  { x: 0, y: 0 },
+  { x: 80, y: 8 },
+  { x: 165, y: 0 }
+];
+const BACK_POINTS = [
+  { x: 0, y: 0 },
+  { x: 162.5, y: 0 }
+];
 
+// band 辺だけ知る runner（neighbour block は throw）。neighbour points は解決されない（非致命, 描かない）。
 function bandRunner(): SlntEdgesRunner {
   return (blockName): SlntEdgesResult => {
     if (blockName === "WAISTBAND") {
       return { blockName, edges: [{ edgeId: 0, points: BAND_POINTS }] };
     }
     throw new Error(`unexpected block ${blockName}`);
+  };
+}
+
+// band 辺 + neighbour 辺（FRONT/BACK）を返す runner。neighbour の形を overlay に描けるようになる。
+function fullRunner(): SlntEdgesRunner {
+  return (blockName): SlntEdgesResult => {
+    switch (blockName) {
+      case "WAISTBAND":
+        return { blockName, edges: [{ edgeId: 0, points: BAND_POINTS }] };
+      case "FRONT":
+        return { blockName, edges: [{ edgeId: 0, points: FRONT_POINTS }] };
+      case "BACK":
+        return { blockName, edges: [{ edgeId: 0, points: BACK_POINTS }] };
+      default:
+        throw new Error(`unexpected block ${blockName}`);
+    }
   };
 }
 
@@ -91,6 +118,48 @@ test("buildResolveBandSeam resolves the band edge and carries neighbours (edgeId
   assert.equal(result.reference, undefined);
 });
 
+test("buildResolveBandSeam resolves neighbour edge points for the overlay (band-edge parity)", () => {
+  // 守る仕様: neighbour 辺の net-line points を band 辺と同型に slnt から解決し、overlay に「形」で描ける
+  //           ようにする（edgeId を join key に。>2 点の polyline も通す）。数値（finished/cut）は従来どおり。
+  const result = buildResolveBandSeam(fullRunner())(bandDiagnostic());
+  assert.equal(result.status, "resolved");
+  if (result.status !== "resolved") return;
+  assert.deepEqual(result.neighbours[0]!.points, FRONT_POINTS);
+  assert.deepEqual(result.neighbours[1]!.points, BACK_POINTS);
+});
+
+test("buildResolveBandSeam keeps a neighbour without points when its edge cannot be resolved (non-fatal, T8)", () => {
+  // 守る仕様 (T8 / robustness): neighbour 辺の解決は overlay の表示補助。slnt が neighbour block で失敗しても
+  //           propose 全体を落とさず、その neighbour は points 無し（描かないだけ）で数値は残す。band 辺
+  //           （target）の解決は従来どおり必須。
+  const partialRunner: SlntEdgesRunner = (blockName): SlntEdgesResult => {
+    if (blockName === "WAISTBAND")
+      return { blockName, edges: [{ edgeId: 0, points: BAND_POINTS }] };
+    if (blockName === "FRONT") return { blockName, edges: [{ edgeId: 0, points: FRONT_POINTS }] };
+    throw new Error(`slnt failed for ${blockName}`); // BACK は取れない
+  };
+  const result = buildResolveBandSeam(partialRunner)(bandDiagnostic());
+  assert.equal(result.status, "resolved");
+  if (result.status !== "resolved") return;
+  assert.deepEqual(result.neighbours[0]!.points, FRONT_POINTS);
+  assert.equal(result.neighbours[1]!.points, undefined); // BACK: 描かないだけ
+  assert.equal(result.neighbours[1]!.finishedLengthMm, 162.5); // 数値は残る
+});
+
+test("buildResolveBandSeam leaves neighbour points unresolved when the edgeId is absent from slnt (T8)", () => {
+  // 守る仕様 (T8): 住所は解けても slnt にその edgeId の辺が無ければ points 無し（推測しない）。数値は残す。
+  const noEdgeRunner: SlntEdgesRunner = (blockName): SlntEdgesResult => {
+    if (blockName === "WAISTBAND")
+      return { blockName, edges: [{ edgeId: 0, points: BAND_POINTS }] };
+    return { blockName, edges: [] }; // FRONT/BACK には edge が無い
+  };
+  const result = buildResolveBandSeam(noEdgeRunner)(bandDiagnostic());
+  assert.equal(result.status, "resolved");
+  if (result.status !== "resolved") return;
+  assert.equal(result.neighbours[0]!.points, undefined);
+  assert.equal(result.neighbours[1]!.points, undefined);
+});
+
 test("buildResolveBandSeam decides reference: band fixed vs neighbours fixed (blockName match)", () => {
   // 守る仕様: --reference の BLOCK 名が band 側だけに一致 → "band"、neighbour 側だけ → "neighbours"。
   //           両方一致 / どちらも不一致 / 未指定は undecided（T6）。
@@ -154,7 +223,9 @@ test("buildResolveBandSeam returns not-found for a degenerate band cut or a malf
 test("band builder emits a preview-only bandReconciliation; targetBandLengthMm only when band conforms", () => {
   // 守る仕様: reference="neighbours"（band が conform）のとき targetBandLengthMm = (sumMm + declaredClosure)
   //           / bandCutQuantity = 655/2 = 327.5 を出す。band 固定 / 未指定では出さない（T6）。どれも
-  //           preview-only / changes:[]。band 辺だけ preview に描く（self-contained: digest 一致）。
+  //           preview-only / changes:[]。この test の bandRunner は band 辺だけ解決する（neighbour block は
+  //           throw）ので preview は band 辺 1 本（self-contained: digest 一致）。neighbour 辺の描画は
+  //           fullRunner を使う別 test が担保する。
   const input = {
     sourceFile: "cycling_knickers.dxf",
     sourceText: "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
@@ -180,7 +251,8 @@ test("band builder emits a preview-only bandReconciliation; targetBandLengthMm o
   assert.equal(proposal.mode, "preview-only");
   assert.deepEqual(proposal.changes, []);
   assert.equal(proposal.intent.kind, "reconcile-band-seam");
-  // preview: band 辺 1 本。self-contained（描く points が bandEdge.edgeDigest に digest される）。
+  // preview: bandRunner は neighbour block を解決しないので band 辺 1 本だけ。self-contained（描く points が
+  // bandEdge.edgeDigest に digest される）。
   const edges = proposal.preview.edges!;
   assert.equal(edges.length, 1);
   assert.equal(edges[0]!.role, "band");
@@ -245,6 +317,77 @@ test("band builder is deterministic; preview renders the band panel (no correcte
   assert.match(svg, /closure/);
   // preview-only: 補正後（青 CORRECTED_COLOR #2563eb）の line は描かない。
   assert.doesNotMatch(svg, /#2563eb/);
+});
+
+test('band builder draws resolved neighbour edges in the preview (role "neighbour")', () => {
+  // 守る仕様: points が解決できた neighbour 辺を preview.edges に role "neighbour" で積む（overlay に形でも
+  //           見せる）。band 辺（role "band"）は先頭・self-contained のまま。neighbour は digest を持たない
+  //           表示補助で、validation は role "neighbour" を許可する（additive, T9）。順序は band→neighbours。
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
+    diagnostics: [bandDiagnostic()],
+    resolveTarget: () => ({ status: "not-found" as const }),
+    resolveBandSeam: buildResolveBandSeam(fullRunner(), ["FRONT"])
+  });
+  assert.deepEqual(validateProposalFile(file), []);
+  const proposal = file.proposals[0]!;
+  const edges = proposal.preview.edges!;
+  assert.equal(edges.length, 3); // band + FRONT + BACK
+  assert.equal(edges[0]!.role, "band");
+  assert.equal(edges[1]!.role, "neighbour");
+  assert.equal(edges[2]!.role, "neighbour");
+  assert.deepEqual(edges[1]!.points, FRONT_POINTS);
+  assert.deepEqual(edges[2]!.points, BACK_POINTS);
+  // band 辺だけが digest 整合（self-contained）。neighbour は表示補助なので digest を持たない。
+  assert.equal(
+    digestEdgePoints(edges[0]!.points),
+    proposal.bandReconciliation!.bandEdge.edgeDigest
+  );
+});
+
+test("band builder omits neighbour preview edges that could not be resolved (draw nothing, T8)", () => {
+  // 守る仕様 (T8): 解決できない neighbour は preview.edges に積まない（描かないだけ）。数値行は残る。
+  const partialRunner: SlntEdgesRunner = (blockName): SlntEdgesResult => {
+    if (blockName === "WAISTBAND")
+      return { blockName, edges: [{ edgeId: 0, points: BAND_POINTS }] };
+    if (blockName === "FRONT") return { blockName, edges: [{ edgeId: 0, points: FRONT_POINTS }] };
+    throw new Error(`slnt failed for ${blockName}`);
+  };
+  const file = createProposalFile({
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
+    diagnostics: [bandDiagnostic()],
+    resolveTarget: () => ({ status: "not-found" as const }),
+    resolveBandSeam: buildResolveBandSeam(partialRunner, ["FRONT"])
+  });
+  assert.deepEqual(validateProposalFile(file), []);
+  const edges = file.proposals[0]!.preview.edges!;
+  assert.equal(edges.length, 2); // band + FRONT のみ（BACK は描かない）
+  assert.equal(edges.filter((edge) => edge.role === "neighbour").length, 1);
+  // 数値は 2 neighbour とも残る（描画と数値は別）。
+  assert.equal(file.proposals[0]!.bandReconciliation!.neighbours.length, 2);
+});
+
+test("preview renders neighbour edges as a distinct-colour strip and stays deterministic (T2/T10)", () => {
+  // 守る仕様 (T2/T10): neighbour 辺を band と別色 (#0891b2) の thumbnail で描く。preview-only なので補正線
+  //           (#2563eb) は無い。同じ入力から byte 一致。
+  const input = {
+    sourceFile: "cycling_knickers.dxf",
+    sourceText: "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
+    diagnostics: [bandDiagnostic()],
+    resolveTarget: () => ({ status: "not-found" as const }),
+    resolveBandSeam: buildResolveBandSeam(fullRunner(), ["FRONT"])
+  };
+  const svg = renderProposalPreview(createProposalFile(input));
+  assert.match(svg, /band edge/);
+  assert.match(svg, /neighbour edges/); // strip header
+  assert.match(svg, /#0891b2/); // neighbour 辺の色
+  assert.doesNotMatch(svg, /#2563eb/); // 補正線は無い
+  assert.equal(
+    JSON.stringify(createProposalFile(input)),
+    JSON.stringify(createProposalFile(input))
+  );
 });
 
 test("malformed bandReconciliation is rejected by validation", () => {

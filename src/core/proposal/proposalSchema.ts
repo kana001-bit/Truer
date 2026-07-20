@@ -130,8 +130,10 @@ export interface MovedPoint {
 // Render geometry はここに、addressing/identity は seamReconciliation に置く — 両者は
 // 意図的に分けている。
 export interface PreviewEdge {
-  // "band" は band_seam_sum_mismatch の band 辺（N-ary 経路。neighbours は数値で示し描かない first slice）。
-  role: "from" | "to" | "band";
+  // "band" は band_seam_sum_mismatch の band 辺（N-ary 経路）。"neighbour" は同じ band の隣接ピース接辺で、
+  // overlay に「形」でも見せる表示補助（points が解決できた neighbour だけ付く。数値・住所は
+  // bandReconciliation.neighbours が別に持つ）。neighbour は apply target ではないので edgeDigest は持たない。
+  role: "from" | "to" | "band" | "neighbour";
   points: Point[];
 }
 
@@ -255,8 +257,9 @@ export interface SeamReconciliation {
 }
 
 // band_seam_sum_mismatch の隣接ピース 1 枚ぶんの証跡。identity（どのピースが neighbour か）は Loomit
-// 宣言、幾何（住所・finished 長・裁断枚数）は Seamlint が測る。Truer は住所と数値を運ぶだけ
-// （first slice では points 解決も preview 描画もしない — band 辺だけ描く）。
+// 宣言、幾何（住所・finished 長・裁断枚数）は Seamlint が測る。永続 schema はここに住所と数値だけを持つ:
+// overlay に描く neighbour 辺の render geometry（points）は `preview.edges` の role "neighbour" 側に置き、
+// addressing/数値（ここ）と render geometry を意図的に分ける（band 辺 / from-to と同じ流儀）。
 export interface BandNeighbor {
   blockName: string;
   edgeId?: string;
@@ -463,13 +466,20 @@ function isFinitePoint(value: unknown): value is Point {
   );
 }
 
-// preview edge には from/to の role と、有限な net-line point が最低 2 つ要る（edge は polyline:
-// 最低 2 corner）。digest==edgeDigest の invariant はここではなく test で固定するので、
-// validation は digest module に依存しない。
+// preview edge には既知の role（from/to/band/neighbour）と、有限な net-line point が最低 2 つ要る（edge は
+// polyline: 最低 2 corner）。digest==edgeDigest の invariant（band/from/to に効く）はここではなく test で
+// 固定するので、validation は digest module に依存しない。neighbour は表示補助で digest を持たない。
 function isPreviewEdge(value: unknown): value is PreviewEdge {
   if (typeof value !== "object" || value === null) return false;
   const edge = value as Record<string, unknown>;
-  if (edge.role !== "from" && edge.role !== "to" && edge.role !== "band") return false;
+  if (
+    edge.role !== "from" &&
+    edge.role !== "to" &&
+    edge.role !== "band" &&
+    edge.role !== "neighbour"
+  ) {
+    return false;
+  }
   if (!Array.isArray(edge.points) || edge.points.length < 2) return false;
   return edge.points.every(isFinitePoint);
 }
