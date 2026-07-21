@@ -6,9 +6,11 @@
 
 Truer の CLI は小さく、次のワークフローを持つ。
 
-- 検査結果から補正案を作る: `propose`（Seamlint の diagnostic + DXF → proposal JSON、任意で preview SVG）
+- 検査結果から補正案を作る: `propose`（Seamlint の diagnostic + DXF → proposal JSON、任意で preview SVG）。
+  `--cut` を付けると band 提案を印刷用 stopgap SVG まで一気に出す。
 - 採用した補正を書き出す: `apply`（accept した proposal → 補正済み DXF を `--out` に）
-- 印刷して手で裁つ stopgap を作る: `cut`（band 提案 → 印刷用 SVG。正式パターン(DXF)は書き換えない）
+- 既存 proposal から印刷 stopgap を再レンダする: `cut`（band 提案 → 印刷用 SVG。新規は `propose --cut` 推奨。
+  正式パターン(DXF)は書き換えない）
 
 役割分担は不変。**検査は Seamlint、補正案づくりと書き込みは Truer**。Truer は source（DXF）を
 書き換えず、人間が明示的に採用した変更だけを新しいファイルへ適用する。辺ジオメトリの読みは
@@ -19,7 +21,7 @@ Seamlint の `slnt edges`（subprocess, A1）に委譲し、Truer 自身は DXF 
 Seamlint の diagnostic report と DXF から補正案（proposal）を作る。source は書き換えない。
 
 ```text
-tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--slnt <cmd>]
+tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--cut [<cut.svg>] --scale fit-a4|actual [--seam-allowance <mm>] [--on-fold long|short]] [--slnt <cmd>]
 ```
 
 オプション:
@@ -39,6 +41,12 @@ tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [
 - `--out <file>`（任意）— proposal JSON の書き出し先。**省略時は `output/<dxf 名>.proposal.json`**（親ディレクトリが
   無ければ作成）。`loom match` 経由では loom が絶対パスを組み立てて渡すので、この既定は直叩きデバッグ用。
 - `--preview <file>`（任意）— overlay SVG の書き出し先（seam の Δ / band の closure / curve_kink の before+after）。
+- `--cut [<file>]`（任意・**opt-in**）— band conform 提案を、この場で印刷 stopgap SVG に裁つ（`tru cut` を propose
+  に畳んだ口）。**指定時のみ** band ブロックの `slnt edges` 取得 + conform を走らせる（重いので既定では走らせない）。
+  値なしは既定 `output/<dxf 名>.cut.svg`。裁ち方は `tru cut` と同一レンダラ（矩形=一様 / 曲線帯=弧長スケール）。
+- `--scale <mode>` / `--seam-allowance <mm>` / `--on-fold <long|short>`（**`--cut` 専用**）— 裁つときの寸法モード /
+  縫い代 / わ辺。意味は下の `tru cut` 節と同じ。`--scale` は `--cut` 指定時 **必須**。**`--cut` 無しでこれらだけを
+  渡すと usage エラー**（打ち間違いを silent に無視しない）。
 - `--slnt <cmd>`（任意）— 辺ジオメトリを取る slnt コマンド。既定は `$SEAMLINT_CLI` または `slnt`。
 
 挙動:
@@ -55,7 +63,8 @@ tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [
     neighbours）を持ち、**`preview-only`**（band 辺だけ描き、線は引かない）。bandEdge 住所を持たない診断
     （旧 Seamlint report）は `proposal.missing_band_fields` で skip（推測しない、T6）。
 - source（DXF）・report・既存ファイルは一切書き換えない（T1）。生成物は `--out` の proposal JSON と、
-  指定時のみ `--preview` の overlay SVG。
+  指定時のみ `--preview` の overlay SVG・`--cut` の印刷 stopgap SVG（どちらも read-only な派生物。`apply` とは
+  別でゲート無し）。
 - proposal は自分の contract（`truer.proposal.v0`）を満たすことを内部で検証してから書く。
 - stdout: `propose: N proposal(s), M skipped -> <out>`。`--preview` 指定時は `preview: overlay -> <file>`。
 
@@ -100,9 +109,10 @@ tru apply [<pattern.dxf>] --proposal <proposal.json> --accepted <id...> --out <o
 
 ## `tru cut`
 
-band 提案から、印刷して手で裁つ **stopgap の SVG** を作る。`apply`（正式パターンを直す恒久策・
-accept + digest ゲート）とは別に、**ゲート無しの使い捨てアーティファクト**を出す道具。正式パターン
-（DXF）は書き換えない。
+既存の proposal JSON から、印刷して手で裁つ **stopgap の SVG** を再レンダする。`apply`（正式パターンを直す
+恒久策・accept + digest ゲート）とは別に、**ゲート無しの使い捨てアーティファクト**を出す道具。正式パターン
+（DXF）は書き換えない。**新規に診断から裁つなら `propose --cut`** を使う（同じレンダラ。`cut` は既存 proposal の
+再レンダ寄りに位置づけ直した）。
 
 ```text
 tru cut [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--seam-allowance <mm>] [--on-fold long|short] [--slnt <cmd>]
