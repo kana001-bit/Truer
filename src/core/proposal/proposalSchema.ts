@@ -7,9 +7,14 @@
 //
 // Geometry source は 2026-07-11 pivot 以降 DXF (ASTM)。直す edge は SVG path id ではなく、
 // Seamlint `structuralEdges` primitive 上の BLOCK 名 + `edgeId`/`arcRange` で addressing する
-//（docs/truer-mvp-spec.md）。この `target` 再設計は明示的で文書化された v0 schema break:
-// まだ contract を消費するものが無い（apply/preview/Studio は未実装）ので、v1 に上げず
-// v0 をその場で作り直している。
+//（docs/truer-mvp-spec.md）。この `target` 再設計は明示的で文書化された v0 schema break だが、
+// これは apply 実装前（consumer も永続 artifact も無い pre-1.0 期）に v0 を in-place で作り直したもの。
+//
+// 版管理ポリシー（2026-07-23 確定・正本は references/extensibility.md E4）: apply が M3 で v0 を
+// 消費し、propose→apply が永続 proposal.json を跨ぐようになったため、**pre-1.0 の in-place 破壊の窓は
+// 閉じた**。以降は v0 を安定契約として凍結する — 追加的な optional field は v0 のまま、既存 field の
+// rename / 削除 / 意味変更は schema id を v1 に上げる（reader は未知 schema を明示 error にする既存 gate
+// で守る: validateProposalFile と applyProposal。多版 reader は v1 を実際に切るときに追加する）。
 //
 // pure で IO を持たない。Digest は ./proposalDigest.ts から、組み立ては
 // ./createProposalFile.ts から来る。

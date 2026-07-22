@@ -81,14 +81,15 @@ MVP の入力は Seamlint の DXF check（`format:"dxf"` + `structuralEdges`）�
 
 `truer.proposal.v0` は preview / apply / 将来 Studio が読む contract。育てるときは version で守る。
 
-- **`v0` は pre-1.0（unstable）。** 最初の consumer（apply / preview / Studio のいずれか）が動くか、
-  保存して残す proposal artifact が生まれるまでは、`v0` を **in-place で破壊的に作り直してよい**
-  （semver の 0.x 慣習）。まだ誰も読まず、混ざる artifact も無いので reader が判別不能になる問題は
-  起きない。現に DXF pivot では旧 `pathId/pathDigest` → BLOCK addressing の required break を
-  `v0` 据え置きで行った（`proposalSchema.ts` 冒頭コメント）。**下の rename ルールは、この
-  「最初の consumer / persisted artifact」以降に適用される。**
+- **`v0` の pre-1.0 in-place 破壊の窓は閉じた（2026-07-23 確定）。** かつては最初の consumer
+  （apply / preview / Studio）が動くか永続 artifact が生まれるまで `v0` を **in-place で破壊的に
+  作り直してよい**としていた（semver の 0.x 慣習。DXF pivot の `pathId/pathDigest` → BLOCK addressing
+  の required break はこの窓の内側で `v0` 据え置きで行った）。だが **apply が M3 で `v0` を消費し、
+  propose→apply が永続 `proposal.json` を跨ぐ**ようになったため、この「最初の consumer / persisted
+  artifact」条件は満たされ、窓は閉じた。以降 `v0` は凍結された安定契約として扱い、**下の rename ルールを
+  常時適用する**（もう in-place 破壊の例外は無い）。
 - 後方互換な追加（新しい optional field）は `v0` のまま。既存 field の意味変更・rename・必須化は
-  version を上げる（`v1`）。**ただし上記の pre-1.0 期間は例外**：in-place で壊してよい。
+  version を上げる（`v1`）。**pre-1.0 の in-place 例外はもう無い**（上記のとおり窓は閉じた）。
 - apply / preview は `schema` を読んで分岐する。**未知 version を mis-parse せず** 明示 error
   （`apply.unsupported_schema`）にする（`critical-invariants.md` T9）。
 - 複数 version を当面サポートするなら、version ごとの reader を分け、共通の内部表現へ正規化して
