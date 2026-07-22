@@ -78,7 +78,8 @@ function applyOne(points: Point[], change: Change): Point[] {
       next[vertexIndex] = { x: change.to.x, y: change.to.y };
       return next;
     }
-    // `replace-path-data` は legacy SVG 用の kind（net-line points ではなく path の `d` 文字列を
+    // ここが当てられるのは net-line 系（NetLineChangeKind = 現状 move-vertex のみ）。
+    // `replace-path-data` は LegacyChangeKind（legacy SVG。net-line points ではなく path の `d` 文字列を
     // 操作する）なので、ここでは適用できない。これも — そして将来の / 未知の kind も — 明示的な
     // unsupported-kind error として扱う（T9）、silent skip はしない。
     default:

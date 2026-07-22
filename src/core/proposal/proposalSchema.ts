@@ -24,6 +24,12 @@ export type IntentConfidence = "low" | "medium" | "high";
 // Change kind。`apply` は `kind` で dispatch する; 未知の kind は明示的な error にし、
 // silent skip はしない（T9）。新しい kind は references/extensibility.md で足す。
 //
+// kind は 2 系統に分ける。apply の net-line 経路（applyChanges）が実際に適用できるのは
+// `NetLineChangeKind`（現状 `move-vertex` のみ）。`LegacyChangeKind`（`replace-path-data`）は DXF
+// pivot 前の SVG 経路の遺産で、net-line point 操作ではないため applyChanges は当てられない
+// （explicit unsupported、T9）。wire contract には両系統を残す（旧 proposal が持ちうる）が、
+// 型で分けて legacy が applyable に見えないようにする（隔離。削除は別判断）。
+//
 // `move-vertex` は DXF net-line 用の kind: addressing した edge の flattened polyline の
 // 内部 vertex を 1 つ新しい点へ動かす（curve_kink smoothing）。最小・局所 — vertex 1 つ
 //（T6）— で、apply が再計算しないよう self-contained に記録する（T4）。propose/preview/apply の
@@ -35,7 +41,11 @@ export type IntentConfidence = "low" | "medium" | "high";
 // `replace-path-data` は *legacy SVG* 用の kind（path の `d` 文字列を操作する）で、pivot 前の
 // svg adapter 経路のために残している。net-line point 操作ではないので、applyChanges
 //（DXF net-line point を扱う）はこれを処理しない。
-export type ChangeKind = "replace-path-data" | "move-vertex";
+// apply の net-line 経路（applyChanges）が実際に適用できる DXF change kind。
+export type NetLineChangeKind = "move-vertex";
+// DXF pivot 前の legacy SVG 経路の change kind。apply の net-line 経路では扱えない（explicit unsupported）。
+export type LegacyChangeKind = "replace-path-data";
+export type ChangeKind = NetLineChangeKind | LegacyChangeKind;
 
 // Truer が現在 correction proposal を作る Seamlint diagnostic code。
 // それ以外は diagnostic を捨てず `skipped` entry にする（T8）。
