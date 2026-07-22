@@ -13,6 +13,10 @@
 // 削減後の各点は生の POLYLINE vertex そのものなので、座標はそのまま存在する。座標が 0 個または 2 個
 // 以上の vertex に一致したら、誤った line を編集せず拒否する（T6 / T8）。
 //
+// 住所の edgeId / arcRange は「読み」側（slnt が辺を切り出す）で使う。書き側がここで edgeId を使わず
+// 座標で辺内 vertex を特定するのは、Truer が DXF を自分で parse しない A1 境界の帰結: 辺境界の解釈を
+// 書き側に持ち込まず、slnt が返した座標で一意特定し、非一意なら拒否する（上流 addressing と役割分担）。
+//
 // net line は BLOCKS section の BLOCK 内の旧式 POLYLINE（group 0 = POLYLINE、layer は group 8、続いて
 // 各 10/20 を持つ VERTEX entity、SEQEND で終わる）にある — Seamlint の dxfPath.ts が読むのと同じ形。
 
@@ -20,6 +24,11 @@ import type { Point } from "../../core/proposal/proposalSchema.ts";
 
 export const DXF_VERTEX_NOT_FOUND = "apply.dxf_vertex_not_found";
 export const DXF_VERTEX_AMBIGUOUS = "apply.dxf_vertex_ambiguous";
+
+// net line の DXF layer（group 8）。Seamlint / Valentina の net-line 規約で layer 14。Truer は DXF を
+// parse せず slnt で読む（A1）ので、書き側が層番号を直に見るのはここだけ。マジックナンバーを 1 箇所に
+// 集約し、将来 Seamlint が層を明示的に公開したらこの定数を差し替えられるようにする。
+const NET_LINE_LAYER = "14";
 
 export class DxfEditError extends Error {
   readonly code: string;
@@ -71,13 +80,13 @@ export function editNetLineVertex(
   let entity: string | null = null;
   let currentBlock: string | null = null;
   let polylineInTargetBlock = false;
-  let inTargetLayer14 = false;
+  let inTargetNetLineLayer = false;
   let vertex: PendingVertex | null = null;
   const matches: Array<{ xPart: number; yPart: number }> = [];
 
   const finalizeVertex = () => {
     if (
-      inTargetLayer14 &&
+      inTargetNetLineLayer &&
       vertex &&
       vertex.xPart !== undefined &&
       vertex.yPart !== undefined &&
@@ -107,7 +116,7 @@ export function editNetLineVertex(
       ) {
         // 現在の POLYLINE（または block/section）を抜ける: layer-14 の追跡を解除する。
         polylineInTargetBlock = false;
-        inTargetLayer14 = false;
+        inTargetNetLineLayer = false;
       }
       entity = keyword;
       if (keyword === "ENDSEC") {
@@ -117,7 +126,7 @@ export function editNetLineVertex(
         currentBlock = null;
       } else if (keyword === "POLYLINE") {
         polylineInTargetBlock = section === "BLOCKS" && currentBlock === target;
-        inTargetLayer14 = false;
+        inTargetNetLineLayer = false;
       } else if (keyword === "VERTEX") {
         vertex = {};
       }
@@ -133,7 +142,7 @@ export function editNetLineVertex(
       continue;
     }
     if (entity === "POLYLINE" && code === "8") {
-      inTargetLayer14 = polylineInTargetBlock && value.trim() === "14";
+      inTargetNetLineLayer = polylineInTargetBlock && value.trim() === NET_LINE_LAYER;
       continue;
     }
     if (entity === "VERTEX" && vertex) {
