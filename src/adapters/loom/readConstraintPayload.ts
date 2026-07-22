@@ -1,3 +1,7 @@
+// ⚠ 未結線・契約凍結（2026-07-23、レビュー D3）: この adapter は外部 JSON の境界だが、まだ CLI から
+// 呼ばれていない。上流の `loom truer request`（Slice 5）が実際に payload を出すまで shape を広げず凍結する。
+// 詳細は buildSeamProvenance.ts 冒頭の凍結ノート。
+//
 // Loomit の拘束 payload（`loom truer request` の出力 JSON）を内部 ConstraintPayload へ正規化する adapter。
 // 外部入力なので field を信頼せず `unknown` 境界で defensive に検証する（`readSeamlintReport` と同方針）。
 // 封筒 `{ payload, diagnostics }` の diagnostics は本スライスでは読まない（[C7]・診断との join は後段の仕事）。

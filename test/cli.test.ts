@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -721,4 +728,118 @@ test("propose: --scale / --seam-allowance / --on-fold は --cut 無しだと usa
     assert.equal(result.status, 2, `${extra.join(" ")}: ${result.stdout}${result.stderr}`);
     assert.match(result.stderr, /--cut と一緒に指定/);
   }
+});
+
+// ---- propose -> apply 統合（実 subprocess の slnt stub 越し。A1 境界を CLI レベルで固定）----
+//
+// これまで apply のテストは planApply / editNetLineVertex を直接注入する unit 層だった。ここでは
+// `examples/`（README の runnable loop = body-armhole.dxf + curve_kink 診断 + slnt-stub.mjs）を temp に
+// コピー/参照して、実際に `tru propose` → `tru apply` を spawn し、`--slnt "node <stub>"` で slnt subprocess の
+// spawn 経路（A1）まで通す。stub は BODY の layer-14 net line を DXF から読み、edge 0 として返す。
+const EXAMPLES_DIR = join(process.cwd(), "examples");
+const EX_DXF = join(EXAMPLES_DIR, "body-armhole.dxf");
+const EX_DIAG = join(EXAMPLES_DIR, "body-armhole.curve_kink.json");
+const EX_SLNT = `node ${join(EXAMPLES_DIR, "slnt-stub.mjs")}`;
+
+test("integration: propose -> apply through a spawned stub slnt writes the corrected DXF (A1, T1, T6)", () => {
+  // 守る仕様: 実 subprocess の slnt(stub) を通した propose→apply の通しで、propose は内部 kink を
+  //           local-adjustment(move-vertex) にし、apply は補正 DXF を --out にだけ書く。source は
+  //           1 バイトも変えず（T1）、変更は kink 頂点 1 つ（y=70→40）だけ（T6）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-e2e-"));
+  const dxf = join(dir, "pattern.dxf");
+  copyFileSync(EX_DXF, dxf);
+  const srcBefore = readFileSync(dxf, "utf8");
+  const pJson = join(dir, "p.json");
+  const fixed = join(dir, "fixed.dxf");
+
+  const propose = runTruIn(dir, [
+    "propose",
+    "pattern.dxf",
+    "--diagnostic",
+    EX_DIAG,
+    "--out",
+    pJson,
+    "--slnt",
+    EX_SLNT
+  ]);
+  assert.equal(propose.status, 0, propose.stderr);
+  const file = JSON.parse(readFileSync(pJson, "utf8")) as {
+    proposals: { id: string; mode: string; changes: { kind: string }[] }[];
+  };
+  const prop = file.proposals[0]!;
+  assert.equal(prop.mode, "local-adjustment"); // 内部 kink → 補正あり
+  assert.equal(prop.changes[0]!.kind, "move-vertex");
+
+  const apply = runTruIn(dir, [
+    "apply",
+    "pattern.dxf",
+    "--proposal",
+    pJson,
+    "--accepted",
+    prop.id,
+    "--out",
+    fixed,
+    "--slnt",
+    EX_SLNT
+  ]);
+  assert.equal(apply.status, 0, apply.stderr);
+  assert.match(apply.stdout, /1 proposal\(s\) applied/);
+
+  // source 不変 (T1)
+  assert.equal(readFileSync(dxf, "utf8"), srcBefore);
+  // 補正 DXF が書かれ、source とちょうど 1 行だけ違う (T6)
+  assert.equal(existsSync(fixed), true);
+  const afterLines = readFileSync(fixed, "utf8").split(/\r\n|\r|\n/);
+  const beforeLines = srcBefore.split(/\r\n|\r|\n/);
+  assert.equal(beforeLines.length, afterLines.length);
+  const changedIdx = beforeLines
+    .map((line, i) => (line !== afterLines[i] ? i : -1))
+    .filter((i) => i >= 0);
+  assert.equal(changedIdx.length, 1, `changed lines: ${changedIdx}`);
+  assert.equal(beforeLines[changedIdx[0]!], "70"); // kink の y=70 が
+  assert.equal(afterLines[changedIdx[0]!], "40"); // 弦上の 40 へ動いた
+});
+
+test("integration: apply refuses when the source DXF changed since propose (digest gate, T3)", () => {
+  // 守る仕様: propose 後に source（DXF）が変わったら、apply は 1 バイトも書く前に digest mismatch で
+  //           fail し、--out を作らない（T3）。propose⇔apply で source を silent に差し替えられない。
+  const dir = mkdtempSync(join(tmpdir(), "truer-e2e-digest-"));
+  const dxf = join(dir, "pattern.dxf");
+  copyFileSync(EX_DXF, dxf);
+  const pJson = join(dir, "p.json");
+  const fixed = join(dir, "fixed.dxf");
+
+  const propose = runTruIn(dir, [
+    "propose",
+    "pattern.dxf",
+    "--diagnostic",
+    EX_DIAG,
+    "--out",
+    pJson,
+    "--slnt",
+    EX_SLNT
+  ]);
+  assert.equal(propose.status, 0, propose.stderr);
+  const prop = (JSON.parse(readFileSync(pJson, "utf8")) as { proposals: { id: string }[] })
+    .proposals[0]!;
+
+  // propose 後に source を書き換える（末尾に 1 ペア足す = sourceDigest が変わる）。net line は不変だが
+  // file 全体の digest が食い違うので、file-digest gate が edge を読む前に fail する。
+  writeFileSync(dxf, readFileSync(dxf, "utf8") + "999\n999\n");
+
+  const apply = runTruIn(dir, [
+    "apply",
+    "pattern.dxf",
+    "--proposal",
+    pJson,
+    "--accepted",
+    prop.id,
+    "--out",
+    fixed,
+    "--slnt",
+    EX_SLNT
+  ]);
+  assert.equal(apply.status, 1);
+  assert.match(apply.stderr, /digest_mismatch/);
+  assert.equal(existsSync(fixed), false); // 何も書かない
 });

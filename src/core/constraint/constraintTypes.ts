@@ -1,3 +1,7 @@
+// ⚠ 未結線・契約凍結（2026-07-23、レビュー D3）: constraint provenance 第一スライスの内部表現。まだ
+// CLI / proposal から参照されていない。上流（Loomit Slice 5 / 測定辺突き合わせ [C6]）が確定するまで
+// field を広げず凍結する。詳細は buildSeamProvenance.ts 冒頭の凍結ノート。
+//
 // Loomit の拘束 payload の内部表現（core 側の型）。外部 JSON（Loomit の `loom truer request` 出力）は
 // adapter（`src/adapters/loom/readConstraintPayload.ts`）が検証してこの形へ正規化する。core は Loomit の
 // JSON 形に直接依存しない（implementation-rules の Module Boundaries）。この payload は read-only な provenance の
