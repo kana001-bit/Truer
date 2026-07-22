@@ -733,13 +733,28 @@ test("propose: --scale / --seam-allowance / --on-fold は --cut 無しだと usa
 // ---- propose -> apply 統合（実 subprocess の slnt stub 越し。A1 境界を CLI レベルで固定）----
 //
 // これまで apply のテストは planApply / editNetLineVertex を直接注入する unit 層だった。ここでは
-// `examples/`（README の runnable loop = body-armhole.dxf + curve_kink 診断 + slnt-stub.mjs）を temp に
-// コピー/参照して、実際に `tru propose` → `tru apply` を spawn し、`--slnt "node <stub>"` で slnt subprocess の
-// spawn 経路（A1）まで通す。stub は BODY の layer-14 net line を DXF から読み、edge 0 として返す。
-const EXAMPLES_DIR = join(process.cwd(), "examples");
-const EX_DXF = join(EXAMPLES_DIR, "body-armhole.dxf");
-const EX_DIAG = join(EXAMPLES_DIR, "body-armhole.curve_kink.json");
-const EX_SLNT = `node ${join(EXAMPLES_DIR, "slnt-stub.mjs")}`;
+// DXF + curve_kink 診断は test/fixtures（examples の runnable loop と同一内容の test 所有コピー）から、
+// slnt stub は temp に書き出して、実際に `tru propose` → `tru apply` を spawn し、`--slnt "node <stub>"` で
+// slnt subprocess の spawn 経路（A1）まで通す。fixture を examples から独立させ、examples を編集しても CI が
+// 割れないようにする（D2 の P3）。stub を committed .mjs で test/ 下に置くと node --test が拾って実行して
+// しまうため、band cut の writeFakeSlnt と同じく temp に書き出す。BODY の layer-14 net line
+//（body-armhole.dxf と一致）を edge 0 として返す。
+const FIXTURES_DIR = join(process.cwd(), "test/fixtures");
+const FX_DXF = join(FIXTURES_DIR, "body-armhole.dxf");
+const FX_DIAG = join(FIXTURES_DIR, "body-armhole.curve_kink.json");
+
+function writeArmholeSlnt(dir: string): string {
+  const script = [
+    "const a = process.argv.slice(2);",
+    'const bi = a.indexOf("--block");',
+    "const block = bi >= 0 ? a[bi + 1] : undefined;",
+    "const points = [{x:0,y:0},{x:40,y:40},{x:80,y:70},{x:120,y:40},{x:160,y:60}];",
+    "process.stdout.write(JSON.stringify({ blockName: block, edges: [{ edgeId: 0, points }] }));"
+  ].join("\n");
+  const path = join(dir, "slnt-stub.js");
+  writeFileSync(path, script);
+  return path;
+}
 
 test("integration: propose -> apply through a spawned stub slnt writes the corrected DXF (A1, T1, T6)", () => {
   // 守る仕様: 実 subprocess の slnt(stub) を通した propose→apply の通しで、propose は内部 kink を
@@ -747,7 +762,8 @@ test("integration: propose -> apply through a spawned stub slnt writes the corre
   //           1 バイトも変えず（T1）、変更は kink 頂点 1 つ（y=70→40）だけ（T6）。
   const dir = mkdtempSync(join(tmpdir(), "truer-e2e-"));
   const dxf = join(dir, "pattern.dxf");
-  copyFileSync(EX_DXF, dxf);
+  copyFileSync(FX_DXF, dxf);
+  const slnt = `node ${writeArmholeSlnt(dir)}`;
   const srcBefore = readFileSync(dxf, "utf8");
   const pJson = join(dir, "p.json");
   const fixed = join(dir, "fixed.dxf");
@@ -756,11 +772,11 @@ test("integration: propose -> apply through a spawned stub slnt writes the corre
     "propose",
     "pattern.dxf",
     "--diagnostic",
-    EX_DIAG,
+    FX_DIAG,
     "--out",
     pJson,
     "--slnt",
-    EX_SLNT
+    slnt
   ]);
   assert.equal(propose.status, 0, propose.stderr);
   const file = JSON.parse(readFileSync(pJson, "utf8")) as {
@@ -780,7 +796,7 @@ test("integration: propose -> apply through a spawned stub slnt writes the corre
     "--out",
     fixed,
     "--slnt",
-    EX_SLNT
+    slnt
   ]);
   assert.equal(apply.status, 0, apply.stderr);
   assert.match(apply.stdout, /1 proposal\(s\) applied/);
@@ -805,7 +821,8 @@ test("integration: apply refuses when the source DXF changed since propose (dige
   //           fail し、--out を作らない（T3）。propose⇔apply で source を silent に差し替えられない。
   const dir = mkdtempSync(join(tmpdir(), "truer-e2e-digest-"));
   const dxf = join(dir, "pattern.dxf");
-  copyFileSync(EX_DXF, dxf);
+  copyFileSync(FX_DXF, dxf);
+  const slnt = `node ${writeArmholeSlnt(dir)}`;
   const pJson = join(dir, "p.json");
   const fixed = join(dir, "fixed.dxf");
 
@@ -813,11 +830,11 @@ test("integration: apply refuses when the source DXF changed since propose (dige
     "propose",
     "pattern.dxf",
     "--diagnostic",
-    EX_DIAG,
+    FX_DIAG,
     "--out",
     pJson,
     "--slnt",
-    EX_SLNT
+    slnt
   ]);
   assert.equal(propose.status, 0, propose.stderr);
   const prop = (JSON.parse(readFileSync(pJson, "utf8")) as { proposals: { id: string }[] })
@@ -837,7 +854,7 @@ test("integration: apply refuses when the source DXF changed since propose (dige
     "--out",
     fixed,
     "--slnt",
-    EX_SLNT
+    slnt
   ]);
   assert.equal(apply.status, 1);
   assert.match(apply.stderr, /digest_mismatch/);
