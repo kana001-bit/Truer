@@ -1,3 +1,8 @@
+// ⚠ 未結線・契約凍結（2026-07-23、レビュー D3）: constraint provenance の第一スライス（provenance-only）。
+// このモジュールは CLI / proposal のどこからも呼ばれていない（未結線）。上流—Loomit の
+// `loom truer request`（拘束 payload ビルダ = Slice 5）と、測定辺との突き合わせ（[C6]）—が確定するまで、
+// 型・関数の shape を広げず凍結する。結線と数値提案（applicable）は上流確定後の別スライスで行う。
+//
 // 拘束 payload から seam の provenance を組み立てる pure 関数（core・決定的、T10）。数値は出さない
 // （provenance-only）。長さに効かない出現（linearity:none = cutSpline / 導出点）を落とし、残りに coupling の
 // 安全度を付けて「この seam の長さに効く候補＋役割＋安全度」を返す。applicable（具体数値）は測定辺との対応
