@@ -24,6 +24,12 @@ export type IntentConfidence = "low" | "medium" | "high";
 // Change kind。`apply` は `kind` で dispatch する; 未知の kind は明示的な error にし、
 // silent skip はしない（T9）。新しい kind は references/extensibility.md で足す。
 //
+// kind は 2 系統に分ける。apply の net-line 経路（applyChanges）が実際に適用できるのは
+// `NetLineChangeKind`（現状 `move-vertex` のみ）。`LegacyChangeKind`（`replace-path-data`）は DXF
+// pivot 前の SVG 経路の遺産で、net-line point 操作ではないため applyChanges は当てられない
+// （explicit unsupported、T9）。wire contract には両系統を残す（旧 proposal が持ちうる）が、
+// 型で分けて legacy が applyable に見えないようにする（隔離。削除は別判断）。
+//
 // `move-vertex` は DXF net-line 用の kind: addressing した edge の flattened polyline の
 // 内部 vertex を 1 つ新しい点へ動かす（curve_kink smoothing）。最小・局所 — vertex 1 つ
 //（T6）— で、apply が再計算しないよう self-contained に記録する（T4）。propose/preview/apply の
@@ -35,7 +41,11 @@ export type IntentConfidence = "low" | "medium" | "high";
 // `replace-path-data` は *legacy SVG* 用の kind（path の `d` 文字列を操作する）で、pivot 前の
 // svg adapter 経路のために残している。net-line point 操作ではないので、applyChanges
 //（DXF net-line point を扱う）はこれを処理しない。
-export type ChangeKind = "replace-path-data" | "move-vertex";
+// apply の net-line 経路（applyChanges）が実際に適用できる DXF change kind。
+export type NetLineChangeKind = "move-vertex";
+// DXF pivot 前の legacy SVG 経路の change kind。apply の net-line 経路では扱えない（explicit unsupported）。
+export type LegacyChangeKind = "replace-path-data";
+export type ChangeKind = NetLineChangeKind | LegacyChangeKind;
 
 // Truer が現在 correction proposal を作る Seamlint diagnostic code。
 // それ以外は diagnostic を捨てず `skipped` entry にする（T8）。
@@ -373,6 +383,12 @@ function isArcRange(value: unknown): value is [number, number] {
   );
 }
 
+// DXF edge addressing の共有規則（T6: edge を推測しない）: edgeId（非空文字列）か arcRange の
+// 少なくとも一方があること。target / seam edge / band neighbour が同じ判定を使う（重複を 1 箇所に）。
+function hasEdgeAddress(edgeId: unknown, arcRange: unknown): boolean {
+  return isNonEmptyString(edgeId) || isArcRange(arcRange);
+}
+
 // SeamEdge には DXF addressing（blockName + edgeId または arcRange。ProposalTarget と同じ T6
 // ルールを再利用）、空でない digest、有限の length が要る。
 function isSeamEdge(value: unknown): value is SeamEdge {
@@ -384,12 +400,17 @@ function isSeamEdge(value: unknown): value is SeamEdge {
   if (edge.edgeId !== undefined && !isNonEmptyString(edge.edgeId)) return false;
   if (edge.arcRange !== undefined && !isArcRange(edge.arcRange)) return false;
   // addressing には edgeId / arcRange の少なくとも一方が要る（T6: edge を推測しない）。
-  if (!isNonEmptyString(edge.edgeId) && !isArcRange(edge.arcRange)) return false;
+  if (!hasEdgeAddress(edge.edgeId, edge.arcRange)) return false;
   return true;
 }
 
 function isNonNegativeFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+// 正の整数（裁断枚数など。0 / 負 / 非整数は不可）。cutQuantity / bandCutQuantity が同じ判定を使う。
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 // cornerSlide.candidates[] の 1 要素の shape 検証。壊れた候補（負のスライド量・住所欠落など）が
@@ -439,17 +460,13 @@ function bandNeighborError(value: unknown): string | undefined {
   if (neighbour.arcRange !== undefined && !isArcRange(neighbour.arcRange)) {
     return "arcRange must be a normalized [start, end] when present";
   }
-  if (!isNonEmptyString(neighbour.edgeId) && !isArcRange(neighbour.arcRange)) {
+  if (!hasEdgeAddress(neighbour.edgeId, neighbour.arcRange)) {
     return "must address the edge by edgeId or arcRange";
   }
   if (!isNonNegativeFiniteNumber(neighbour.finishedLengthMm)) {
     return "finishedLengthMm must be a non-negative finite number";
   }
-  if (
-    typeof neighbour.cutQuantity !== "number" ||
-    !Number.isInteger(neighbour.cutQuantity) ||
-    neighbour.cutQuantity <= 0
-  ) {
+  if (!isPositiveInteger(neighbour.cutQuantity)) {
     return "cutQuantity must be a positive integer";
   }
   return undefined;
@@ -544,7 +561,7 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
       );
     }
     // addressing には edgeId / arcRange の少なくとも一方が要る（T6: edge を推測しない）。
-    if (!isNonEmptyString(target.edgeId) && !isArcRange(target.arcRange)) {
+    if (!hasEdgeAddress(target.edgeId, target.arcRange)) {
       errors.push(`${at}.target must address the edge by edgeId or arcRange`);
     }
   }
@@ -579,6 +596,14 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
     if (typeof seam !== "object" || seam === null) {
       errors.push(`${at}.seamReconciliation must be an object when present`);
     } else {
+      // 診断コードとの束縛（R1）: seamReconciliation は seam_length_mismatch 専用の advisory。
+      // 別 code の proposal が持っていたら illegal な組み合わせ（例: curve_kink が seamReconciliation を
+      // 持つ）として弾く。shape だけでなく「どの診断に付くか」も contract の一部なので validation で守る。
+      if (sourceDiagnostic?.code !== "geometry.seam_length_mismatch") {
+        errors.push(
+          `${at}.seamReconciliation is only valid on a geometry.seam_length_mismatch proposal (code is ${JSON.stringify(sourceDiagnostic?.code)})`
+        );
+      }
       if (!isSeamEdge(seam.fromEdge)) {
         errors.push(`${at}.seamReconciliation.fromEdge is not a valid seam edge`);
       }
@@ -592,10 +617,7 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
         errors.push(`${at}.seamReconciliation.reference must be "from", "to", or omitted`);
       }
       // Slice 1 の advisory field（すべて任意・追加的）: 存在するときだけ shape を検証する。
-      if (
-        seam.easeMm !== undefined &&
-        (typeof seam.easeMm !== "number" || !Number.isFinite(seam.easeMm) || seam.easeMm < 0)
-      ) {
+      if (seam.easeMm !== undefined && !isNonNegativeFiniteNumber(seam.easeMm)) {
         errors.push(
           `${at}.seamReconciliation.easeMm must be a non-negative finite number when present`
         );
@@ -614,11 +636,7 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
           if (link.conform !== "from" && link.conform !== "to") {
             errors.push(`${at}.seamReconciliation.linkTarget.conform must be "from" or "to"`);
           }
-          if (
-            typeof link.targetFinishedMm !== "number" ||
-            !Number.isFinite(link.targetFinishedMm) ||
-            link.targetFinishedMm < 0
-          ) {
+          if (!isNonNegativeFiniteNumber(link.targetFinishedMm)) {
             errors.push(
               `${at}.seamReconciliation.linkTarget.targetFinishedMm must be a non-negative finite number`
             );
@@ -693,6 +711,14 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
     if (typeof band !== "object" || band === null) {
       errors.push(`${at}.bandReconciliation must be an object when present`);
     } else {
+      // 診断コードとの束縛（R1）: bandReconciliation は band_seam_sum_mismatch 専用。別 code の
+      // proposal が持っていたら illegal（seamReconciliation と併存しない、curve_kink が持たない、等も
+      // ここで担保される — code は 1 つなので）。
+      if (sourceDiagnostic?.code !== "geometry.band_seam_sum_mismatch") {
+        errors.push(
+          `${at}.bandReconciliation is only valid on a geometry.band_seam_sum_mismatch proposal (code is ${JSON.stringify(sourceDiagnostic?.code)})`
+        );
+      }
       if (!isSeamEdge(band.bandEdge)) {
         errors.push(`${at}.bandReconciliation.bandEdge is not a valid seam edge`);
       }
@@ -706,11 +732,7 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
         errors.push(`${at}.bandReconciliation.closureMm must be a finite number`);
       }
       // bandCutQuantity は正の整数（バンド総周長を割る枚数。0/負では総周長が壊れる）。
-      if (
-        typeof band.bandCutQuantity !== "number" ||
-        !Number.isInteger(band.bandCutQuantity) ||
-        band.bandCutQuantity <= 0
-      ) {
+      if (!isPositiveInteger(band.bandCutQuantity)) {
         errors.push(`${at}.bandReconciliation.bandCutQuantity must be a positive integer`);
       }
       if (!Array.isArray(band.neighbours) || band.neighbours.length === 0) {

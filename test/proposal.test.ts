@@ -892,6 +892,74 @@ test("malformed cornerSlide is rejected by validation", () => {
   }
 });
 
+test("reconciliation blocks are bound to their diagnostic code (R1)", () => {
+  // 守る仕様 (R1): seamReconciliation は seam_length_mismatch、bandReconciliation は
+  // band_seam_sum_mismatch のときだけ有効。shape が合っていても別 code の proposal が持つのは
+  // illegal な組み合わせ（例: curve_kink が seamReconciliation を持つ）として弾く。code は 1 つ
+  // なので両ブロックの併存も自動で排除される。
+  const seamReconciliation = {
+    fromEdge: { blockName: "BACK", edgeId: "1", edgeDigest: "sha256:a", lengthMm: 105 },
+    toEdge: { blockName: "FRONT", edgeId: "1", edgeDigest: "sha256:b", lengthMm: 100 },
+    deltaMm: 5
+  };
+  const bandReconciliation = {
+    bandEdge: { blockName: "WAISTBAND", edgeId: "1", edgeDigest: "sha256:c", lengthMm: 400 },
+    bandCutQuantity: 1,
+    bandTotalMm: 400,
+    sumMm: 420,
+    closureMm: -20,
+    closurePct: 0.05,
+    neighbours: [{ blockName: "FRONT", edgeId: "1", finishedLengthMm: 210, cutQuantity: 2 }]
+  };
+  function fileWith(code: string, extra: Record<string, unknown>) {
+    return {
+      schema: PROPOSAL_SCHEMA_V0,
+      source: { file: "x.dxf", sourceDigest: "sha256:0", createdBy: "tru propose" },
+      proposals: [
+        {
+          id: "prop_001",
+          status: "proposed",
+          mode: "preview-only",
+          target: { blockName: "BACK", edgeId: "1", targetDigest: "sha256:0" },
+          sourceDiagnostic: { code },
+          intent: { kind: "x", confidence: "low", reviewRequired: true },
+          changes: [],
+          preview: {},
+          notes: [],
+          ...extra
+        }
+      ],
+      skipped: []
+    };
+  }
+
+  // 正しい code なら binding error は出ない（他の検証も通る）。
+  assert.deepEqual(
+    validateProposalFile(fileWith("geometry.seam_length_mismatch", { seamReconciliation })),
+    []
+  );
+  assert.deepEqual(
+    validateProposalFile(fileWith("geometry.band_seam_sum_mismatch", { bandReconciliation })),
+    []
+  );
+
+  // 別 code が持つと弾く。
+  const seamOnWrong = validateProposalFile(fileWith("geometry.curve_kink", { seamReconciliation }));
+  assert.ok(
+    seamOnWrong.some((error) =>
+      error.includes("seamReconciliation is only valid on a geometry.seam_length_mismatch")
+    ),
+    seamOnWrong.join("; ")
+  );
+  const bandOnWrong = validateProposalFile(fileWith("geometry.curve_kink", { bandReconciliation }));
+  assert.ok(
+    bandOnWrong.some((error) =>
+      error.includes("bandReconciliation is only valid on a geometry.band_seam_sum_mismatch")
+    ),
+    bandOnWrong.join("; ")
+  );
+});
+
 test("seam pair not-found / ambiguous are skipped, not guessed (T6)", () => {
   // 守る仕様: ペア解決が not-found / ambiguous なら推測せず、区別して skip。
   const notFound = createProposalFile({

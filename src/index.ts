@@ -17,14 +17,17 @@ export {
 } from "./core/proposal/proposalSchema.ts";
 export type * from "./core/proposal/proposalSchema.ts";
 
+// DXF 現行経路の digest（source 全体 / net-line edge points）。
 export {
   digestText,
-  digestPathData,
-  normalizePathData,
   serializeEdgePoints,
   digestEdgePoints
 } from "./core/proposal/proposalDigest.ts";
 
+// --- legacy SVG（DXF pivot 前の経路。apply の net-line 経路には乗らない） ---
+// pivot 済みで CLI からは到達しないが、public surface としては残す（隔離。削除は別判断）。
+// digestPathData / normalizePathData は path-data 用の digest helper で、現状は legacy SVG 経路だけが使う。
+export { digestPathData, normalizePathData } from "./core/proposal/proposalDigest.ts";
 export {
   readSvgPaths,
   findSvgPathById,
