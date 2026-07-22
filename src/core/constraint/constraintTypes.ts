@@ -14,6 +14,9 @@ export interface ConstraintParam {
   kind: string; // 現状 "increment"（将来 literal / measurement もありうる）
   value: string; // 宣言値。宣言の無い #name でも "" で載る（parser の inv3 が保証）
   usedBy: string[]; // その増分を辿れた seam 辺を持つ part の role 集合（membership）
+  // author-intent の種（.val 増分の description、例「this knob can be used to…」）。permitted 層の初期値に
+  // 使うので落とさず素通しする（task-spec [C5]）。無ければ undefined。
+  note?: string;
 }
 
 // dependsOn の 1 要素。point 由来（type つき）か spline handle 由来（handle つき）のどちらか。
@@ -42,11 +45,14 @@ export interface ConstraintPayload {
 
 // --- provenance（出力）---
 
-// seam の両側が一緒に動くか（＝片側だけ直すと seam がずれるか）。
+// seam の両側が一緒に動くか（＝片側だけ直すと seam がずれるか）。安全度の順は both-sides（安全）>
+// one-side / part-local（どちらも危険側）。
 // - both-sides: 参照増分の usedBy が seam の全 part を覆う（両側が追従・安全）。
 // - one-side:   参照増分の usedBy が片側しか覆わない（対応が壊れる・危険）。
-// - unknown:    式に増分参照が無い（inline 値 / measurement）。増分の coupling 判定が効かない＝人が expr を見て判断。
-export type Coupling = "both-sides" | "one-side" | "unknown";
+// - part-local: 式に増分参照が無い（inline 値 / measurement）。payload では両側が動く保証が無く、操作対象は
+//               part-local な inline 値になりがち＝**安全側で危険候補として扱う**（[C8]）。measurement は
+//               グローバルだが literal/measurement の判別は contract 上 defer、expr を見て人が判断。
+export type Coupling = "both-sides" | "one-side" | "part-local";
 
 export interface ProvenanceCandidate {
   occurrence: ConstraintOccurrence;

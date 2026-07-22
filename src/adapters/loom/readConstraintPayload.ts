@@ -41,7 +41,13 @@ function readParam(name: string, raw: unknown): ConstraintParam {
     throw new ConstraintPayloadError(`params["${name}"].value must be a string.`);
   if (!isStringArray(raw.usedBy))
     throw new ConstraintPayloadError(`params["${name}"].usedBy must be a string[].`);
-  return { kind: raw.kind, value: raw.value, usedBy: raw.usedBy };
+  return {
+    kind: raw.kind,
+    value: raw.value,
+    usedBy: raw.usedBy,
+    // author-intent の種（.val 増分の description）を落とさず素通しする（task-spec [C5]）。
+    ...(typeof raw.note === "string" ? { note: raw.note } : {})
+  };
 }
 
 function readOccurrence(raw: unknown, where: string): ConstraintOccurrence {
@@ -52,16 +58,32 @@ function readOccurrence(raw: unknown, where: string): ConstraintOccurrence {
     throw new ConstraintPayloadError(`${where}.expr must be a string.`);
   if (!isStringArray(raw.refs))
     throw new ConstraintPayloadError(`${where}.refs must be a string[].`);
-  // point 由来（type つき）か spline handle 由来（handle つき）のどちらかを持つ。
+  // 出現は「point 由来（pointId + type）」か「spline handle 由来（splineId + handle）」の**排他**。曖昧な形
+  // （両方ある / 片割れが欠ける）は後段の join/applicable が役割を読む入口を汚すので、boundary で explicit error。
   const hasPoint = typeof raw.pointId === "string";
   const hasSpline = typeof raw.splineId === "string";
-  if (!hasPoint && !hasSpline)
-    throw new ConstraintPayloadError(`${where} must have pointId or splineId.`);
+  if (hasPoint === hasSpline)
+    throw new ConstraintPayloadError(`${where} must have exactly one of pointId / splineId.`);
+  if (hasPoint) {
+    if (typeof raw.type !== "string")
+      throw new ConstraintPayloadError(`${where} with pointId must have a string type.`);
+    if (raw.handle !== undefined)
+      throw new ConstraintPayloadError(`${where} with pointId must not have handle.`);
+    return {
+      pointId: raw.pointId as string,
+      type: raw.type,
+      linearity: raw.linearity,
+      expr: raw.expr,
+      refs: raw.refs
+    };
+  }
+  if (typeof raw.handle !== "string")
+    throw new ConstraintPayloadError(`${where} with splineId must have a string handle.`);
+  if (raw.type !== undefined)
+    throw new ConstraintPayloadError(`${where} with splineId must not have type.`);
   return {
-    ...(hasPoint ? { pointId: raw.pointId as string } : {}),
-    ...(hasSpline ? { splineId: raw.splineId as string } : {}),
-    ...(typeof raw.type === "string" ? { type: raw.type } : {}),
-    ...(typeof raw.handle === "string" ? { handle: raw.handle } : {}),
+    splineId: raw.splineId as string,
+    handle: raw.handle,
     linearity: raw.linearity,
     expr: raw.expr,
     refs: raw.refs

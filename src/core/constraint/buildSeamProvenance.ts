@@ -58,9 +58,12 @@ function classifyCoupling(
   seamParts: readonly string[]
 ): { coupling: Coupling; reason: string } {
   if (refs.length === 0) {
+    // 増分参照が無い＝inline 値 / measurement。payload では両側が動く保証が無いので、安全側で part-local
+    // （片側候補・危険寄り）として扱う（[C8]）。measurement はグローバルだが判別は defer、expr を見て人が判断。
     return {
-      coupling: "unknown",
-      reason: "式に増分参照が無い（inline 値 / measurement）。増分の coupling 判定は効かない"
+      coupling: "part-local",
+      reason:
+        "式に増分参照が無い（inline 値 / measurement）。両側が動く保証が無く片側編集になりうる（危険側）"
     };
   }
   const allCovered = refs.every((name) => {

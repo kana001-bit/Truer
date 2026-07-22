@@ -60,6 +60,57 @@ test("readConstraintPayload: 壊れた field 型は explicit error（field を�
   );
 });
 
+test("readConstraintPayload: params の note（author-intent）を保持する（P2）", () => {
+  // 守る仕様: .val 増分の description を permitted 層の種として素通しする（落とさない）。
+  const payload = readConstraintPayload({
+    payload: {
+      params: {
+        "#ease": {
+          kind: "increment",
+          value: "0",
+          usedBy: ["front", "back"],
+          note: "make it baggier"
+        }
+      },
+      connectors: []
+    }
+  });
+  assert.equal(payload.params["#ease"]!.note, "make it baggier");
+});
+
+test("readConstraintPayload: occurrence の discriminated union を検証する（P3）", () => {
+  // 守る仕様: 出現は pointId+type か splineId+handle の排他。曖昧な形は boundary で explicit error。
+  const wrap = (occurrence: Record<string, unknown>) => ({
+    payload: {
+      params: {},
+      connectors: [{ partId: "front", connectorId: "seam", dependsOn: [occurrence] }]
+    }
+  });
+  const base = { linearity: "linear", expr: "5", refs: [] };
+  const bad: Record<string, unknown>[] = [
+    { ...base }, // pointId も splineId も無い
+    { ...base, pointId: "1", splineId: "2", type: "endLine" }, // 両方
+    { ...base, pointId: "1" }, // pointId だが type 欠け
+    { ...base, pointId: "1", type: "endLine", handle: "length1" }, // point なのに handle
+    { ...base, splineId: "2" }, // splineId だが handle 欠け
+    { ...base, splineId: "2", handle: "length1", type: "endLine" } // spline なのに type
+  ];
+  for (const occurrence of bad) {
+    assert.throws(
+      () => readConstraintPayload(wrap(occurrence)),
+      (error: unknown) => error instanceof ConstraintPayloadError,
+      JSON.stringify(occurrence)
+    );
+  }
+  // 正しい 2 形は通る。
+  assert.doesNotThrow(() =>
+    readConstraintPayload(wrap({ ...base, pointId: "1", type: "endLine" }))
+  );
+  assert.doesNotThrow(() =>
+    readConstraintPayload(wrap({ ...base, splineId: "2", handle: "length1" }))
+  );
+});
+
 test("buildSeamProvenance: linearity:none を落とし linear を先に並べる", () => {
   const payload = loadSample();
   const provenance = buildSeamProvenance(payload, { partId: "front", connectorId: "outseam" });
@@ -74,12 +125,12 @@ test("buildSeamProvenance: linearity:none を落とし linear を先に並べる
   assert.ok(linearities.every((value) => value !== "none"));
 });
 
-test("buildSeamProvenance: outseam の長さ候補は増分参照ゼロ → coupling は全部 unknown（[C8]）", () => {
-  // 実データの所見: 増分は cutSpline(none) にしか無く、長さ候補は inline 値 / measurement。
+test("buildSeamProvenance: outseam の長さ候補は増分参照ゼロ → coupling は全部 part-local（[C8]・危険側）", () => {
+  // 実データの所見: 増分は cutSpline(none) にしか無く、長さ候補は inline 値 / measurement。安全側で危険候補扱い。
   const payload = loadSample();
   const provenance = buildSeamProvenance(payload, { partId: "front", connectorId: "outseam" });
   assert.ok(provenance.candidates.every((candidate) => candidate.occurrence.refs.length === 0));
-  assert.ok(provenance.candidates.every((candidate) => candidate.coupling === "unknown"));
+  assert.ok(provenance.candidates.every((candidate) => candidate.coupling === "part-local"));
 });
 
 test("buildSeamProvenance: 両側 usedBy を覆う増分は both-sides（coupling recipe）", () => {
