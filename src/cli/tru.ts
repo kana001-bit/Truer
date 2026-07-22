@@ -139,7 +139,10 @@ function parseCommandArgs(args: string[], spec: Record<string, ArgArity>): Parse
           result.values[arg] = args[++index]!;
         }
       } else {
-        const values: string[] = [];
+        // 同じ multi flag を繰り返すと累積する（`--reference BACK --reference FRONT` = [BACK, FRONT]）。
+        // 上書きにすると 2 回目が 1 回目を消し、--reference なら固定パーツを / --accepted なら採用 id を
+        // silent に落とす（T3）。既存分に push する。
+        const values = result.multi[arg] ?? [];
         while (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
           const value = args[++index]!;
           if (/\.dxf$/i.test(value)) {

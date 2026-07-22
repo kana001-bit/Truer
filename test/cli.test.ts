@@ -99,6 +99,23 @@ test("multi-token flag rejects a .dxf value instead of silently swallowing a mis
   assert.match(applySwallow.stderr, /DXF パス/);
 });
 
+test("repeated multi-token flags accumulate, not overwrite (--accepted keeps earlier ids)", () => {
+  // 守る仕様 (R3 回帰): 同じ multi flag を繰り返すと累積する。上書きだと 2 回目が 1 回目を消し、
+  //           --accepted なら採用 id を silent に落とす（T3）。末尾の空 --accepted が先行の prop_001 を
+  //           消していれば「requires at least one」usage error になる。消していない（累積）ことを観測する。
+  const result = runTru([
+    "apply",
+    "--accepted",
+    "prop_001",
+    "--accepted",
+    "--proposal",
+    "p.json",
+    "--out",
+    "o.dxf"
+  ]);
+  assert.doesNotMatch(result.stderr, /--accepted requires at least one/);
+});
+
 test("propose with a bandEdge-less band report exits 0 and records the skip (slnt not spawned)", () => {
   // 守る仕様 (B1 訂正 / T8 + exit code 契約): band 診断は supported だが、bandEdge 住所（B1 additive）を
   //           持たない report では band 辺を addressing できず、resolver は slnt を spawn する前に not-found を
