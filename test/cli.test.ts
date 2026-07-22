@@ -439,7 +439,7 @@ test("cut: band-conform proposal -> 実寸カバー + タイル（happy path, fa
     "--scale",
     "actual",
     "--slnt",
-    `node ${slnt}`,
+    `node "${slnt}"`,
     "--out",
     out
   ]);
@@ -472,7 +472,7 @@ test("cut: 曲線バンドを弧長スケールで裁つ（仕上がり線のみ
     "--scale",
     "actual",
     "--slnt",
-    `node ${slnt}`,
+    `node "${slnt}"`,
     "--out",
     out
   ]);
@@ -498,7 +498,7 @@ test("cut: non-rectangle band is skipped without writing (fake slnt returns tria
     "--scale",
     "actual",
     "--slnt",
-    `node ${slnt}`,
+    `node "${slnt}"`,
     "--out",
     out
   ]);
@@ -525,7 +525,7 @@ test("cut: --seam-allowance をカバーに反映", () => {
     "--seam-allowance",
     "15",
     "--slnt",
-    `node ${slnt}`,
+    `node "${slnt}"`,
     "--out",
     out
   ]);
@@ -569,7 +569,7 @@ test("cut: --on-fold long でわ辺（縫い代 0）をカバーに反映", () =
     "--on-fold",
     "long",
     "--slnt",
-    `node ${slnt}`,
+    `node "${slnt}"`,
     "--out",
     out
   ]);
@@ -610,7 +610,7 @@ test("cut: 同一 block を指す複数提案は proposal.id で別ファイル�
     "--scale",
     "actual",
     "--slnt",
-    `node ${slnt}`,
+    `node "${slnt}"`,
     "--out",
     out
   ]);
@@ -671,7 +671,7 @@ test("propose --cut: band conform 提案をその場で stopgap SVG に裁つ（
     "--scale",
     "actual",
     "--slnt",
-    `node ${slnt}`
+    `node "${slnt}"`
   ]);
   assert.equal(result.status, 0, result.stderr);
   // proposal は従来どおり書かれる。
@@ -708,7 +708,7 @@ test("propose without --cut writes no cutsheet (opt-in)", () => {
     "--out",
     outProposal,
     "--slnt",
-    `node ${slnt}`
+    `node "${slnt}"`
   ]);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(outProposal), true);
@@ -760,10 +760,13 @@ test("integration: propose -> apply through a spawned stub slnt writes the corre
   // 守る仕様: 実 subprocess の slnt(stub) を通した propose→apply の通しで、propose は内部 kink を
   //           local-adjustment(move-vertex) にし、apply は補正 DXF を --out にだけ書く。source は
   //           1 バイトも変えず（T1）、変更は kink 頂点 1 つ（y=70→40）だけ（T6）。
-  const dir = mkdtempSync(join(tmpdir(), "truer-e2e-"));
+  // dir 名にわざと空白を入れる: --slnt に渡す stub パスを quote せず `node ${path}` にすると、CLI の
+  // tokenizeCommand が空白で script path を割って壊れる。`node "${path}"` で quote してあることをここで
+  // 回帰として固定する（quote が外れたら空白入り temp path でこのテストが割れる）。
+  const dir = mkdtempSync(join(tmpdir(), "truer e2e "));
   const dxf = join(dir, "pattern.dxf");
   copyFileSync(FX_DXF, dxf);
-  const slnt = `node ${writeArmholeSlnt(dir)}`;
+  const slnt = `node "${writeArmholeSlnt(dir)}"`;
   const srcBefore = readFileSync(dxf, "utf8");
   const pJson = join(dir, "p.json");
   const fixed = join(dir, "fixed.dxf");
@@ -822,7 +825,7 @@ test("integration: apply refuses when the source DXF changed since propose (dige
   const dir = mkdtempSync(join(tmpdir(), "truer-e2e-digest-"));
   const dxf = join(dir, "pattern.dxf");
   copyFileSync(FX_DXF, dxf);
-  const slnt = `node ${writeArmholeSlnt(dir)}`;
+  const slnt = `node "${writeArmholeSlnt(dir)}"`;
   const pJson = join(dir, "p.json");
   const fixed = join(dir, "fixed.dxf");
 
