@@ -589,6 +589,14 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
     if (typeof seam !== "object" || seam === null) {
       errors.push(`${at}.seamReconciliation must be an object when present`);
     } else {
+      // 診断コードとの束縛（R1）: seamReconciliation は seam_length_mismatch 専用の advisory。
+      // 別 code の proposal が持っていたら illegal な組み合わせ（例: curve_kink が seamReconciliation を
+      // 持つ）として弾く。shape だけでなく「どの診断に付くか」も contract の一部なので validation で守る。
+      if (sourceDiagnostic?.code !== "geometry.seam_length_mismatch") {
+        errors.push(
+          `${at}.seamReconciliation is only valid on a geometry.seam_length_mismatch proposal (code is ${JSON.stringify(sourceDiagnostic?.code)})`
+        );
+      }
       if (!isSeamEdge(seam.fromEdge)) {
         errors.push(`${at}.seamReconciliation.fromEdge is not a valid seam edge`);
       }
@@ -703,6 +711,14 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
     if (typeof band !== "object" || band === null) {
       errors.push(`${at}.bandReconciliation must be an object when present`);
     } else {
+      // 診断コードとの束縛（R1）: bandReconciliation は band_seam_sum_mismatch 専用。別 code の
+      // proposal が持っていたら illegal（seamReconciliation と併存しない、curve_kink が持たない、等も
+      // ここで担保される — code は 1 つなので）。
+      if (sourceDiagnostic?.code !== "geometry.band_seam_sum_mismatch") {
+        errors.push(
+          `${at}.bandReconciliation is only valid on a geometry.band_seam_sum_mismatch proposal (code is ${JSON.stringify(sourceDiagnostic?.code)})`
+        );
+      }
       if (!isSeamEdge(band.bandEdge)) {
         errors.push(`${at}.bandReconciliation.bandEdge is not a valid seam edge`);
       }
