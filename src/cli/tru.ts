@@ -107,56 +107,115 @@ interface ProposeOptions {
   onFold?: OnFold;
 }
 
-function parseProposeArgs(args: string[]): ProposeOptions {
-  const options: ProposeOptions = { reference: [] };
+// flag の値の取り方。value=次の 1 token、multi=続く非 flag token を貪欲に（--accepted / --reference）、
+// optional-value=続く token が非 flag ならそれを値に（--cut。無ければ flag の存在だけ）。
+type ArgArity = "value" | "multi" | "optional-value";
+
+const POSITIONAL_TOO_MANY = "Expected a single <pattern.dxf> path.";
+
+interface ParsedCommandArgs {
+  positional?: string;
+  values: Record<string, string>;
+  multi: Record<string, string[]>;
+  present: Set<string>;
+}
+
+// propose / apply / cut 共通の引数ウォーカ。flag→arity の spec に従って token を消費し、位置引数
+// <pattern.dxf> の扱いと多トークン flag の貪欲取り込みを 1 箇所にまとめる（コマンド間の実装ズレ＝
+// `arg?.startsWith` 等を無くす）。多トークン flag（--accepted / --reference）の値が `.dxf` で終わる場合は、
+// 置き場所を間違えた <pattern.dxf> が id / BLOCK 名へ silent に吸われる footgun なので、推測せず error に
+// する（id/BLOCK 名が `.dxf` で終わることは無い）。per-flag の「最低 1 つ」等の意味検証は呼び出し側が行う。
+function parseCommandArgs(args: string[], spec: Record<string, ArgArity>): ParsedCommandArgs {
+  const result: ParsedCommandArgs = { values: {}, multi: {}, present: new Set() };
   for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === "--diagnostic") {
-      options.diagnostic = requireValue(arg, args[++index]);
-    } else if (arg === "--out") {
-      options.out = requireValue(arg, args[++index]);
-    } else if (arg === "--preview") {
-      options.preview = requireValue(arg, args[++index]);
-    } else if (arg === "--slnt") {
-      options.slnt = requireValue(arg, args[++index]);
-    } else if (arg === "--reference") {
-      // 続く非 flag token を BLOCK 名として取り込む（複数=固定パーツ集合）。`--accepted <id...>` と同じ多トークン形
-      // なので `--reference BACK FRONT` も `--reference BACK --reference FRONT` も通る。usage の `<block>...` と一致。
-      const before = options.reference.length;
-      while (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
-        options.reference.push(args[++index]!);
+    const arg = args[index]!;
+    const arity = spec[arg];
+    if (arity !== undefined) {
+      result.present.add(arg);
+      if (arity === "value") {
+        result.values[arg] = requireValue(arg, args[++index]);
+      } else if (arity === "optional-value") {
+        if (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
+          result.values[arg] = args[++index]!;
+        }
+      } else {
+        const values: string[] = [];
+        while (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
+          const value = args[++index]!;
+          if (/\.dxf$/i.test(value)) {
+            throw new Error(
+              `${arg} の値 "${value}" は DXF パスのようです。<pattern.dxf> は options より前に置いてください。`
+            );
+          }
+          values.push(value);
+        }
+        result.multi[arg] = values;
       }
-      if (options.reference.length === before) {
-        throw new Error("--reference requires at least one BLOCK name.");
-      }
-    } else if (arg === "--cut") {
-      // stopgap SVG を出す opt-in フラグ。値（出力パス）は任意: 続く token が非 flag ならパスとして取り、
-      // 無ければ既定パス（output/<dxf>.cut.svg）。指定の有無自体は cutRequested で持つ。
-      options.cutRequested = true;
-      if (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
-        options.cut = args[++index];
-      }
-    } else if (arg === "--scale") {
-      options.scale = requireValue(arg, args[++index]);
-    } else if (arg === "--seam-allowance") {
-      const parsed = Number(requireValue(arg, args[++index]));
-      if (!Number.isFinite(parsed) || parsed < 0) {
-        throw new Error("--seam-allowance must be a non-negative number (mm).");
-      }
-      options.seamAllowanceMm = parsed;
-    } else if (arg === "--on-fold") {
-      const value = requireValue(arg, args[++index]);
-      if (value !== "long" && value !== "short") {
-        throw new Error('--on-fold must be "long" or "short".');
-      }
-      options.onFold = value;
-    } else if (arg.startsWith("--")) {
-      throw new Error(`Unknown option: ${arg}`);
-    } else if (options.dxfFile !== undefined) {
-      throw new Error("Expected a single <pattern.dxf> path.");
-    } else {
-      options.dxfFile = arg;
+      continue;
     }
+    if (arg.startsWith("--")) {
+      throw new Error(`Unknown option: ${arg}`);
+    }
+    if (result.positional !== undefined) {
+      throw new Error(POSITIONAL_TOO_MANY);
+    }
+    result.positional = arg;
+  }
+  return result;
+}
+
+// --seam-allowance / --on-fold は propose --cut と cut で同義なので、値の検証を 1 箇所で共有する。
+function parseSeamAllowanceMm(raw: string): number {
+  const mm = Number(raw);
+  if (!Number.isFinite(mm) || mm < 0) {
+    throw new Error("--seam-allowance must be a non-negative number (mm).");
+  }
+  return mm;
+}
+
+function parseOnFold(raw: string): OnFold {
+  if (raw !== "long" && raw !== "short") {
+    throw new Error('--on-fold must be "long" or "short".');
+  }
+  return raw;
+}
+
+const PROPOSE_SPEC: Record<string, ArgArity> = {
+  "--diagnostic": "value",
+  "--out": "value",
+  "--preview": "value",
+  "--slnt": "value",
+  "--reference": "multi",
+  "--cut": "optional-value",
+  "--scale": "value",
+  "--seam-allowance": "value",
+  "--on-fold": "value"
+};
+
+function parseProposeArgs(args: string[]): ProposeOptions {
+  const parsed = parseCommandArgs(args, PROPOSE_SPEC);
+  const options: ProposeOptions = { reference: parsed.multi["--reference"] ?? [] };
+  if (parsed.positional !== undefined) options.dxfFile = parsed.positional;
+  if (parsed.values["--diagnostic"] !== undefined)
+    options.diagnostic = parsed.values["--diagnostic"];
+  if (parsed.values["--out"] !== undefined) options.out = parsed.values["--out"];
+  if (parsed.values["--preview"] !== undefined) options.preview = parsed.values["--preview"];
+  if (parsed.values["--slnt"] !== undefined) options.slnt = parsed.values["--slnt"];
+  // --reference は多トークン（`--reference BACK FRONT` = 固定パーツ集合）。指定はしたが BLOCK 名ゼロは error。
+  if (parsed.present.has("--reference") && options.reference.length === 0) {
+    throw new Error("--reference requires at least one BLOCK name.");
+  }
+  // --cut は opt-in（存在の有無を cutRequested で持つ）。値（出力パス）は任意。
+  if (parsed.present.has("--cut")) {
+    options.cutRequested = true;
+    if (parsed.values["--cut"] !== undefined) options.cut = parsed.values["--cut"];
+  }
+  if (parsed.values["--scale"] !== undefined) options.scale = parsed.values["--scale"];
+  if (parsed.values["--seam-allowance"] !== undefined) {
+    options.seamAllowanceMm = parseSeamAllowanceMm(parsed.values["--seam-allowance"]);
+  }
+  if (parsed.values["--on-fold"] !== undefined) {
+    options.onFold = parseOnFold(parsed.values["--on-fold"]);
   }
   return options;
 }
@@ -169,31 +228,23 @@ interface ApplyOptions {
   slnt?: string;
 }
 
+const APPLY_SPEC: Record<string, ArgArity> = {
+  "--proposal": "value",
+  "--out": "value",
+  "--slnt": "value",
+  "--accepted": "multi"
+};
+
 function parseApplyArgs(args: string[]): ApplyOptions {
-  const options: ApplyOptions = { accepted: [] };
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === "--proposal") {
-      options.proposal = requireValue(arg, args[++index]);
-    } else if (arg === "--out") {
-      options.out = requireValue(arg, args[++index]);
-    } else if (arg === "--slnt") {
-      options.slnt = requireValue(arg, args[++index]);
-    } else if (arg === "--accepted") {
-      // 続く非 flag token を proposal id として取り込む。
-      while (index + 1 < args.length && !args[index + 1]!.startsWith("--")) {
-        options.accepted.push(args[++index]!);
-      }
-      if (options.accepted.length === 0) {
-        throw new Error("--accepted requires at least one proposal id.");
-      }
-    } else if (arg.startsWith("--")) {
-      throw new Error(`Unknown option: ${arg}`);
-    } else if (options.dxfFile !== undefined) {
-      throw new Error("Expected a single <pattern.dxf> path.");
-    } else {
-      options.dxfFile = arg;
-    }
+  const parsed = parseCommandArgs(args, APPLY_SPEC);
+  const options: ApplyOptions = { accepted: parsed.multi["--accepted"] ?? [] };
+  if (parsed.positional !== undefined) options.dxfFile = parsed.positional;
+  if (parsed.values["--proposal"] !== undefined) options.proposal = parsed.values["--proposal"];
+  if (parsed.values["--out"] !== undefined) options.out = parsed.values["--out"];
+  if (parsed.values["--slnt"] !== undefined) options.slnt = parsed.values["--slnt"];
+  // --accepted は多トークン（`--accepted a b c`）。指定はしたが id ゼロは error。
+  if (parsed.present.has("--accepted") && options.accepted.length === 0) {
+    throw new Error("--accepted requires at least one proposal id.");
   }
   return options;
 }
@@ -475,37 +526,28 @@ interface CutOptions {
   onFold?: OnFold;
 }
 
+const CUT_SPEC: Record<string, ArgArity> = {
+  "--proposal": "value",
+  "--scale": "value",
+  "--out": "value",
+  "--slnt": "value",
+  "--seam-allowance": "value",
+  "--on-fold": "value"
+};
+
 function parseCutArgs(args: string[]): CutOptions {
+  const parsed = parseCommandArgs(args, CUT_SPEC);
   const options: CutOptions = {};
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === "--proposal") {
-      options.proposal = requireValue(arg, args[++index]);
-    } else if (arg === "--scale") {
-      options.scale = requireValue(arg, args[++index]);
-    } else if (arg === "--out") {
-      options.out = requireValue(arg, args[++index]);
-    } else if (arg === "--slnt") {
-      options.slnt = requireValue(arg, args[++index]);
-    } else if (arg === "--seam-allowance") {
-      const parsed = Number(requireValue(arg, args[++index]));
-      if (!Number.isFinite(parsed) || parsed < 0) {
-        throw new Error("--seam-allowance must be a non-negative number (mm).");
-      }
-      options.seamAllowanceMm = parsed;
-    } else if (arg === "--on-fold") {
-      const value = requireValue(arg, args[++index]);
-      if (value !== "long" && value !== "short") {
-        throw new Error('--on-fold must be "long" or "short".');
-      }
-      options.onFold = value;
-    } else if (arg?.startsWith("--")) {
-      throw new Error(`Unknown option: ${arg}`);
-    } else if (options.dxfFile !== undefined) {
-      throw new Error("Expected a single <pattern.dxf> path.");
-    } else if (arg !== undefined) {
-      options.dxfFile = arg;
-    }
+  if (parsed.positional !== undefined) options.dxfFile = parsed.positional;
+  if (parsed.values["--proposal"] !== undefined) options.proposal = parsed.values["--proposal"];
+  if (parsed.values["--scale"] !== undefined) options.scale = parsed.values["--scale"];
+  if (parsed.values["--out"] !== undefined) options.out = parsed.values["--out"];
+  if (parsed.values["--slnt"] !== undefined) options.slnt = parsed.values["--slnt"];
+  if (parsed.values["--seam-allowance"] !== undefined) {
+    options.seamAllowanceMm = parseSeamAllowanceMm(parsed.values["--seam-allowance"]);
+  }
+  if (parsed.values["--on-fold"] !== undefined) {
+    options.onFold = parseOnFold(parsed.values["--on-fold"]);
   }
   return options;
 }

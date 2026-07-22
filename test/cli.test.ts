@@ -70,6 +70,35 @@ test("propose --reference takes multiple BLOCK names (BACK FRONT is not a stray 
   assert.doesNotMatch(result.stderr, /Expected a single/);
 });
 
+test("multi-token flag rejects a .dxf value instead of silently swallowing a misplaced <pattern.dxf>", () => {
+  // 守る仕様 (R3): --reference / --accepted は続く非 flag token を貪欲に取り込むので、options の後ろに
+  //           置いた <pattern.dxf> は id / BLOCK 名として silent に吸われる footgun になる。値が .dxf で
+  //           終わるなら推測せず usage error（exit 2）にし、file も slnt も触らない。
+  const proposeSwallow = runTru([
+    "propose",
+    "--diagnostic",
+    "r.json",
+    "--reference",
+    "FRONT",
+    "pattern.dxf"
+  ]);
+  assert.equal(proposeSwallow.status, 2);
+  assert.match(proposeSwallow.stderr, /DXF パス/);
+
+  const applySwallow = runTru([
+    "apply",
+    "--proposal",
+    "p.json",
+    "--out",
+    "out.dxf",
+    "--accepted",
+    "prop_001",
+    "pattern.dxf"
+  ]);
+  assert.equal(applySwallow.status, 2);
+  assert.match(applySwallow.stderr, /DXF パス/);
+});
+
 test("propose with a bandEdge-less band report exits 0 and records the skip (slnt not spawned)", () => {
   // 守る仕様 (B1 訂正 / T8 + exit code 契約): band 診断は supported だが、bandEdge 住所（B1 additive）を
   //           持たない report では band 辺を addressing できず、resolver は slnt を spawn する前に not-found を
