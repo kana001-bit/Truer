@@ -383,6 +383,12 @@ function isArcRange(value: unknown): value is [number, number] {
   );
 }
 
+// DXF edge addressing の共有規則（T6: edge を推測しない）: edgeId（非空文字列）か arcRange の
+// 少なくとも一方があること。target / seam edge / band neighbour が同じ判定を使う（重複を 1 箇所に）。
+function hasEdgeAddress(edgeId: unknown, arcRange: unknown): boolean {
+  return isNonEmptyString(edgeId) || isArcRange(arcRange);
+}
+
 // SeamEdge には DXF addressing（blockName + edgeId または arcRange。ProposalTarget と同じ T6
 // ルールを再利用）、空でない digest、有限の length が要る。
 function isSeamEdge(value: unknown): value is SeamEdge {
@@ -394,12 +400,17 @@ function isSeamEdge(value: unknown): value is SeamEdge {
   if (edge.edgeId !== undefined && !isNonEmptyString(edge.edgeId)) return false;
   if (edge.arcRange !== undefined && !isArcRange(edge.arcRange)) return false;
   // addressing には edgeId / arcRange の少なくとも一方が要る（T6: edge を推測しない）。
-  if (!isNonEmptyString(edge.edgeId) && !isArcRange(edge.arcRange)) return false;
+  if (!hasEdgeAddress(edge.edgeId, edge.arcRange)) return false;
   return true;
 }
 
 function isNonNegativeFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+// 正の整数（裁断枚数など。0 / 負 / 非整数は不可）。cutQuantity / bandCutQuantity が同じ判定を使う。
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 // cornerSlide.candidates[] の 1 要素の shape 検証。壊れた候補（負のスライド量・住所欠落など）が
@@ -449,17 +460,13 @@ function bandNeighborError(value: unknown): string | undefined {
   if (neighbour.arcRange !== undefined && !isArcRange(neighbour.arcRange)) {
     return "arcRange must be a normalized [start, end] when present";
   }
-  if (!isNonEmptyString(neighbour.edgeId) && !isArcRange(neighbour.arcRange)) {
+  if (!hasEdgeAddress(neighbour.edgeId, neighbour.arcRange)) {
     return "must address the edge by edgeId or arcRange";
   }
   if (!isNonNegativeFiniteNumber(neighbour.finishedLengthMm)) {
     return "finishedLengthMm must be a non-negative finite number";
   }
-  if (
-    typeof neighbour.cutQuantity !== "number" ||
-    !Number.isInteger(neighbour.cutQuantity) ||
-    neighbour.cutQuantity <= 0
-  ) {
+  if (!isPositiveInteger(neighbour.cutQuantity)) {
     return "cutQuantity must be a positive integer";
   }
   return undefined;
@@ -554,7 +561,7 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
       );
     }
     // addressing には edgeId / arcRange の少なくとも一方が要る（T6: edge を推測しない）。
-    if (!isNonEmptyString(target.edgeId) && !isArcRange(target.arcRange)) {
+    if (!hasEdgeAddress(target.edgeId, target.arcRange)) {
       errors.push(`${at}.target must address the edge by edgeId or arcRange`);
     }
   }
@@ -610,10 +617,7 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
         errors.push(`${at}.seamReconciliation.reference must be "from", "to", or omitted`);
       }
       // Slice 1 の advisory field（すべて任意・追加的）: 存在するときだけ shape を検証する。
-      if (
-        seam.easeMm !== undefined &&
-        (typeof seam.easeMm !== "number" || !Number.isFinite(seam.easeMm) || seam.easeMm < 0)
-      ) {
+      if (seam.easeMm !== undefined && !isNonNegativeFiniteNumber(seam.easeMm)) {
         errors.push(
           `${at}.seamReconciliation.easeMm must be a non-negative finite number when present`
         );
@@ -632,11 +636,7 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
           if (link.conform !== "from" && link.conform !== "to") {
             errors.push(`${at}.seamReconciliation.linkTarget.conform must be "from" or "to"`);
           }
-          if (
-            typeof link.targetFinishedMm !== "number" ||
-            !Number.isFinite(link.targetFinishedMm) ||
-            link.targetFinishedMm < 0
-          ) {
+          if (!isNonNegativeFiniteNumber(link.targetFinishedMm)) {
             errors.push(
               `${at}.seamReconciliation.linkTarget.targetFinishedMm must be a non-negative finite number`
             );
@@ -732,11 +732,7 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
         errors.push(`${at}.bandReconciliation.closureMm must be a finite number`);
       }
       // bandCutQuantity は正の整数（バンド総周長を割る枚数。0/負では総周長が壊れる）。
-      if (
-        typeof band.bandCutQuantity !== "number" ||
-        !Number.isInteger(band.bandCutQuantity) ||
-        band.bandCutQuantity <= 0
-      ) {
+      if (!isPositiveInteger(band.bandCutQuantity)) {
         errors.push(`${at}.bandReconciliation.bandCutQuantity must be a positive integer`);
       }
       if (!Array.isArray(band.neighbours) || band.neighbours.length === 0) {
