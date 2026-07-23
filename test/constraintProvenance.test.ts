@@ -10,43 +10,94 @@ import {
 import { buildSeamProvenance } from "../src/core/constraint/buildSeamProvenance.ts";
 import type { ConstraintPayload } from "../src/core/constraint/constraintTypes.ts";
 
-// 実 cycling_knickers の outseam payload（Loomit handoff のサンプル・機械検証済み）。
+// 実 cycling_knickers の outseam payload（Loomit v0 契約・機械変換済み fixture）。
 function loadSample(): ConstraintPayload {
   const path = join(process.cwd(), "test/fixtures/constraint-payload-outseam.json");
   return readConstraintPayload(JSON.parse(readFileSync(path, "utf8")));
 }
 
-test("readConstraintPayload: 封筒 { payload, diagnostics } を受け params/connectors を読む", () => {
+// v0 の最小 payload を組む helper（bare payload。adapter は封筒無しも受ける）。
+function v0(
+  params: Record<string, unknown>,
+  parts: unknown,
+  connectors: unknown
+): Record<string, unknown> {
+  return { schema: "loomit.constraint-payload.v0", params, parts, connectors };
+}
+
+test("readConstraintPayload: v0 の params(declared) / parts / connectors(join鍵) を読む", () => {
   const payload = loadSample();
+  assert.equal(payload.schema, "loomit.constraint-payload.v0");
   assert.deepEqual(Object.keys(payload.params).sort(), [
     "#fly_length",
     "#leg_fly_length",
     "#pocket_opening",
     "#pocket_opening_from_waist"
   ]);
-  assert.equal(payload.connectors.length, 2);
-  const front = payload.connectors.find((connector) => connector.partId === "front");
-  const back = payload.connectors.find((connector) => connector.partId === "back");
+  // v0: 依存は parts、connectors は join 鍵のみ。
+  const front = payload.parts.find((part) => part.partId === "front");
+  const back = payload.parts.find((part) => part.partId === "back");
   assert.equal(front?.dependsOn.length, 16);
   assert.equal(back?.dependsOn.length, 15);
+  assert.deepEqual(payload.connectors, [
+    { partId: "front", connectorId: "outseam" },
+    { partId: "back", connectorId: "outseam" }
+  ]);
 });
 
-test("readConstraintPayload: refs が params に解決しないと inv3 error（推測で流さない）", () => {
+test("readConstraintPayload: 未知 schema 版は explicit error（未知版を弾く）", () => {
+  assert.throws(
+    () =>
+      readConstraintPayload({
+        schema: "loomit.constraint-payload.v9",
+        params: {},
+        parts: [],
+        connectors: []
+      }),
+    (error: unknown) => error instanceof ConstraintPayloadError
+  );
+});
+
+test("readConstraintPayload: params の declared union（true=value/note, false=usedBy のみ）", () => {
+  const payload = readConstraintPayload(
+    v0(
+      {
+        "#knob": {
+          declared: true,
+          value: "0",
+          usedBy: ["front", "back"],
+          note: "回してよいツマミ"
+        },
+        "#ref": { declared: false, usedBy: ["front"] }
+      },
+      [],
+      []
+    )
+  );
+  const knob = payload.params["#knob"]!;
+  assert.equal(knob.declared, true);
+  if (knob.declared) {
+    assert.equal(knob.value, "0");
+    assert.equal(knob.note, "回してよいツマミ"); // author-intent を落とさない
+  }
+  assert.equal(payload.params["#ref"]!.declared, false);
+});
+
+test("readConstraintPayload: refs が params に解決しないと inv3 error（parts 経由）", () => {
   // 守る仕様: 未定義増分を参照する出現は confidently-wrong を避けて explicit error。
-  const broken = {
-    payload: {
-      params: {},
-      connectors: [
-        {
-          partId: "front",
-          connectorId: "outseam",
-          dependsOn: [
-            { pointId: "1", type: "cutSpline", linearity: "none", expr: "#ghost", refs: ["#ghost"] }
-          ]
-        }
-      ]
-    }
-  };
+  const broken = v0(
+    {},
+    [
+      {
+        partId: "front",
+        piece: "front",
+        dependsOn: [
+          { pointId: "1", type: "cutSpline", linearity: "none", expr: "#ghost", refs: ["#ghost"] }
+        ]
+      }
+    ],
+    [{ partId: "front", connectorId: "outseam" }]
+  );
   assert.throws(
     () => readConstraintPayload(broken),
     (error: unknown) => error instanceof ConstraintPayloadError
@@ -55,37 +106,19 @@ test("readConstraintPayload: refs が params に解決しないと inv3 error（
 
 test("readConstraintPayload: 壊れた field 型は explicit error（field を信頼しない）", () => {
   assert.throws(
-    () => readConstraintPayload({ payload: { params: {}, connectors: "nope" } }),
+    () => readConstraintPayload(v0({}, "nope", [])),
     (error: unknown) => error instanceof ConstraintPayloadError
   );
 });
 
-test("readConstraintPayload: params の note（author-intent）を保持する（P2）", () => {
-  // 守る仕様: .val 増分の description を permitted 層の種として素通しする（落とさない）。
-  const payload = readConstraintPayload({
-    payload: {
-      params: {
-        "#ease": {
-          kind: "increment",
-          value: "0",
-          usedBy: ["front", "back"],
-          note: "make it baggier"
-        }
-      },
-      connectors: []
-    }
-  });
-  assert.equal(payload.params["#ease"]!.note, "make it baggier");
-});
-
-test("readConstraintPayload: occurrence の discriminated union を検証する（P3）", () => {
+test("readConstraintPayload: occurrence の discriminated union を検証する（排他）", () => {
   // 守る仕様: 出現は pointId+type か splineId+handle の排他。曖昧な形は boundary で explicit error。
-  const wrap = (occurrence: Record<string, unknown>) => ({
-    payload: {
-      params: {},
-      connectors: [{ partId: "front", connectorId: "seam", dependsOn: [occurrence] }]
-    }
-  });
+  const wrap = (occurrence: Record<string, unknown>) =>
+    v0(
+      {},
+      [{ partId: "front", piece: "front", dependsOn: [occurrence] }],
+      [{ partId: "front", connectorId: "seam" }]
+    );
   const base = { linearity: "linear", expr: "5", refs: [] };
   const bad: Record<string, unknown>[] = [
     { ...base }, // pointId も splineId も無い
@@ -102,7 +135,6 @@ test("readConstraintPayload: occurrence の discriminated union を検証する�
       JSON.stringify(occurrence)
     );
   }
-  // 正しい 2 形は通る。
   assert.doesNotThrow(() =>
     readConstraintPayload(wrap({ ...base, pointId: "1", type: "endLine" }))
   );
@@ -111,77 +143,152 @@ test("readConstraintPayload: occurrence の discriminated union を検証する�
   );
 });
 
-test("buildSeamProvenance: linearity:none を落とし linear を先に並べる", () => {
+test("buildSeamProvenance: linearity:none を落とし linear を先に並べる（parts 起点）", () => {
   const payload = loadSample();
   const provenance = buildSeamProvenance(payload, { partId: "front", connectorId: "outseam" });
-  // front.outseam は 16 occ。cutSpline(none) 4 を落として 12 候補。
+  // front の dependsOn 16、cutSpline(none) 4 を落として 12 候補。
   assert.equal(provenance.droppedNoneCount, 4);
   assert.equal(provenance.candidates.length, 12);
-  // 並びは linear が先、nonlinear が後（none は無い）。
   const linearities = provenance.candidates.map((candidate) => candidate.occurrence.linearity);
-  const lastLinear = linearities.lastIndexOf("linear");
-  const firstNonlinear = linearities.indexOf("nonlinear");
-  assert.ok(lastLinear < firstNonlinear, `並び: ${linearities.join(",")}`);
+  assert.ok(linearities.lastIndexOf("linear") < linearities.indexOf("nonlinear"));
   assert.ok(linearities.every((value) => value !== "none"));
 });
 
 test("buildSeamProvenance: outseam の長さ候補は増分参照ゼロ → coupling は全部 part-local（[C8]・危険側）", () => {
-  // 実データの所見: 増分は cutSpline(none) にしか無く、長さ候補は inline 値 / measurement。安全側で危険候補扱い。
   const payload = loadSample();
   const provenance = buildSeamProvenance(payload, { partId: "front", connectorId: "outseam" });
   assert.ok(provenance.candidates.every((candidate) => candidate.occurrence.refs.length === 0));
   assert.ok(provenance.candidates.every((candidate) => candidate.coupling === "part-local"));
 });
 
-test("buildSeamProvenance: 両側 usedBy を覆う増分は both-sides（coupling recipe）", () => {
-  const payload: ConstraintPayload = {
-    params: { "#p": { kind: "increment", value: "5", usedBy: ["front", "back"] } },
-    connectors: [
-      {
-        partId: "front",
-        connectorId: "seam",
-        dependsOn: [
-          { pointId: "1", type: "endLine", linearity: "linear", expr: "#p", refs: ["#p"] }
-        ]
-      },
-      { partId: "back", connectorId: "seam", dependsOn: [] }
-    ]
-  };
+test("buildSeamProvenance: 増分参照ありは coupling=increment + usedByHint（弱いヒント・安全断定しない）", () => {
+  const payload = readConstraintPayload(
+    v0(
+      { "#p": { declared: true, value: "5", usedBy: ["front", "back"] } },
+      [
+        {
+          partId: "front",
+          piece: "front",
+          dependsOn: [
+            { pointId: "1", type: "endLine", linearity: "linear", expr: "#p", refs: ["#p"] }
+          ]
+        }
+      ],
+      [{ partId: "front", connectorId: "seam" }]
+    )
+  );
   const provenance = buildSeamProvenance(payload, { partId: "front", connectorId: "seam" });
   assert.equal(provenance.candidates.length, 1);
-  assert.equal(provenance.candidates[0]!.coupling, "both-sides");
+  assert.equal(provenance.candidates[0]!.coupling, "increment");
+  assert.deepEqual(provenance.candidates[0]!.usedByHint, ["back", "front"]);
 });
 
-test("buildSeamProvenance: 片側だけ usedBy の増分は one-side（危険）", () => {
-  const payload: ConstraintPayload = {
-    params: { "#p": { kind: "increment", value: "5", usedBy: ["front"] } },
-    connectors: [
-      {
-        partId: "front",
-        connectorId: "seam",
-        dependsOn: [
-          { pointId: "1", type: "endLine", linearity: "linear", expr: "#p", refs: ["#p"] }
-        ]
-      },
-      { partId: "back", connectorId: "seam", dependsOn: [] }
-    ]
-  };
-  const provenance = buildSeamProvenance(payload, { partId: "front", connectorId: "seam" });
-  assert.equal(provenance.candidates[0]!.coupling, "one-side");
-});
-
-test("buildSeamProvenance: 対象 connector が payload に無ければ空 + note", () => {
+test("buildSeamProvenance: connector が payload に無ければ空 + note", () => {
   const payload = loadSample();
   const provenance = buildSeamProvenance(payload, { partId: "sleeve", connectorId: "outseam" });
   assert.equal(provenance.candidates.length, 0);
-  assert.equal(provenance.droppedNoneCount, 0);
   assert.match(provenance.note ?? "", /connector が無い/);
+});
+
+test("buildSeamProvenance: connector はあるが part が無ければ note", () => {
+  const payload = readConstraintPayload(v0({}, [], [{ partId: "x", connectorId: "seam" }]));
+  const provenance = buildSeamProvenance(payload, { partId: "x", connectorId: "seam" });
+  assert.match(provenance.note ?? "", /part "x" が無い/);
 });
 
 test("buildSeamProvenance: 同入力で同出力（決定的, T10）", () => {
   const payload = loadSample();
   const target = { partId: "back", connectorId: "outseam" };
-  const first = buildSeamProvenance(payload, target);
-  const second = buildSeamProvenance(payload, target);
-  assert.deepEqual(first, second);
+  assert.deepEqual(buildSeamProvenance(payload, target), buildSeamProvenance(payload, target));
+});
+
+test("readConstraintPayload: schema-invalid な余剰フィールドは拒否（additionalProperties:false）", () => {
+  // 守る仕様: adapter を JSON Schema と同じ strict にして片側の drift を実行時前に落とす。
+  const cases: unknown[] = [
+    // declared:false に stray value（schema では usedBy のみ）
+    v0({ "#r": { declared: false, usedBy: ["front"], value: "stray" } }, [], []),
+    // connector に余剰フィールド
+    v0({}, [], [{ partId: "front", connectorId: "outseam", extra: 1 }]),
+    // part に余剰フィールド
+    v0({}, [{ partId: "front", piece: "front", dependsOn: [], extra: 1 }], []),
+    // occurrence に余剰フィールド
+    v0(
+      {},
+      [
+        {
+          partId: "front",
+          piece: "front",
+          dependsOn: [
+            { pointId: "1", type: "endLine", linearity: "linear", expr: "5", refs: [], extra: 1 }
+          ]
+        }
+      ],
+      [{ partId: "front", connectorId: "seam" }]
+    ),
+    // payload 本体に余剰フィールド
+    { schema: "loomit.constraint-payload.v0", params: {}, parts: [], connectors: [], extra: 1 }
+  ];
+  for (const bad of cases) {
+    assert.throws(
+      () => readConstraintPayload(bad),
+      (error: unknown) => error instanceof ConstraintPayloadError,
+      JSON.stringify(bad)
+    );
+  }
+});
+
+test("buildSeamProvenance: declared:false のみ参照する候補は increment にしない（part-local）", () => {
+  // 守る仕様 (declared 尊重): 動かせるツマミ = declared:true。未宣言参照だけの式は turn できないので part-local。
+  const payload = readConstraintPayload(
+    v0(
+      { "#undeclared": { declared: false, usedBy: ["front"] } },
+      [
+        {
+          partId: "front",
+          piece: "front",
+          dependsOn: [
+            {
+              pointId: "1",
+              type: "endLine",
+              linearity: "linear",
+              expr: "#undeclared",
+              refs: ["#undeclared"]
+            }
+          ]
+        }
+      ],
+      [{ partId: "front", connectorId: "seam" }]
+    )
+  );
+  const provenance = buildSeamProvenance(payload, { partId: "front", connectorId: "seam" });
+  assert.equal(provenance.candidates[0]!.coupling, "part-local");
+  assert.equal(provenance.candidates[0]!.usedByHint, undefined);
+});
+
+test("buildSeamProvenance: pieceWide=true・多 seam piece の別 connector は同じ候補（[C6] の既知限界を明示）", () => {
+  // 守る仕様: v0 の dependsOn は piece 単位なので connectorId で絞れない。同 part の別 connector は同じ候補になる。
+  //           これを黙らせず pieceWide=true で consumer に明示する（misattribution を silent にしない）。
+  const payload = readConstraintPayload(
+    v0(
+      { "#p": { declared: true, value: "5", usedBy: ["front"] } },
+      [
+        {
+          partId: "front",
+          piece: "front",
+          dependsOn: [
+            { pointId: "1", type: "endLine", linearity: "linear", expr: "#p", refs: ["#p"] }
+          ]
+        }
+      ],
+      [
+        { partId: "front", connectorId: "outseam" },
+        { partId: "front", connectorId: "inseam" }
+      ]
+    )
+  );
+  const outseam = buildSeamProvenance(payload, { partId: "front", connectorId: "outseam" });
+  const inseam = buildSeamProvenance(payload, { partId: "front", connectorId: "inseam" });
+  assert.equal(outseam.pieceWide, true);
+  assert.match(outseam.note ?? "", /piece/);
+  assert.deepEqual(outseam.candidates, inseam.candidates);
 });
