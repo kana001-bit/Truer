@@ -1,7 +1,8 @@
-// ⚠ v0 aligned・CLI 未結線（2026-07-23）: Loomit の版付き契約 `loomit.constraint-payload.v0` に合わせた内部表現。
-// 契約正本は Loomit の zod schema（`Loomit/packages/core/src/schema/constraint-payload.schema.ts`）から生成した
-// JSON Schema（`test/fixtures/constraint-payload.v0.schema.json` に copy）。まだ CLI からは呼ばれておらず、上流の
-// `loom truer request`（Slice 5）が実装され次第、CLI で結線する。
+// v0 aligned: Loomit の版付き契約 `loomit.constraint-payload.v0` に合わせた内部表現。契約正本は Loomit の zod schema
+// （`Loomit/packages/core/src/schema/constraint-payload.schema.ts`）から生成した JSON Schema
+// （`test/fixtures/constraint-payload.v0.schema.json` に copy）。`tru propose --constraints <payload.json>` で CLI に
+// file 方式で結線済み（PR #33）。subprocess runner（`loom truer request | tru propose`）は上流 Loomit の emitter（Slice 5）
+// 待ちで未結線。
 //
 // この payload は read-only な provenance の入力で、幾何は評価しない（`.val` を評価できるのは Valentina だけ＝scope A、
 // design-history 参照）。core は Loomit の JSON 形に直接依存せず、adapter（`src/adapters/loom/readConstraintPayload.ts`）が

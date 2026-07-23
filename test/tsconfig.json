@@ -1,0 +1,8 @@
+// エディタ（VS Code の TS サーバ）専用。ルート tsconfig.json は build 用で `include: ["src"]` のため
+// test/ を含まず、テストファイルを開くと @types/node が効かない inferred project に落ちて node:*/process が
+// 「見つからない」偽陽性を出す。TS サーバは「ファイルに最も近い tsconfig.json」を使うので、この 1 ファイルで
+// test/ を正しい設定（src+test・@types/node・truer alias）へ結びつける。実体は tsconfig.test.json を継承するだけ
+// （`npm run typecheck` は従来どおり tsconfig.test.json を直接使う。build には無関係）。
+{
+  "extends": "../tsconfig.test.json"
+}
