@@ -39,6 +39,22 @@ function isLinearity(value: unknown): value is Linearity {
   return value === "linear" || value === "nonlinear" || value === "none";
 }
 
+// v0 schema は strict（additionalProperties:false）。未知フィールドは片側の契約 drift の兆候なので silent に
+// 無視せず explicit error にする（copy した JSON Schema と同じ厳しさを adapter でも担保＝drift-guard の要）。
+function rejectExtraKeys(
+  raw: Record<string, unknown>,
+  allowed: readonly string[],
+  where: string
+): void {
+  for (const key of Object.keys(raw)) {
+    if (!allowed.includes(key)) {
+      throw new ConstraintPayloadError(
+        `${where} に未知フィールド "${key}"（schema は strict / additionalProperties:false）。`
+      );
+    }
+  }
+}
+
 // 増分 param。declared の判別 union（declared:true は value 必須・note 任意、declared:false は usedBy のみ）。
 function readParam(name: string, raw: unknown): ConstraintParam {
   if (!isObject(raw)) throw new ConstraintPayloadError(`params["${name}"] must be an object.`);
@@ -49,6 +65,9 @@ function readParam(name: string, raw: unknown): ConstraintParam {
   if (raw.declared === true) {
     if (typeof raw.value !== "string")
       throw new ConstraintPayloadError(`declared params["${name}"].value must be a string.`);
+    if (raw.note !== undefined && typeof raw.note !== "string")
+      throw new ConstraintPayloadError(`params["${name}"].note must be a string when present.`);
+    rejectExtraKeys(raw, ["declared", "value", "usedBy", "note"], `params["${name}"]`);
     return {
       declared: true,
       value: raw.value,
@@ -57,6 +76,8 @@ function readParam(name: string, raw: unknown): ConstraintParam {
       ...(typeof raw.note === "string" ? { note: raw.note } : {})
     };
   }
+  // declared:false は usedBy のみ（value/note を持たない）。余剰キーは strict で弾く。
+  rejectExtraKeys(raw, ["declared", "usedBy"], `params["${name}"]`);
   return { declared: false, usedBy: raw.usedBy };
 }
 
@@ -79,6 +100,7 @@ function readOccurrence(raw: unknown, where: string): ConstraintOccurrence {
       throw new ConstraintPayloadError(`${where} with pointId must have a string type.`);
     if (raw.handle !== undefined)
       throw new ConstraintPayloadError(`${where} with pointId must not have handle.`);
+    rejectExtraKeys(raw, ["pointId", "type", "linearity", "expr", "refs"], where);
     return {
       pointId: raw.pointId as string,
       type: raw.type,
@@ -91,6 +113,7 @@ function readOccurrence(raw: unknown, where: string): ConstraintOccurrence {
     throw new ConstraintPayloadError(`${where} with splineId must have a string handle.`);
   if (raw.type !== undefined)
     throw new ConstraintPayloadError(`${where} with splineId must not have type.`);
+  rejectExtraKeys(raw, ["splineId", "handle", "linearity", "expr", "refs"], where);
   return {
     splineId: raw.splineId as string,
     handle: raw.handle,
@@ -109,6 +132,7 @@ function readPart(raw: unknown, index: number): ConstraintPart {
     throw new ConstraintPayloadError(`parts[${index}].piece must be a string.`);
   if (!Array.isArray(raw.dependsOn))
     throw new ConstraintPayloadError(`parts[${index}].dependsOn must be an array.`);
+  rejectExtraKeys(raw, ["partId", "piece", "dependsOn"], `parts[${index}]`);
   const dependsOn = raw.dependsOn.map((occurrence, occurrenceIndex) =>
     readOccurrence(occurrence, `parts[${index}].dependsOn[${occurrenceIndex}]`)
   );
@@ -122,6 +146,7 @@ function readConnectorRef(raw: unknown, index: number): ConstraintConnectorRef {
     throw new ConstraintPayloadError(`connectors[${index}].partId must be a string.`);
   if (typeof raw.connectorId !== "string")
     throw new ConstraintPayloadError(`connectors[${index}].connectorId must be a string.`);
+  rejectExtraKeys(raw, ["partId", "connectorId"], `connectors[${index}]`);
   return { partId: raw.partId, connectorId: raw.connectorId };
 }
 
@@ -143,6 +168,8 @@ export function readConstraintPayload(json: unknown): ConstraintPayload {
     throw new ConstraintPayloadError('Constraint payload must have a "parts" array.');
   if (!Array.isArray(root.connectors))
     throw new ConstraintPayloadError('Constraint payload must have a "connectors" array.');
+  // payload 本体（封筒を剥がした後）は strict。封筒側の diagnostics/status は許容（ここでは root だけ厳格化）。
+  rejectExtraKeys(root, ["schema", "params", "parts", "connectors"], "payload");
 
   const params: Record<string, ConstraintParam> = {};
   for (const [name, raw] of Object.entries(root.params)) {

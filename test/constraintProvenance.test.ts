@@ -201,3 +201,94 @@ test("buildSeamProvenance: 同入力で同出力（決定的, T10）", () => {
   const target = { partId: "back", connectorId: "outseam" };
   assert.deepEqual(buildSeamProvenance(payload, target), buildSeamProvenance(payload, target));
 });
+
+test("readConstraintPayload: schema-invalid な余剰フィールドは拒否（additionalProperties:false）", () => {
+  // 守る仕様: adapter を JSON Schema と同じ strict にして片側の drift を実行時前に落とす。
+  const cases: unknown[] = [
+    // declared:false に stray value（schema では usedBy のみ）
+    v0({ "#r": { declared: false, usedBy: ["front"], value: "stray" } }, [], []),
+    // connector に余剰フィールド
+    v0({}, [], [{ partId: "front", connectorId: "outseam", extra: 1 }]),
+    // part に余剰フィールド
+    v0({}, [{ partId: "front", piece: "front", dependsOn: [], extra: 1 }], []),
+    // occurrence に余剰フィールド
+    v0(
+      {},
+      [
+        {
+          partId: "front",
+          piece: "front",
+          dependsOn: [
+            { pointId: "1", type: "endLine", linearity: "linear", expr: "5", refs: [], extra: 1 }
+          ]
+        }
+      ],
+      [{ partId: "front", connectorId: "seam" }]
+    ),
+    // payload 本体に余剰フィールド
+    { schema: "loomit.constraint-payload.v0", params: {}, parts: [], connectors: [], extra: 1 }
+  ];
+  for (const bad of cases) {
+    assert.throws(
+      () => readConstraintPayload(bad),
+      (error: unknown) => error instanceof ConstraintPayloadError,
+      JSON.stringify(bad)
+    );
+  }
+});
+
+test("buildSeamProvenance: declared:false のみ参照する候補は increment にしない（part-local）", () => {
+  // 守る仕様 (declared 尊重): 動かせるツマミ = declared:true。未宣言参照だけの式は turn できないので part-local。
+  const payload = readConstraintPayload(
+    v0(
+      { "#undeclared": { declared: false, usedBy: ["front"] } },
+      [
+        {
+          partId: "front",
+          piece: "front",
+          dependsOn: [
+            {
+              pointId: "1",
+              type: "endLine",
+              linearity: "linear",
+              expr: "#undeclared",
+              refs: ["#undeclared"]
+            }
+          ]
+        }
+      ],
+      [{ partId: "front", connectorId: "seam" }]
+    )
+  );
+  const provenance = buildSeamProvenance(payload, { partId: "front", connectorId: "seam" });
+  assert.equal(provenance.candidates[0]!.coupling, "part-local");
+  assert.equal(provenance.candidates[0]!.usedByHint, undefined);
+});
+
+test("buildSeamProvenance: pieceWide=true・多 seam piece の別 connector は同じ候補（[C6] の既知限界を明示）", () => {
+  // 守る仕様: v0 の dependsOn は piece 単位なので connectorId で絞れない。同 part の別 connector は同じ候補になる。
+  //           これを黙らせず pieceWide=true で consumer に明示する（misattribution を silent にしない）。
+  const payload = readConstraintPayload(
+    v0(
+      { "#p": { declared: true, value: "5", usedBy: ["front"] } },
+      [
+        {
+          partId: "front",
+          piece: "front",
+          dependsOn: [
+            { pointId: "1", type: "endLine", linearity: "linear", expr: "#p", refs: ["#p"] }
+          ]
+        }
+      ],
+      [
+        { partId: "front", connectorId: "outseam" },
+        { partId: "front", connectorId: "inseam" }
+      ]
+    )
+  );
+  const outseam = buildSeamProvenance(payload, { partId: "front", connectorId: "outseam" });
+  const inseam = buildSeamProvenance(payload, { partId: "front", connectorId: "inseam" });
+  assert.equal(outseam.pieceWide, true);
+  assert.match(outseam.note ?? "", /piece/);
+  assert.deepEqual(outseam.candidates, inseam.candidates);
+});

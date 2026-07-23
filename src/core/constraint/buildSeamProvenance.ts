@@ -27,6 +27,7 @@ export function buildSeamProvenance(
   if (!connectorExists) {
     return {
       target,
+      pieceWide: false,
       candidates: [],
       droppedNoneCount: 0,
       note: `payload に (${target.partId}, ${target.connectorId}) の connector が無い`
@@ -36,6 +37,7 @@ export function buildSeamProvenance(
   if (!part) {
     return {
       target,
+      pieceWide: false,
       candidates: [],
       droppedNoneCount: 0,
       note: `payload に part "${target.partId}" が無い`
@@ -50,7 +52,15 @@ export function buildSeamProvenance(
     // linear を先に。同 linearity 内は入力順を保つ（安定ソート＝決定的、T10）。
     .sort((left, right) => rank(left.occurrence.linearity) - rank(right.occurrence.linearity));
 
-  return { target, candidates, droppedNoneCount };
+  // v0 の依存は piece 単位で connectorId では絞れない（[C6]）。多 seam piece では他 seam の候補も混ざるので、
+  // 「この connector 専用」と誤解させないよう pieceWide を明示する。
+  return {
+    target,
+    pieceWide: true,
+    candidates,
+    droppedNoneCount,
+    note: `候補は piece "${part.piece}" 単位（connector で絞れない・[C6]）。多 seam piece では他 seam の候補も含む`
+  };
 }
 
 function rank(linearity: string): number {
@@ -61,23 +71,27 @@ function classifyCandidate(
   occurrence: ProvenanceCandidate["occurrence"],
   payload: ConstraintPayload
 ): ProvenanceCandidate {
-  // 増分参照が無い＝inline 値 / measurement。片側編集になりうるので危険側（part-local）で見せる（[C8]）。
-  if (occurrence.refs.length === 0) {
+  // 「動かせるツマミ」= declared:true の増分を参照する候補だけ increment とする。declared:false（宣言の無い参照）や
+  // 参照無し（inline 値 / measurement）は turn できるツマミではないので part-local（片側編集になりうる危険側、[C8]）。
+  const declaredRefs = occurrence.refs.filter((name) => payload.params[name]?.declared === true);
+  if (declaredRefs.length === 0) {
     return {
       occurrence,
       coupling: "part-local",
       reason:
-        "式に増分参照が無い（inline 値 / measurement）。両側が動く保証が無く片側編集になりうる（危険側）"
+        occurrence.refs.length === 0
+          ? "式に増分参照が無い（inline 値 / measurement）。片側編集になりうる（危険側）"
+          : `参照増分 ${occurrence.refs.join(", ")} が全て未宣言（動かせるツマミ無し）。片側編集になりうる（危険側）`
     };
   }
-  // 参照増分の usedBy の和を part 単位の**弱いヒント**として添える（安全判定ではない。per-seam 両側判定は [C6] 待ち）。
+  // declared:true の参照増分の usedBy の和を part 単位の**弱いヒント**として添える（安全判定ではない・per-seam は [C6] 待ち）。
   const usedByHint = [
-    ...new Set(occurrence.refs.flatMap((name) => payload.params[name]?.usedBy ?? []))
+    ...new Set(declaredRefs.flatMap((name) => payload.params[name]?.usedBy ?? []))
   ].sort();
   return {
     occurrence,
     coupling: "increment",
     usedByHint,
-    reason: `増分 ${occurrence.refs.join(", ")} を参照（usedBy=${usedByHint.join(", ") || "なし"}）。part 単位の弱いヒントで per-seam の両側判定は [C6] 待ち`
+    reason: `動かせる増分 ${declaredRefs.join(", ")} を参照（usedBy=${usedByHint.join(", ") || "なし"}）。part 単位の弱いヒントで per-seam の両側判定は [C6] 待ち`
   };
 }

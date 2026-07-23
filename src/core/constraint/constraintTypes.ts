@@ -59,9 +59,9 @@ export interface ConstraintPayload {
 
 // candidate が seam 長にどう関わるか。**per-seam の安全性は payload だけでは決まらない（[C6]）** ので、coupling は
 // 安全判定ではなく弱い分類に留める（Loomit の「usedBy は part 単位の弱いヒント」訂正を反映）:
-// - increment:  式が増分を参照する（動かせるツマミの候補）。`usedByHint` に参照増分の usedBy（part 単位）を添える。
-//               これは弱いヒントで、per-seam に両側が動く保証ではない。
-// - part-local: 増分参照が無い（inline 値 / measurement）。片側編集になりうる（危険側）。
+// - increment:  式が **declared:true の増分**（動かせるツマミ）を参照する候補。`usedByHint` にそれら増分の usedBy
+//               （part 単位）を添える。これは弱いヒントで、per-seam に両側が動く保証ではない。
+// - part-local: 動かせる増分の参照が無い（inline 値 / measurement / 未宣言参照のみ）。片側編集になりうる（危険側）。
 export type Coupling = "increment" | "part-local";
 
 export interface ProvenanceCandidate {
@@ -74,8 +74,11 @@ export interface ProvenanceCandidate {
 
 export interface SeamProvenance {
   target: { partId: string; connectorId: string };
+  // v0 の依存は **piece 単位**で connectorId では絞れない（[C6]）。candidates を返すとき true。多 seam piece では
+  // 他 seam の候補も混ざる（この connector 専用ではない）ことを consumer に明示するためのフラグ。
+  pieceWide: boolean;
   // 長さ診断で「効く」候補（linearity !== "none"）。linear を先に並べる。
   candidates: ProvenanceCandidate[];
   droppedNoneCount: number; // 長さに効かない（cutSpline / 導出点）で落とした出現数
-  note?: string; // 例: 対象 connector / part が payload に無い
+  note?: string; // piece-wide の注記、または対象 connector / part が payload に無い理由
 }
