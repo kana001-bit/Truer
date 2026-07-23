@@ -49,6 +49,7 @@ import type {
   ProposalTarget,
   SeamEdge,
   SeamReconciliation,
+  SeamSourceProvenance,
   SkippedDiagnostic,
   SourceDiagnostic
 } from "./proposalSchema.ts";
@@ -187,6 +188,9 @@ export interface CreateProposalFileInput {
   // band 診断（band_seam_sum_mismatch）を解決する。任意: 無い / bandEdge 欠落なら band builder は
   // 理由付き skip（推測しない）。DXF adapter は結線後は常に供給する。
   resolveBandSeam?: (diagnostic: DiagnosticInput) => BandSeamResolution;
+  // seam の piece（= 辺 blockName）ごとの拘束 provenance を返す。任意: `--constraints` で拘束 payload を渡した
+  // ときだけ CLI が供給する。無い / piece 不一致なら seam 提案に provenance は載らない。
+  resolveProvenance?: (piece: string) => SeamSourceProvenance | undefined;
   createdBy?: string;
 }
 
@@ -342,6 +346,7 @@ interface BuildContext {
   resolveTarget: (diagnostic: DiagnosticInput) => ResolveTargetResult;
   resolveSeamPair?: (diagnostic: DiagnosticInput) => SeamPairResolution;
   resolveBandSeam?: (diagnostic: DiagnosticInput) => BandSeamResolution;
+  resolveProvenance?: (piece: string) => SeamSourceProvenance | undefined;
 }
 
 type SkipReason = { code: string; message: string };
@@ -425,7 +430,8 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
   id,
   diagnostic,
   resolveTarget,
-  resolveSeamPair
+  resolveSeamPair,
+  resolveProvenance
 }) => {
   const lengths = readSeamLengths(diagnostic.actual);
   if (!lengths) {
@@ -538,6 +544,20 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
       };
     }
 
+    // 拘束 provenance（`--constraints` 供給時のみ）: from/to 両辺の piece（= blockName）ごとに「長さに効く
+    // .val パラメータ」を advisory で載せる（数値提案ではない・preview-only は不変）。piece が payload に無ければ
+    // 載せず、from/to が同 piece のときは 1 回だけ。
+    const sourceProvenance: SeamSourceProvenance[] = [];
+    if (resolveProvenance) {
+      const seenPieces = new Set<string>();
+      for (const blockName of [fromSeamEdge.blockName, toSeamEdge.blockName]) {
+        if (seenPieces.has(blockName)) continue;
+        seenPieces.add(blockName);
+        const provenance = resolveProvenance(blockName);
+        if (provenance) sourceProvenance.push(provenance);
+      }
+    }
+
     const seamReconciliation: SeamReconciliation = {
       fromEdge: fromSeamEdge,
       toEdge: toSeamEdge,
@@ -546,7 +566,8 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
       fixKind: "structural-link",
       ...(pair.reference !== undefined ? { reference: pair.reference } : {}),
       ...(linkTarget !== undefined ? { linkTarget } : {}),
-      ...(cornerSlide !== undefined ? { cornerSlide } : {})
+      ...(cornerSlide !== undefined ? { cornerSlide } : {}),
+      ...(sourceProvenance.length > 0 ? { sourceProvenance } : {})
     };
 
     // target は依然 "from" edge を addressing する（表示 anchor であって、どちらを変えるかの主張では
@@ -769,7 +790,8 @@ export function createProposalFile(input: CreateProposalFileInput): ProposalFile
       diagnostic,
       resolveTarget: input.resolveTarget,
       resolveSeamPair: input.resolveSeamPair,
-      resolveBandSeam: input.resolveBandSeam
+      resolveBandSeam: input.resolveBandSeam,
+      resolveProvenance: input.resolveProvenance
     });
 
     if ("skip" in result) {

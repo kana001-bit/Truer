@@ -475,6 +475,55 @@ test("seam_length_mismatch confidence: large gap is low (human must decide)", ()
   assert.equal(file.proposals[0]!.intent.confidence, "low");
 });
 
+test("seam_length_mismatch carries source provenance when a resolver supplies it (--constraints)", () => {
+  // 守る仕様: resolveProvenance（CLI が --constraints から組む）供給時、seamReconciliation に from/to 辺の piece
+  //           ごとの source provenance が additive で載る。piece 不一致は載らない。数値提案ではなく preview-only は不変。
+  const file = createProposalFile({
+    sourceFile: "seam.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(200, 212)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from"),
+    // BACK(from) だけ provenance を返し、FRONT(to) は undefined（載らない）。
+    resolveProvenance: (piece) =>
+      piece === SEAM_BLOCK
+        ? {
+            piece: SEAM_BLOCK,
+            pieceWide: true,
+            candidates: [
+              {
+                expr: "waist_circ / 4 + 5",
+                linearity: "linear",
+                coupling: "part-local",
+                reason: "inline"
+              }
+            ]
+          }
+        : undefined
+  });
+
+  assert.deepEqual(validateProposalFile(file), []);
+  const proposal = file.proposals[0]!;
+  assert.equal(proposal.mode, "preview-only"); // provenance を足しても preview-only は不変
+  const provenance = proposal.seamReconciliation?.sourceProvenance;
+  assert.ok(provenance);
+  assert.equal(provenance!.length, 1); // BACK のみ（FRONT は undefined）
+  assert.equal(provenance![0]!.piece, SEAM_BLOCK);
+  assert.equal(provenance![0]!.pieceWide, true);
+  assert.equal(provenance![0]!.candidates[0]!.coupling, "part-local");
+});
+
+test("seam_length_mismatch without a provenance resolver has no source provenance", () => {
+  const file = createProposalFile({
+    sourceFile: "seam.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(200, 212)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from")
+  });
+  assert.equal(file.proposals[0]!.seamReconciliation?.sourceProvenance, undefined);
+});
+
 test("seam_length_mismatch without length fields is skipped, not crashed", () => {
   // 守る仕様 (T8): from/to/diff mm が欠けると crash させず missing_length_fields で skip。
   const file = createProposalFile({

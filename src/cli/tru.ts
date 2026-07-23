@@ -9,7 +9,14 @@ import { basename, dirname, extname, join } from "node:path";
 
 import { createProposalFile } from "../core/proposal/createProposalFile.ts";
 import { validateProposalFile } from "../core/proposal/proposalSchema.ts";
-import type { Proposal, ProposalFile } from "../core/proposal/proposalSchema.ts";
+import type {
+  Proposal,
+  ProposalFile,
+  SeamSourceProvenance
+} from "../core/proposal/proposalSchema.ts";
+import { readConstraintPayload } from "../adapters/loom/readConstraintPayload.ts";
+import { buildSeamProvenance } from "../core/constraint/buildSeamProvenance.ts";
+import type { ConstraintPayload } from "../core/constraint/constraintTypes.ts";
 import { planApply } from "../core/apply/applyProposal.ts";
 import {
   parseSeamlintReport,
@@ -35,7 +42,7 @@ import { isSameFilePath } from "./samePath.ts";
 const USAGE = `tru — Truer CLI (MVP)
 
 Usage:
-  tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--cut [<cut.svg>] --scale fit-a4|actual [--seam-allowance <mm>] [--on-fold long|short]] [--slnt <cmd>]
+  tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--constraints <payload.json>] [--cut [<cut.svg>] --scale fit-a4|actual [--seam-allowance <mm>] [--on-fold long|short]] [--slnt <cmd>]
   tru apply   [<pattern.dxf>] --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
   tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--seam-allowance <mm>] [--on-fold long|short] [--slnt <cmd>]
 
@@ -55,6 +62,8 @@ propose options:
                         どの blockName にも一致しない / 両側一致なら向きを決めず両方向 preview-only (T6)。
   --out <file>          proposal JSON の書き出し先。省略時は output/<dxf 名>.proposal.json (親が無ければ作成)。
   --preview <file>      Optional: overlay SVG (seam Δ / band closure / curve_kink before+after).
+  --constraints <file>  Optional: Loomit 拘束 payload（loomit.constraint-payload.v0、\`loom truer request\` の出力）。
+                        seam 提案に「長さに効く .val パラメータ」を advisory で載せる（provenance-only・数値提案ではない）。
   --cut [<file>]        Optional・opt-in: band conform 提案を印刷 stopgap SVG に裁つ（tru cut を propose に畳んだ口）。
                         指定時のみ band ブロックの slnt 取得＋conform を走らせる。値なしは既定 output/<dxf 名>.cut.svg。
                         --scale が必須。band cut と同じレンダラ（矩形=一様 / 曲線帯=弧長スケール）。
@@ -98,6 +107,9 @@ interface ProposeOptions {
   // part→BLOCK 名の翻訳は上流（Loomit の `loom match`）が持ち、CLI には解決済みの BLOCK 名が渡る
   //（例 `--reference FRONT`）。複数指定＝固定パーツ集合。照合は adapter が行い core は pure のまま。
   reference: string[];
+  // Loomit の拘束 payload（loomit.constraint-payload.v0）のファイル。指定時だけ seam 提案に source provenance を
+  // additive で載せる（--diagnostic と同じファイル方式）。
+  constraints?: string;
   // stopgap SVG（band cut を propose に畳む口）。--cut は opt-in（指定時のみ band conform を裁つ）。
   // 値なしなら既定パス。--scale は --cut 指定時のみ必須。seam-allowance / on-fold は cut と同義。
   cutRequested?: boolean;
@@ -188,6 +200,7 @@ const PROPOSE_SPEC: Record<string, ArgArity> = {
   "--out": "value",
   "--preview": "value",
   "--slnt": "value",
+  "--constraints": "value",
   "--reference": "multi",
   "--cut": "optional-value",
   "--scale": "value",
@@ -204,6 +217,8 @@ function parseProposeArgs(args: string[]): ProposeOptions {
   if (parsed.values["--out"] !== undefined) options.out = parsed.values["--out"];
   if (parsed.values["--preview"] !== undefined) options.preview = parsed.values["--preview"];
   if (parsed.values["--slnt"] !== undefined) options.slnt = parsed.values["--slnt"];
+  if (parsed.values["--constraints"] !== undefined)
+    options.constraints = parsed.values["--constraints"];
   // --reference は多トークン（`--reference BACK FRONT` = 固定パーツ集合）。指定はしたが BLOCK 名ゼロは error。
   if (parsed.present.has("--reference") && options.reference.length === 0) {
     throw new Error("--reference requires at least one BLOCK name.");
@@ -267,6 +282,37 @@ function defaultProposalOutPath(dxfFile: string): string {
 // propose --cut / tru cut で --cut に値が無いときの既定出力先。--out の既定と同流儀（output/ 配下）。
 function defaultCutOutPath(dxfFile: string): string {
   return join("output", `${basename(dxfFile, extname(dxfFile))}.cut.svg`);
+}
+
+// piece(= 辺 blockName) → part → その part の最初の connector → buildSeamProvenance → contract 用の
+// SeamSourceProvenance に写す。provenance は piece 単位なので connector はどれでも同結果（[C6]）。piece 不一致 /
+// 候補ゼロは undefined（seam 提案に載せない）。.val 内部詳細（pointId/refs 等）は出さず式・役割・coupling だけ載せる。
+function makeResolveProvenance(
+  payload: ConstraintPayload
+): (piece: string) => SeamSourceProvenance | undefined {
+  return (piece) => {
+    const part = payload.parts.find((candidate) => candidate.piece === piece);
+    if (!part) return undefined;
+    const connector = payload.connectors.find((candidate) => candidate.partId === part.partId);
+    if (!connector) return undefined;
+    const provenance = buildSeamProvenance(payload, {
+      partId: part.partId,
+      connectorId: connector.connectorId
+    });
+    if (provenance.candidates.length === 0) return undefined;
+    return {
+      piece,
+      pieceWide: provenance.pieceWide,
+      candidates: provenance.candidates.map((candidate) => ({
+        expr: candidate.occurrence.expr,
+        // none は buildSeamProvenance で既に落ちているので linear | nonlinear のみ。
+        linearity: candidate.occurrence.linearity === "nonlinear" ? "nonlinear" : "linear",
+        coupling: candidate.coupling,
+        ...(candidate.usedByHint ? { usedByHint: candidate.usedByHint } : {}),
+        reason: candidate.reason
+      }))
+    };
+  };
 }
 
 // <pattern.dxf> 省略時の解決。cwd 直下（非再帰）の *.dxf を探し、ちょうど 1 つならそれを使う。
@@ -357,6 +403,22 @@ async function runPropose(args: string[]): Promise<number> {
     process.stderr.write(`tru propose: warning: ${cmdRisk}\n`);
   }
 
+  // --constraints（任意）: Loomit の拘束 payload を読み、seam 提案の piece ごとに source provenance を解決する
+  // resolver を組む。指定が無ければ resolver も無し（seam 提案に provenance は載らない）。
+  let resolveProvenance: ((piece: string) => SeamSourceProvenance | undefined) | undefined;
+  if (options.constraints) {
+    let payload: ConstraintPayload;
+    try {
+      payload = readConstraintPayload(JSON.parse(await readFile(options.constraints, "utf8")));
+    } catch (error) {
+      process.stderr.write(
+        `tru propose: could not read constraint payload: ${errorMessage(error)}\n`
+      );
+      return 1;
+    }
+    resolveProvenance = makeResolveProvenance(payload);
+  }
+
   const file = createProposalFile({
     sourceFile: dxfFile,
     sourceText: dxfText,
@@ -369,7 +431,9 @@ async function runPropose(args: string[]): Promise<number> {
     // 照合して決める（adapter の責務。core は pure）。集合が空なら従来どおり両方向 preview-only（T6）。
     resolveSeamPair: buildResolveSeamPair(runEdges, options.reference),
     // band 診断（N-ary）も同じ `--reference` 集合を band/neighbour の blockName と照合して固定側を決める。
-    resolveBandSeam: buildResolveBandSeam(runEdges, options.reference)
+    resolveBandSeam: buildResolveBandSeam(runEdges, options.reference),
+    // 拘束 payload が渡されたときだけ seam 提案に source provenance を additive で載せる。
+    ...(resolveProvenance ? { resolveProvenance } : {})
   });
 
   // --out は任意。省略時は output/<dxf 名>.proposal.json を既定にし、親ディレクトリが無ければ作る。
