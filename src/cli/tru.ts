@@ -6,6 +6,7 @@
 
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
+import { text as readStream } from "node:stream/consumers";
 
 import { createProposalFile } from "../core/proposal/createProposalFile.ts";
 import { validateProposalFile } from "../core/proposal/proposalSchema.ts";
@@ -42,7 +43,7 @@ import { isSameFilePath } from "./samePath.ts";
 const USAGE = `tru — Truer CLI (MVP)
 
 Usage:
-  tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--constraints <payload.json>] [--cut [<cut.svg>] --scale fit-a4|actual [--seam-allowance <mm>] [--on-fold long|short]] [--slnt <cmd>]
+  tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--constraints <payload.json>|-] [--cut [<cut.svg>] --scale fit-a4|actual [--seam-allowance <mm>] [--on-fold long|short]] [--slnt <cmd>]
   tru apply   [<pattern.dxf>] --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
   tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--seam-allowance <mm>] [--on-fold long|short] [--slnt <cmd>]
 
@@ -62,7 +63,8 @@ propose options:
                         どの blockName にも一致しない / 両側一致なら向きを決めず両方向 preview-only (T6)。
   --out <file>          proposal JSON の書き出し先。省略時は output/<dxf 名>.proposal.json (親が無ければ作成)。
   --preview <file>      Optional: overlay SVG (seam Δ / band closure / curve_kink before+after).
-  --constraints <file>  Optional: Loomit 拘束 payload（loomit.constraint-payload.v0、\`loom truer request\` の出力）。
+  --constraints <file|-> Optional: Loomit 拘束 payload（loomit.constraint-payload.v0、\`loom truer request\` の出力）。
+                        \`-\` で stdin から読む（\`loom truer request --format json | tru propose --constraints -\`）。
                         seam 提案に「長さに効く .val パラメータ」を advisory で載せる（provenance-only・数値提案ではない）。
   --cut [<file>]        Optional・opt-in: band conform 提案を印刷 stopgap SVG に裁つ（tru cut を propose に畳んだ口）。
                         指定時のみ band ブロックの slnt 取得＋conform を走らせる。値なしは既定 output/<dxf 名>.cut.svg。
@@ -107,8 +109,8 @@ interface ProposeOptions {
   // part→BLOCK 名の翻訳は上流（Loomit の `loom match`）が持ち、CLI には解決済みの BLOCK 名が渡る
   //（例 `--reference FRONT`）。複数指定＝固定パーツ集合。照合は adapter が行い core は pure のまま。
   reference: string[];
-  // Loomit の拘束 payload（loomit.constraint-payload.v0）のファイル。指定時だけ seam 提案に source provenance を
-  // additive で載せる（--diagnostic と同じファイル方式）。
+  // Loomit の拘束 payload（loomit.constraint-payload.v0）の入力。指定時だけ seam 提案に source provenance を
+  // additive で載せる。値はファイルパス、または `-`（stdin。パイプ `loom truer request | tru propose --constraints -`）。
   constraints?: string;
   // stopgap SVG（band cut を propose に畳む口）。--cut は opt-in（指定時のみ band conform を裁つ）。
   // 値なしなら既定パス。--scale は --cut 指定時のみ必須。seam-allowance / on-fold は cut と同義。
@@ -404,12 +406,17 @@ async function runPropose(args: string[]): Promise<number> {
   }
 
   // --constraints（任意）: Loomit の拘束 payload を読み、seam 提案の piece ごとに source provenance を解決する
-  // resolver を組む。指定が無ければ resolver も無し（seam 提案に provenance は載らない）。
+  // resolver を組む。指定が無ければ resolver も無し（seam 提案に provenance は載らない）。`-` なら stdin から読む
+  // ＝パイプ配送 `loom truer request --format json | tru propose --constraints -` の受け口（file 方式も従来どおり）。
   let resolveProvenance: ((piece: string) => SeamSourceProvenance | undefined) | undefined;
   if (options.constraints) {
     let payload: ConstraintPayload;
     try {
-      payload = readConstraintPayload(JSON.parse(await readFile(options.constraints, "utf8")));
+      const payloadText =
+        options.constraints === "-"
+          ? await readStream(process.stdin)
+          : await readFile(options.constraints, "utf8");
+      payload = readConstraintPayload(JSON.parse(payloadText));
     } catch (error) {
       process.stderr.write(
         `tru propose: could not read constraint payload: ${errorMessage(error)}\n`

@@ -1,7 +1,7 @@
 // v0 aligned: Loomit の拘束 payload（`loom truer request` の出力、契約 `loomit.constraint-payload.v0`）を内部
-// ConstraintPayload へ正規化する adapter。`tru propose --constraints <file>` から呼ばれ CLI に file 方式で結線済み（PR #33）。
-// subprocess runner（`loom truer request | tru propose`）は上流 Loomit の emitter（Slice 5）待ち。契約正本は Loomit の
-// JSON Schema（`test/fixtures/constraint-payload.v0.schema.json`）。
+// ConstraintPayload へ正規化する adapter。`tru propose --constraints <file|->` から呼ばれ CLI 結線済み
+// （file 方式 PR #33 + stdin パイプ `loom truer request --format json | tru propose --constraints -`）。契約正本は
+// Loomit の JSON Schema（`test/fixtures/constraint-payload.v0.schema.json`）。
 //
 // 外部入力なので field を信頼せず `unknown` 境界で defensive に検証する（`readSeamlintReport` と同方針）。封筒は
 // `{ payload, diagnostics }`（assemble）/ `{ status, diagnostics, payload }`（Slice 5）どちらも payload を包むので剥がす。

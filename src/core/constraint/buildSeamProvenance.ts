@@ -7,9 +7,9 @@
 // 参照増分の usedBy を part 単位の弱いヒント（`usedByHint`）として添えるに留める。信頼できる per-seam coupling は
 // Seamlint の notch→edge 対応（[C6]）待ち。applicable（具体数値）も [C6] 依存で本関数の範囲外。
 //
-// CLI 結線済み（PR #33）: `tru propose --constraints <file>` から `makeResolveProvenance`（`src/cli/tru.ts`）経由で呼ばれ、
-// seam 提案に source provenance を additive に載せる。subprocess runner（`loom truer request | tru propose`）は上流 Loomit の
-// emitter（Slice 5）待ちで未結線。
+// CLI 結線済み: `tru propose --constraints <file|->` から `makeResolveProvenance`（`src/cli/tru.ts`）経由で呼ばれ、
+// seam 提案に source provenance を additive に載せる（file 方式 PR #33 / stdin パイプ
+// `loom truer request --format json | tru propose --constraints -`）。
 
 import type { ConstraintPayload, ProvenanceCandidate, SeamProvenance } from "./constraintTypes.ts";
 

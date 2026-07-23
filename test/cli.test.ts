@@ -257,6 +257,49 @@ test("propose explicit <pattern.dxf> overrides cwd auto-discovery", () => {
   assert.match(file.source.file, /a\.dxf$/);
 });
 
+// ---- --constraints - （拘束 payload を stdin から受ける・パイプ配送）----
+
+// 最小の valid v0 payload（封筒無し bare 形。adapter が受ける）。provenance の attach 経路は
+// proposal.test.ts（core）で固定済みなので、ここでは stdin 読み取り経路だけを固定する。
+const MINIMAL_CONSTRAINT_PAYLOAD = JSON.stringify({
+  schema: "loomit.constraint-payload.v0",
+  params: {},
+  parts: [],
+  connectors: []
+});
+
+test("propose --constraints - reads the constraint payload from stdin (pipe form)", () => {
+  // 守る仕様: `--constraints -` は payload をファイルではなく stdin から読む（配送
+  //           `loom truer request --format json | tru propose --constraints -` の受け口）。`-` を
+  //           ファイル名として扱わない（扱えば ENOENT で exit 1 になる）。valid payload なら exit 0 で書ける。
+  const dir = mkdtempSync(join(tmpdir(), "truer-constraints-stdin-"));
+  writeFileSync(join(dir, "solo.dxf"), "x");
+  writeFileSync(join(dir, "empty.report.json"), JSON.stringify(EMPTY_REPORT));
+  const result = spawnSync(
+    process.execPath,
+    [TRU_ABS, "propose", "solo.dxf", "--diagnostic", "empty.report.json", "--out", "p.json", "--constraints", "-"],
+    { cwd: dir, encoding: "utf8", input: MINIMAL_CONSTRAINT_PAYLOAD }
+  );
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /proposal\(s\)/);
+  assert.equal(existsSync(join(dir, "p.json")), true);
+});
+
+test("propose --constraints - fails cleanly on malformed stdin (payload is actually consumed)", () => {
+  // 守る仕様: stdin の payload が壊れていれば exit 1 で read error を出す。stdin が無視されていない証拠
+  //           （無視なら壊れた入力でも exit 0 になる）。propose は source を触らない。
+  const dir = mkdtempSync(join(tmpdir(), "truer-constraints-stdin-bad-"));
+  writeFileSync(join(dir, "solo.dxf"), "x");
+  writeFileSync(join(dir, "empty.report.json"), JSON.stringify(EMPTY_REPORT));
+  const result = spawnSync(
+    process.execPath,
+    [TRU_ABS, "propose", "solo.dxf", "--diagnostic", "empty.report.json", "--out", "p.json", "--constraints", "-"],
+    { cwd: dir, encoding: "utf8", input: "{ not json" }
+  );
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /could not read constraint payload/);
+});
+
 // ---- tru cut（band 印刷 stopgap SVG）----
 
 // band 提案を作るための stub。WAISTBAND の band 辺（propose 側の住所解決用）を返す runner。
