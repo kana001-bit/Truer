@@ -251,6 +251,25 @@ export interface CornerSlide {
   pairingMayDrift: boolean;
 }
 
+// seam の長さに効く .val パラメータの provenance（Loomit 拘束グラフ由来・advisory / 数値提案ではない）。
+// `tru propose --constraints <payload>` で拘束 payload（loomit.constraint-payload.v0）を渡したときだけ載る。
+// contract には下流に有用な式・役割・coupling ヒントだけを出し、.val 内部詳細（pointId/refs 等）は出さない。
+export interface SeamSourceCandidate {
+  expr: string; // .val の式（measurement / literal / #increment 参照を含む生の式）
+  linearity: "linear" | "nonlinear"; // 長さへの効き方（none は落として載せない）
+  // increment = declared ツマミ参照 / part-local = inline 値・未宣言参照（片側編集になりうる危険側）。
+  coupling: "increment" | "part-local";
+  usedByHint?: string[]; // increment のとき: 参照増分の usedBy（part 単位の弱いヒント・安全判定ではない）
+  reason: string;
+}
+
+export interface SeamSourceProvenance {
+  piece: string; // どの piece（= DXF BLOCK 名）の provenance か
+  // piece 単位（connector では絞れない・[C6]）＝多 seam piece では他 seam の候補も含む。
+  pieceWide: boolean;
+  candidates: SeamSourceCandidate[];
+}
+
 export interface SeamReconciliation {
   fromEdge: SeamEdge;
   toEdge: SeamEdge;
@@ -269,6 +288,9 @@ export interface SeamReconciliation {
   // ②corner-slide（fallback）の指示ログ。fixKind はあくまで①を推したまま（既定）、②は「今すぐ
   // 裁つなら」の代替として並記する。band-aid: val 未リンクのままなら再生成で mismatch が再発する。
   cornerSlide?: CornerSlide;
+  // --- 拘束 provenance（2026-07-23 追加・任意・additive, T9）。`--constraints` で拘束 payload を渡したときだけ、
+  // from/to 辺の piece ごとに「長さに効く .val パラメータ」を advisory で載せる。数値提案ではない（preview-only は不変）。---
+  sourceProvenance?: SeamSourceProvenance[];
 }
 
 // band_seam_sum_mismatch の隣接ピース 1 枚ぶんの証跡。identity（どのピースが neighbour か）は Loomit
@@ -416,6 +438,35 @@ function isNonNegativeFiniteNumber(value: unknown): value is number {
 // 正の整数（裁断枚数など。0 / 負 / 非整数は不可）。cutQuantity / bandCutQuantity が同じ判定を使う。
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+// sourceProvenance[] の 1 要素の軽い shape 検証（advisory・apply の gate ではない）。壊れた provenance が
+// 保存 proposal から人 / Studio へ届かない程度に守る。
+function seamSourceProvenanceError(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return "must be an object";
+  const prov = value as Record<string, unknown>;
+  if (!isNonEmptyString(prov.piece)) return "piece must be a non-empty string";
+  if (typeof prov.pieceWide !== "boolean") return "pieceWide must be a boolean";
+  if (!Array.isArray(prov.candidates)) return "candidates must be an array";
+  for (const candidate of prov.candidates) {
+    if (typeof candidate !== "object" || candidate === null) return "candidates[] must be objects";
+    const entry = candidate as Record<string, unknown>;
+    if (typeof entry.expr !== "string") return "candidate.expr must be a string";
+    if (entry.linearity !== "linear" && entry.linearity !== "nonlinear")
+      return 'candidate.linearity must be "linear" or "nonlinear"';
+    if (entry.coupling !== "increment" && entry.coupling !== "part-local")
+      return 'candidate.coupling must be "increment" or "part-local"';
+    if (typeof entry.reason !== "string") return "candidate.reason must be a string";
+    if (
+      entry.usedByHint !== undefined &&
+      !(
+        Array.isArray(entry.usedByHint) &&
+        entry.usedByHint.every((item) => typeof item === "string")
+      )
+    )
+      return "candidate.usedByHint must be a string[] when present";
+  }
+  return undefined;
 }
 
 // cornerSlide.candidates[] の 1 要素の shape 検証。壊れた候補（負のスライド量・住所欠落など）が
@@ -705,6 +756,19 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
               `${at}.seamReconciliation.cornerSlide.conform must be the non-reference edge (opposite of reference)`
             );
           }
+        }
+      }
+      // 拘束 provenance（任意・追加的）: 存在するときだけ軽く検証（Truer 生成の advisory・apply の gate ではない）。
+      if (seam.sourceProvenance !== undefined) {
+        if (!Array.isArray(seam.sourceProvenance)) {
+          errors.push(`${at}.seamReconciliation.sourceProvenance must be an array when present`);
+        } else {
+          seam.sourceProvenance.forEach((entry, entryIndex) => {
+            const problem = seamSourceProvenanceError(entry);
+            if (problem !== undefined) {
+              errors.push(`${at}.seamReconciliation.sourceProvenance[${entryIndex}] ${problem}`);
+            }
+          });
         }
       }
     }
