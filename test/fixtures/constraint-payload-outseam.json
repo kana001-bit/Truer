@@ -1,258 +1,266 @@
 {
-  "payload": {
-    "params": {
-      "#pocket_opening_from_waist": {
-        "kind": "increment",
-        "value": "5",
-        "usedBy": ["back", "front"]
-      },
-      "#fly_length": {
-        "kind": "increment",
-        "value": "14",
-        "usedBy": ["back", "front"]
-      },
-      "#pocket_opening": {
-        "kind": "increment",
-        "value": "15",
-        "usedBy": ["back", "front"]
-      },
-      "#leg_fly_length": {
-        "kind": "increment",
-        "value": "10",
-        "usedBy": ["back", "front"]
-      }
+  "schema": "loomit.constraint-payload.v0",
+  "params": {
+    "#pocket_opening_from_waist": {
+      "declared": true,
+      "value": "5",
+      "usedBy": ["back", "front"]
     },
-    "connectors": [
-      {
-        "partId": "front",
-        "connectorId": "outseam",
-        "dependsOn": [
-          {
-            "pointId": "146",
-            "type": "cutSpline",
-            "linearity": "none",
-            "expr": "#pocket_opening_from_waist",
-            "refs": ["#pocket_opening_from_waist"]
-          },
-          {
-            "pointId": "140",
-            "type": "cutSpline",
-            "linearity": "none",
-            "expr": "#fly_length",
-            "refs": ["#fly_length"]
-          },
-          {
-            "pointId": "147",
-            "type": "cutSpline",
-            "linearity": "none",
-            "expr": "#pocket_opening_from_waist + #pocket_opening",
-            "refs": ["#pocket_opening_from_waist", "#pocket_opening"]
-          },
-          {
-            "pointId": "177",
-            "type": "cutSpline",
-            "linearity": "none",
-            "expr": "CurrentLength - #leg_fly_length",
-            "refs": ["#leg_fly_length"]
-          },
-          {
-            "pointId": "15",
-            "type": "alongLine",
-            "linearity": "linear",
-            "expr": "waist_circ / 4 + 5",
-            "refs": []
-          },
-          {
-            "pointId": "2",
-            "type": "endLine",
-            "linearity": "linear",
-            "expr": "rise_length_side_sitting",
-            "refs": []
-          },
-          {
-            "splineId": "31",
-            "handle": "length1",
-            "linearity": "nonlinear",
-            "expr": "3",
-            "refs": []
-          },
-          {
-            "splineId": "31",
-            "handle": "length2",
-            "linearity": "nonlinear",
-            "expr": "15",
-            "refs": []
-          },
-          {
-            "splineId": "31",
-            "handle": "angle1",
-            "linearity": "nonlinear",
-            "expr": "-45",
-            "refs": []
-          },
-          {
-            "splineId": "31",
-            "handle": "angle2",
-            "linearity": "nonlinear",
-            "expr": "90",
-            "refs": []
-          },
-          {
-            "pointId": "27",
-            "type": "alongLine",
-            "linearity": "linear",
-            "expr": "3",
-            "refs": []
-          },
-          {
-            "pointId": "25",
-            "type": "alongLine",
-            "linearity": "linear",
-            "expr": "6.5",
-            "refs": []
-          },
-          {
-            "splineId": "33",
-            "handle": "length1",
-            "linearity": "nonlinear",
-            "expr": "5",
-            "refs": []
-          },
-          {
-            "splineId": "33",
-            "handle": "length2",
-            "linearity": "nonlinear",
-            "expr": "5",
-            "refs": []
-          },
-          {
-            "splineId": "33",
-            "handle": "angle1",
-            "linearity": "nonlinear",
-            "expr": "260",
-            "refs": []
-          },
-          {
-            "splineId": "33",
-            "handle": "angle2",
-            "linearity": "nonlinear",
-            "expr": "70",
-            "refs": []
-          }
-        ]
-      },
-      {
-        "partId": "back",
-        "connectorId": "outseam",
-        "dependsOn": [
-          {
-            "pointId": "148",
-            "type": "cutSpline",
-            "linearity": "none",
-            "expr": "#pocket_opening_from_waist",
-            "refs": ["#pocket_opening_from_waist"]
-          },
-          {
-            "pointId": "143",
-            "type": "cutSpline",
-            "linearity": "none",
-            "expr": "#fly_length",
-            "refs": ["#fly_length"]
-          },
-          {
-            "pointId": "149",
-            "type": "cutSpline",
-            "linearity": "none",
-            "expr": "#pocket_opening_from_waist + #pocket_opening",
-            "refs": ["#pocket_opening_from_waist", "#pocket_opening"]
-          },
-          {
-            "pointId": "180",
-            "type": "cutSpline",
-            "linearity": "none",
-            "expr": "CurrentLength - #leg_fly_length",
-            "refs": ["#leg_fly_length"]
-          },
-          {
-            "pointId": "69",
-            "type": "endLine",
-            "linearity": "linear",
-            "expr": "5",
-            "refs": []
-          },
-          {
-            "splineId": "84",
-            "handle": "length1",
-            "linearity": "nonlinear",
-            "expr": "5",
-            "refs": []
-          },
-          {
-            "splineId": "84",
-            "handle": "length2",
-            "linearity": "nonlinear",
-            "expr": "5",
-            "refs": []
-          },
-          {
-            "splineId": "84",
-            "handle": "angle1",
-            "linearity": "nonlinear",
-            "expr": "AngleLine_d67w_R - 90",
-            "refs": []
-          },
-          {
-            "splineId": "84",
-            "handle": "angle2",
-            "linearity": "nonlinear",
-            "expr": "85",
-            "refs": []
-          },
-          {
-            "pointId": "70",
-            "type": "alongLine",
-            "linearity": "linear",
-            "expr": "2",
-            "refs": []
-          },
-          {
-            "pointId": "71",
-            "type": "alongLine",
-            "linearity": "linear",
-            "expr": "2",
-            "refs": []
-          },
-          {
-            "splineId": "86",
-            "handle": "length1",
-            "linearity": "nonlinear",
-            "expr": "5",
-            "refs": []
-          },
-          {
-            "splineId": "86",
-            "handle": "length2",
-            "linearity": "nonlinear",
-            "expr": "5",
-            "refs": []
-          },
-          {
-            "splineId": "86",
-            "handle": "angle1",
-            "linearity": "nonlinear",
-            "expr": "260",
-            "refs": []
-          },
-          {
-            "splineId": "86",
-            "handle": "angle2",
-            "linearity": "nonlinear",
-            "expr": "70",
-            "refs": []
-          }
-        ]
-      }
-    ]
+    "#fly_length": {
+      "declared": true,
+      "value": "14",
+      "usedBy": ["back", "front"]
+    },
+    "#pocket_opening": {
+      "declared": true,
+      "value": "15",
+      "usedBy": ["back", "front"]
+    },
+    "#leg_fly_length": {
+      "declared": true,
+      "value": "10",
+      "usedBy": ["back", "front"]
+    }
   },
-  "diagnostics": []
+  "parts": [
+    {
+      "partId": "front",
+      "piece": "front",
+      "dependsOn": [
+        {
+          "pointId": "146",
+          "type": "cutSpline",
+          "linearity": "none",
+          "expr": "#pocket_opening_from_waist",
+          "refs": ["#pocket_opening_from_waist"]
+        },
+        {
+          "pointId": "140",
+          "type": "cutSpline",
+          "linearity": "none",
+          "expr": "#fly_length",
+          "refs": ["#fly_length"]
+        },
+        {
+          "pointId": "147",
+          "type": "cutSpline",
+          "linearity": "none",
+          "expr": "#pocket_opening_from_waist + #pocket_opening",
+          "refs": ["#pocket_opening_from_waist", "#pocket_opening"]
+        },
+        {
+          "pointId": "177",
+          "type": "cutSpline",
+          "linearity": "none",
+          "expr": "CurrentLength - #leg_fly_length",
+          "refs": ["#leg_fly_length"]
+        },
+        {
+          "pointId": "15",
+          "type": "alongLine",
+          "linearity": "linear",
+          "expr": "waist_circ / 4 + 5",
+          "refs": []
+        },
+        {
+          "pointId": "2",
+          "type": "endLine",
+          "linearity": "linear",
+          "expr": "rise_length_side_sitting",
+          "refs": []
+        },
+        {
+          "splineId": "31",
+          "handle": "length1",
+          "linearity": "nonlinear",
+          "expr": "3",
+          "refs": []
+        },
+        {
+          "splineId": "31",
+          "handle": "length2",
+          "linearity": "nonlinear",
+          "expr": "15",
+          "refs": []
+        },
+        {
+          "splineId": "31",
+          "handle": "angle1",
+          "linearity": "nonlinear",
+          "expr": "-45",
+          "refs": []
+        },
+        {
+          "splineId": "31",
+          "handle": "angle2",
+          "linearity": "nonlinear",
+          "expr": "90",
+          "refs": []
+        },
+        {
+          "pointId": "27",
+          "type": "alongLine",
+          "linearity": "linear",
+          "expr": "3",
+          "refs": []
+        },
+        {
+          "pointId": "25",
+          "type": "alongLine",
+          "linearity": "linear",
+          "expr": "6.5",
+          "refs": []
+        },
+        {
+          "splineId": "33",
+          "handle": "length1",
+          "linearity": "nonlinear",
+          "expr": "5",
+          "refs": []
+        },
+        {
+          "splineId": "33",
+          "handle": "length2",
+          "linearity": "nonlinear",
+          "expr": "5",
+          "refs": []
+        },
+        {
+          "splineId": "33",
+          "handle": "angle1",
+          "linearity": "nonlinear",
+          "expr": "260",
+          "refs": []
+        },
+        {
+          "splineId": "33",
+          "handle": "angle2",
+          "linearity": "nonlinear",
+          "expr": "70",
+          "refs": []
+        }
+      ]
+    },
+    {
+      "partId": "back",
+      "piece": "back",
+      "dependsOn": [
+        {
+          "pointId": "148",
+          "type": "cutSpline",
+          "linearity": "none",
+          "expr": "#pocket_opening_from_waist",
+          "refs": ["#pocket_opening_from_waist"]
+        },
+        {
+          "pointId": "143",
+          "type": "cutSpline",
+          "linearity": "none",
+          "expr": "#fly_length",
+          "refs": ["#fly_length"]
+        },
+        {
+          "pointId": "149",
+          "type": "cutSpline",
+          "linearity": "none",
+          "expr": "#pocket_opening_from_waist + #pocket_opening",
+          "refs": ["#pocket_opening_from_waist", "#pocket_opening"]
+        },
+        {
+          "pointId": "180",
+          "type": "cutSpline",
+          "linearity": "none",
+          "expr": "CurrentLength - #leg_fly_length",
+          "refs": ["#leg_fly_length"]
+        },
+        {
+          "pointId": "69",
+          "type": "endLine",
+          "linearity": "linear",
+          "expr": "5",
+          "refs": []
+        },
+        {
+          "splineId": "84",
+          "handle": "length1",
+          "linearity": "nonlinear",
+          "expr": "5",
+          "refs": []
+        },
+        {
+          "splineId": "84",
+          "handle": "length2",
+          "linearity": "nonlinear",
+          "expr": "5",
+          "refs": []
+        },
+        {
+          "splineId": "84",
+          "handle": "angle1",
+          "linearity": "nonlinear",
+          "expr": "AngleLine_d67w_R - 90",
+          "refs": []
+        },
+        {
+          "splineId": "84",
+          "handle": "angle2",
+          "linearity": "nonlinear",
+          "expr": "85",
+          "refs": []
+        },
+        {
+          "pointId": "70",
+          "type": "alongLine",
+          "linearity": "linear",
+          "expr": "2",
+          "refs": []
+        },
+        {
+          "pointId": "71",
+          "type": "alongLine",
+          "linearity": "linear",
+          "expr": "2",
+          "refs": []
+        },
+        {
+          "splineId": "86",
+          "handle": "length1",
+          "linearity": "nonlinear",
+          "expr": "5",
+          "refs": []
+        },
+        {
+          "splineId": "86",
+          "handle": "length2",
+          "linearity": "nonlinear",
+          "expr": "5",
+          "refs": []
+        },
+        {
+          "splineId": "86",
+          "handle": "angle1",
+          "linearity": "nonlinear",
+          "expr": "260",
+          "refs": []
+        },
+        {
+          "splineId": "86",
+          "handle": "angle2",
+          "linearity": "nonlinear",
+          "expr": "70",
+          "refs": []
+        }
+      ]
+    }
+  ],
+  "connectors": [
+    {
+      "partId": "front",
+      "connectorId": "outseam"
+    },
+    {
+      "partId": "back",
+      "connectorId": "outseam"
+    }
+  ]
 }

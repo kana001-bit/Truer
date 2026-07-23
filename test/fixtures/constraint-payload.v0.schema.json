@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "loomit.constraint-payload.v0"
+    },
+    "params": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "declared": {
+                "type": "boolean",
+                "const": true
+              },
+              "value": {
+                "type": "string"
+              },
+              "usedBy": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "required": ["declared", "value", "usedBy"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "declared": {
+                "type": "boolean",
+                "const": false
+              },
+              "usedBy": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": ["declared", "usedBy"],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "parts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "partId": {
+            "type": "string"
+          },
+          "piece": {
+            "type": "string"
+          },
+          "dependsOn": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "pointId": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    },
+                    "linearity": {
+                      "type": "string",
+                      "enum": ["linear", "nonlinear", "none"]
+                    },
+                    "expr": {
+                      "type": "string"
+                    },
+                    "refs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": ["pointId", "type", "linearity", "expr", "refs"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "splineId": {
+                      "type": "string"
+                    },
+                    "handle": {
+                      "type": "string",
+                      "enum": ["length1", "length2", "angle1", "angle2"]
+                    },
+                    "linearity": {
+                      "type": "string",
+                      "enum": ["linear", "nonlinear", "none"]
+                    },
+                    "expr": {
+                      "type": "string"
+                    },
+                    "refs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": ["splineId", "handle", "linearity", "expr", "refs"],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          }
+        },
+        "required": ["partId", "piece", "dependsOn"],
+        "additionalProperties": false
+      }
+    },
+    "connectors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "partId": {
+            "type": "string"
+          },
+          "connectorId": {
+            "type": "string"
+          }
+        },
+        "required": ["partId", "connectorId"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["schema", "params", "parts", "connectors"],
+  "additionalProperties": false
+}
