@@ -277,7 +277,17 @@ test("propose --constraints - reads the constraint payload from stdin (pipe form
   writeFileSync(join(dir, "empty.report.json"), JSON.stringify(EMPTY_REPORT));
   const result = spawnSync(
     process.execPath,
-    [TRU_ABS, "propose", "solo.dxf", "--diagnostic", "empty.report.json", "--out", "p.json", "--constraints", "-"],
+    [
+      TRU_ABS,
+      "propose",
+      "solo.dxf",
+      "--diagnostic",
+      "empty.report.json",
+      "--out",
+      "p.json",
+      "--constraints",
+      "-"
+    ],
     { cwd: dir, encoding: "utf8", input: MINIMAL_CONSTRAINT_PAYLOAD }
   );
   assert.equal(result.status, 0);
@@ -293,7 +303,17 @@ test("propose --constraints - fails cleanly on malformed stdin (payload is actua
   writeFileSync(join(dir, "empty.report.json"), JSON.stringify(EMPTY_REPORT));
   const result = spawnSync(
     process.execPath,
-    [TRU_ABS, "propose", "solo.dxf", "--diagnostic", "empty.report.json", "--out", "p.json", "--constraints", "-"],
+    [
+      TRU_ABS,
+      "propose",
+      "solo.dxf",
+      "--diagnostic",
+      "empty.report.json",
+      "--out",
+      "p.json",
+      "--constraints",
+      "-"
+    ],
     { cwd: dir, encoding: "utf8", input: "{ not json" }
   );
   assert.equal(result.status, 1);
