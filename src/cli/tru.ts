@@ -15,7 +15,10 @@ import type {
   ProposalFile,
   SeamSourceProvenance
 } from "../core/proposal/proposalSchema.ts";
-import { readConstraintPayload } from "../adapters/loom/readConstraintPayload.ts";
+import {
+  readConstraintRequest,
+  type ConstraintRequest
+} from "../adapters/loom/readConstraintPayload.ts";
 import { buildSeamProvenance } from "../core/constraint/buildSeamProvenance.ts";
 import type { ConstraintPayload } from "../core/constraint/constraintTypes.ts";
 import { planApply } from "../core/apply/applyProposal.ts";
@@ -317,6 +320,27 @@ function makeResolveProvenance(
   };
 }
 
+// [C7]: 拘束 payload の封筒が「構築時に問題があった」（status!=ok / diagnostics 非空）と報告しているとき、
+// source provenance は不完全になりうる（該当 piece が payload から欠けている等）。黙って進めず stderr に
+// 警告を出す（propose 自体は成功＝advisory）。IO なので CLI 層に置く（core は純粋のまま）。
+function warnPartialConstraints(request: ConstraintRequest): void {
+  const parts = [
+    request.status !== undefined && request.status !== "ok"
+      ? `status=${request.status}`
+      : undefined,
+    request.diagnostics.length > 0 ? `diagnostics ${request.diagnostics.length} 件` : undefined
+  ].filter((part): part is string => part !== undefined);
+  process.stderr.write(
+    `tru propose: 警告: 拘束 payload に ${parts.join(" / ")} — source provenance は不完全な可能性があります` +
+      `（該当 piece が payload から欠けている等）。\n`
+  );
+  for (const diagnostic of request.diagnostics) {
+    const severity = diagnostic.severity ? `[${diagnostic.severity}] ` : "";
+    const code = diagnostic.code ? `${diagnostic.code}: ` : "";
+    process.stderr.write(`  - ${severity}${code}${diagnostic.message}\n`);
+  }
+}
+
 // <pattern.dxf> 省略時の解決。cwd 直下（非再帰）の *.dxf を探し、ちょうど 1 つならそれを使う。
 // 「1 プロジェクト = 1 DXF（全パーツ同梱）」の通常運用を引数ゼロで通すため。0 個 / 複数個は推測せず
 // error にして明示指定を促す（複数 = シナリオ別 DXF 等）。Seamlint report は source パスを持たないので、
@@ -410,20 +434,29 @@ async function runPropose(args: string[]): Promise<number> {
   // ＝パイプ配送 `loom truer request --format json | tru propose --constraints -` の受け口（file 方式も従来どおり）。
   let resolveProvenance: ((piece: string) => SeamSourceProvenance | undefined) | undefined;
   if (options.constraints) {
-    let payload: ConstraintPayload;
+    let request: ConstraintRequest;
     try {
       const payloadText =
         options.constraints === "-"
           ? await readStream(process.stdin)
           : await readFile(options.constraints, "utf8");
-      payload = readConstraintPayload(JSON.parse(payloadText));
+      request = readConstraintRequest(JSON.parse(payloadText));
     } catch (error) {
       process.stderr.write(
         `tru propose: could not read constraint payload: ${errorMessage(error)}\n`
       );
       return 1;
     }
-    resolveProvenance = makeResolveProvenance(payload);
+    // 封筒が payload 構築時の問題（piece 不在等）を報告しているときは source provenance が不完全になりうる。
+    // Truer は黙って進めず人に surface する（[C7]／「わからないものを silent に捨てない」）。propose 自体は
+    // 成功のまま（advisory・exit は変えない）。status が無い bare 形は ok 相当で警告しない。
+    if (
+      (request.status !== undefined && request.status !== "ok") ||
+      request.diagnostics.length > 0
+    ) {
+      warnPartialConstraints(request);
+    }
+    resolveProvenance = makeResolveProvenance(request.payload);
   }
 
   const file = createProposalFile({

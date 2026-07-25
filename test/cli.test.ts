@@ -320,6 +320,74 @@ test("propose --constraints - fails cleanly on malformed stdin (payload is actua
   assert.match(result.stderr, /could not read constraint payload/);
 });
 
+test("propose --constraints -: 封筒 status=warning / diagnostics 非空は警告を出すが exit 0（[C7]）", () => {
+  // 守る仕様: payload 構築時の問題（piece 不在等）を封筒が報告するとき、provenance が不完全になりうるので
+  //           黙って進めず stderr に警告を出す。ただし propose 自体は成功（advisory・exit 0・file は書ける）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-constraints-warn-"));
+  writeFileSync(join(dir, "solo.dxf"), "x");
+  writeFileSync(join(dir, "empty.report.json"), JSON.stringify(EMPTY_REPORT));
+  const envelope = JSON.stringify({
+    status: "warning",
+    diagnostics: [
+      {
+        severity: "warning",
+        code: "PART_SOURCE_VAL_PIECE_NOT_FOUND",
+        message: 'files.piece "sleeve" が .val に無い'
+      }
+    ],
+    payload: { schema: "loomit.constraint-payload.v0", params: {}, parts: [], connectors: [] }
+  });
+  const result = spawnSync(
+    process.execPath,
+    [
+      TRU_ABS,
+      "propose",
+      "solo.dxf",
+      "--diagnostic",
+      "empty.report.json",
+      "--out",
+      "p.json",
+      "--constraints",
+      "-"
+    ],
+    { cwd: dir, encoding: "utf8", input: envelope }
+  );
+  assert.equal(result.status, 0); // advisory: propose は成功
+  assert.equal(existsSync(join(dir, "p.json")), true);
+  assert.match(result.stderr, /警告/);
+  assert.match(result.stderr, /不完全/);
+  assert.match(result.stderr, /PART_SOURCE_VAL_PIECE_NOT_FOUND/);
+});
+
+test("propose --constraints -: 封筒 status=ok / diagnostics 空は警告を出さない（誤警告しない）", () => {
+  // 守る仕様（鳴ってはいけない面）: 問題の無い payload で余計な警告を出さない。status=ok かつ diagnostics 空。
+  const dir = mkdtempSync(join(tmpdir(), "truer-constraints-ok-"));
+  writeFileSync(join(dir, "solo.dxf"), "x");
+  writeFileSync(join(dir, "empty.report.json"), JSON.stringify(EMPTY_REPORT));
+  const envelope = JSON.stringify({
+    status: "ok",
+    diagnostics: [],
+    payload: { schema: "loomit.constraint-payload.v0", params: {}, parts: [], connectors: [] }
+  });
+  const result = spawnSync(
+    process.execPath,
+    [
+      TRU_ABS,
+      "propose",
+      "solo.dxf",
+      "--diagnostic",
+      "empty.report.json",
+      "--out",
+      "p.json",
+      "--constraints",
+      "-"
+    ],
+    { cwd: dir, encoding: "utf8", input: envelope }
+  );
+  assert.equal(result.status, 0);
+  assert.doesNotMatch(result.stderr, /警告/);
+});
+
 // ---- tru cut（band 印刷 stopgap SVG）----
 
 // band 提案を作るための stub。WAISTBAND の band 辺（propose 側の住所解決用）を返す runner。

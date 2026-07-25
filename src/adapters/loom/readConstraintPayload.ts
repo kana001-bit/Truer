@@ -5,7 +5,10 @@
 //
 // 外部入力なので field を信頼せず `unknown` 境界で defensive に検証する（`readSeamlintReport` と同方針）。封筒は
 // `{ payload, diagnostics }`（assemble）/ `{ status, diagnostics, payload }`（Slice 5）どちらも payload を包むので剥がす。
-// diagnostics（Loomit 自身の抽出診断・Seamlint report ではない = [C7]）は本 adapter では読まない。
+// payload 本体だけ欲しいときは `readConstraintPayload`。封筒の `status`/`diagnostics`（= Loomit 自身の抽出診断で
+// Seamlint report ではない = [C7]）も要るとき（＝人に「provenance 不完全かも」を surface するとき）は
+// `readConstraintRequest`。status は payload の完全性のシグナル: `warning` は build を止めず payload が部分的に
+// なりうる（Loomit `report.ts`／`loom-truer-request-cli.md`）ので、Truer は黙って捨てず surface する。
 
 import type {
   ConstraintConnectorRef,
@@ -194,4 +197,62 @@ export function readConstraintPayload(json: unknown): ConstraintPayload {
   }
 
   return { schema: root.schema, params, parts, connectors };
+}
+
+// --- 封筒（envelope）メタ: status / diagnostics（[C7]）---
+// `loom truer request` の出力 `{ status, diagnostics, payload }`（Loomit `report.ts` の ReportStatus / Diagnostic と
+// 同型）。status は diagnostics の severity を max で畳んだもの。**Truer は Loomit の Diagnostic 形に強く結合しない**
+// （境界: core を Loomit JSON に縛らない）ので、advisory 表示に足る最小情報へ正規化する。
+
+export type ConstraintStatus = "ok" | "warning" | "error";
+export type ConstraintSeverity = "info" | "warning" | "error";
+
+export interface ConstraintDiagnostic {
+  severity: ConstraintSeverity | undefined;
+  code: string | undefined;
+  message: string; // 表示用の best-effort 文字列（空にしない）
+}
+
+// payload 本体＋封筒メタ。status が封筒に無い（payload 直 / bare 形）なら undefined（＝ok 相当に扱う）。
+export interface ConstraintRequest {
+  payload: ConstraintPayload;
+  status: ConstraintStatus | undefined;
+  diagnostics: ConstraintDiagnostic[];
+}
+
+function readStatus(value: unknown): ConstraintStatus | undefined {
+  return value === "ok" || value === "warning" || value === "error" ? value : undefined;
+}
+
+function readSeverity(value: unknown): ConstraintSeverity | undefined {
+  return value === "info" || value === "warning" || value === "error" ? value : undefined;
+}
+
+// 封筒の diagnostics を advisory 表示用に正規化する。外部入力なので field を信頼せず、message は
+// message→code→JSON の順で best-effort に埋める（空にしない）。ここは表示用なので strict 検証はしない
+// （payload 本体だけが幾何 provenance の入力＝strict。diagnostics は人向けの注意書き）。
+function readDiagnostics(value: unknown): ConstraintDiagnostic[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((raw) => {
+    if (!isObject(raw)) return { severity: undefined, code: undefined, message: String(raw) };
+    const code = typeof raw.code === "string" ? raw.code : undefined;
+    const message =
+      typeof raw.message === "string" && raw.message.length > 0
+        ? raw.message
+        : (code ?? JSON.stringify(raw));
+    return { severity: readSeverity(raw.severity), code, message };
+  });
+}
+
+// payload 本体（readConstraintPayload で strict 検証）＋封筒の status/diagnostics を返す。CLI が
+// status!=ok / diagnostics 非空のとき「provenance 不完全かも」を surface するための入口（[C7]）。
+export function readConstraintRequest(json: unknown): ConstraintRequest {
+  const payload = readConstraintPayload(json);
+  // readConstraintPayload が通った時点で json は object。封筒の status/diagnostics は外側から拾う（payload 直なら無し）。
+  const envelope = isObject(json) ? json : {};
+  return {
+    payload,
+    status: readStatus(envelope.status),
+    diagnostics: readDiagnostics(envelope.diagnostics)
+  };
 }

@@ -5,7 +5,8 @@ import test from "node:test";
 
 import {
   ConstraintPayloadError,
-  readConstraintPayload
+  readConstraintPayload,
+  readConstraintRequest
 } from "../src/adapters/loom/readConstraintPayload.ts";
 import { buildSeamProvenance } from "../src/core/constraint/buildSeamProvenance.ts";
 import type { ConstraintPayload } from "../src/core/constraint/constraintTypes.ts";
@@ -263,6 +264,53 @@ test("buildSeamProvenance: declared:false のみ参照する候補は increment 
   const provenance = buildSeamProvenance(payload, { partId: "front", connectorId: "seam" });
   assert.equal(provenance.candidates[0]!.coupling, "part-local");
   assert.equal(provenance.candidates[0]!.usedByHint, undefined);
+});
+
+test("readConstraintRequest: 封筒 {status, diagnostics, payload} の status/diagnostics を拾い payload を返す（[C7]）", () => {
+  // 守る仕様: envelope が payload 構築時の問題を報告するとき、consumer が surface できるよう status/diagnostics を渡す。
+  //           payload 本体は readConstraintPayload と同じ検証で読む。
+  const request = readConstraintRequest({
+    status: "warning",
+    diagnostics: [
+      {
+        severity: "warning",
+        code: "PART_SOURCE_VAL_PIECE_NOT_FOUND",
+        message: 'files.piece "sleeve" が .val に無い'
+      }
+    ],
+    payload: v0({ "#p": { declared: true, value: "5", usedBy: ["front"] } }, [], [])
+  });
+  assert.equal(request.status, "warning");
+  assert.equal(request.payload.schema, "loomit.constraint-payload.v0");
+  assert.equal(request.diagnostics.length, 1);
+  assert.equal(request.diagnostics[0]!.severity, "warning");
+  assert.equal(request.diagnostics[0]!.code, "PART_SOURCE_VAL_PIECE_NOT_FOUND");
+  assert.match(request.diagnostics[0]!.message, /sleeve/);
+});
+
+test("readConstraintRequest: bare 形（status 無し / payload 直）は status undefined・diagnostics 空", () => {
+  // 守る仕様: 旧 assemble sample `{payload, diagnostics:[]}` や payload 直（封筒無し）は「問題なし」相当。
+  //           status 欠落を ok と誤断定せず undefined にし、CLI 側が「undefined は警告しない」で扱う。
+  const enveloped = readConstraintRequest({ payload: v0({}, [], []), diagnostics: [] });
+  assert.equal(enveloped.status, undefined);
+  assert.equal(enveloped.diagnostics.length, 0);
+  const bare = readConstraintRequest(v0({}, [], []));
+  assert.equal(bare.status, undefined);
+  assert.equal(bare.diagnostics.length, 0);
+});
+
+test("readConstraintRequest: diagnostics は表示用に defensive 正規化（message 欠落は code / JSON に fallback）", () => {
+  // 守る仕様: diagnostics は人向けの注意書きなので strict にせず、message を必ず非空にして落とさない。
+  //           未知 status は undefined 扱い（advisory を throw で壊さない）。
+  const request = readConstraintRequest({
+    status: "bogus",
+    diagnostics: [{ code: "ONLY_CODE" }, { severity: "error", message: "" }, "just a string"],
+    payload: v0({}, [], [])
+  });
+  assert.equal(request.status, undefined); // 未知 status は undefined
+  assert.equal(request.diagnostics[0]!.message, "ONLY_CODE"); // message 欠落 → code
+  assert.ok(request.diagnostics[1]!.message.length > 0); // 空 message → JSON fallback（非空）
+  assert.equal(request.diagnostics[2]!.message, "just a string"); // 非 object → String()
 });
 
 test("buildSeamProvenance: pieceWide=true・多 seam piece の別 connector は同じ候補（[C6] の既知限界を明示）", () => {
