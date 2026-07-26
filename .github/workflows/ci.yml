@@ -8,7 +8,15 @@ on:
 
 jobs:
   build-test:
-    runs-on: ubuntu-latest
+    # slnt をサブプロセスで起動する経路は OS 依存で、Windows 専用テスト（.cmd の spawn、パス中の
+    # %VAR%、名前のメタ文字。test/slntRunner.test.ts）は process.platform !== "win32" で skip される。
+    # ubuntu だけで回すとそれらが一度も走らないので、両 OS を matrix で回して実際に検証する。
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 片方が落ちても、もう片方の結果を捨てない（OS 固有の失敗かを切り分けるため）。
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,7 +24,10 @@ jobs:
           node-version: "24"
           cache: npm
       - run: npm ci
+      # lint / format は OS 非依存なので ubuntu の 1 本だけで足りる（二重実行しない）。
       - run: npm run lint
+        if: matrix.os == 'ubuntu-latest'
       - run: npm run format:check
+        if: matrix.os == 'ubuntu-latest'
       # `npm test` runs pretest (typecheck + build) before node --test.
       - run: npm test
