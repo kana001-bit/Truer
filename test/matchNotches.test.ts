@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
+import { readConstraintPayload } from "../src/adapters/loom/readConstraintPayload.ts";
 import { matchSeamEdgeNotches } from "../src/core/constraint/matchNotches.ts";
 import type { MeasuredNotch } from "../src/core/constraint/matchNotches.ts";
 import type { ConstraintNotch, NotchType } from "../src/core/constraint/constraintTypes.ts";
@@ -185,4 +188,81 @@ test("matchSeamEdgeNotches: 測定辺 notch が undefined/空、または piece 
     matchSeamEdgeNotches([measured(0.3, "v"), measured(0.6, "t")], [valNotch(0, "v")]).status,
     "no-match"
   );
+});
+
+// --- 実 `.val` notch（上の synthetic を置換せず併設）---
+// **実なのは Loomit `.val` 側だけ。** piece の notch は実 `loom truer request` 出力だが、測定辺側（`MeasuredNotch`）は
+// 上の `measured()` で合成する（`edgePosition` は等間隔の作り値・`notchType` は val notch から複写）。Seamlint 由来の
+// 実 `SeamEdgeNotch`（実 edgePosition / onCorner / ambiguous）を通す 3 者 e2e は task-spec「次にやること (b)」の領分で、
+// **ここではまだ検証していない**。fixture は手編集しない・再生成手順は `constraintProvenance.test.ts` の
+// loadRealRequest コメント参照（test ファイル同士は import しない＝test の二重登録を避ける）。
+const REAL_NOTCHES_FIXTURE = "test/fixtures/constraint-payload-cycling-knickers.notches.json";
+
+function loadRealNotches(partId: string): ConstraintNotch[] {
+  const path = join(process.cwd(), REAL_NOTCHES_FIXTURE);
+  const payload = readConstraintPayload(JSON.parse(readFileSync(path, "utf8")));
+  const part = payload.parts.find((candidate) => candidate.partId === partId);
+  assert.ok(part, `fixture に part "${partId}" が無い`);
+  return part.notches;
+}
+
+test("matchSeamEdgeNotches: 実 .val notch では部分署名が ambiguous になる（種別列が交互で弱いため諦める）", () => {
+  // 守る仕様: 実 cycling_knickers の piece notch は種別列が [v,t,v,t]。長さ 1〜3 の測定署名はこの列の複数箇所に
+  //   一致してしまうので（例 [v,t,v] は run {0,1,2} と {2,3,0} の両方）、**一意化できず ambiguous** を返す。
+  //   ここで無理に 1 つ選ぶと誤った param を confidently-wrong に出すので、諦めるのが正しい（T8）。
+  //   実 .val notch で「種別は弱い tie-breaker」が効かない側に振れることの回帰。
+  //   署名は **prefix に限らない**（測定辺は輪郭の一部なので途中から始まる部分列もありうる）ので、[t,…] 始まりも含める。
+  const val = loadRealNotches("back");
+  assert.deepEqual(
+    val.map((notch) => notch.notchType),
+    ["v", "t", "v", "t"]
+  );
+
+  const signatures: NotchType[][] = [
+    ["v"],
+    ["t"],
+    ["v", "t"],
+    ["t", "v"],
+    ["v", "t", "v"],
+    ["t", "v", "t"]
+  ];
+  for (const signature of signatures) {
+    const measuredNotches = signature.map((notchType, index) =>
+      measured((index + 1) / (signature.length + 1), notchType)
+    );
+    assert.equal(
+      matchSeamEdgeNotches(measuredNotches, val).status,
+      "ambiguous",
+      `署名 [${signature.join(",")}] は実 .val notch で一意化できないはず`
+    );
+  }
+});
+
+test("matchSeamEdgeNotches: 実 .val notch で全周（4 個）署名なら matched・向きは either（回転を畳む）", () => {
+  // 守る仕様: k===n（piece の全 notch を測定辺が覆う）は、どの開始位置の回転も同じ notch 集合を指すので 1 件に畳まれ
+  //   matched になる。ただし [v,t,v,t] は逆順の回転とも両立するため **direction は either**（向きを過剰確定しない）。
+  //   valNotches は輪郭 order 昇順で返る（下流が位置対応を仮定しないための固定）。
+  const val = loadRealNotches("front");
+  const fullSignature: NotchType[] = ["v", "t", "v", "t"];
+  const measuredNotches = fullSignature.map((notchType, index) =>
+    measured((index + 1) / (fullSignature.length + 1), notchType)
+  );
+
+  const result = matchSeamEdgeNotches(measuredNotches, val);
+
+  assert.equal(result.status, "matched");
+  if (result.status !== "matched") return;
+  assert.equal(result.direction, "either");
+  assert.deepEqual(
+    result.valNotches.map((notch) => notch.order),
+    [0, 1, 2, 3]
+  );
+});
+
+test("matchSeamEdgeNotches: 実 .val の直辺 piece（waistband）は piece notch が空で no-match", () => {
+  // 守る仕様: waistband は notch を持たない（`notches: []`）。合意どおり **notch 錨の無い直辺は v1 対象外**で、
+  //   matcher は投げずに no-match へ degrade する（provenance-only に留まる）。
+  const val = loadRealNotches("waistband");
+  assert.deepEqual(val, []);
+  assert.equal(matchSeamEdgeNotches([measured(0.5, "v")], val).status, "no-match");
 });

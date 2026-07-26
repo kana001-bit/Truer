@@ -8,13 +8,30 @@ import {
   readConstraintPayload,
   readConstraintRequest
 } from "../src/adapters/loom/readConstraintPayload.ts";
+import type { ConstraintRequest } from "../src/adapters/loom/readConstraintPayload.ts";
 import { buildSeamProvenance } from "../src/core/constraint/buildSeamProvenance.ts";
 import type { ConstraintPayload } from "../src/core/constraint/constraintTypes.ts";
 
-// 実 cycling_knickers の outseam payload（Loomit v0 契約・機械変換済み fixture）。
+// 実 cycling_knickers の outseam payload（Loomit v0 契約・機械変換済み fixture）。notches を持たない旧 v0 なので
+// 「notches 無しでも読める」後方互換の回帰も兼ねる（Loomit は今は常に notches を載せる）。
 function loadSample(): ConstraintPayload {
   const path = join(process.cwd(), "test/fixtures/constraint-payload-outseam.json");
   return readConstraintPayload(JSON.parse(readFileSync(path, "utf8")));
+}
+
+// `loom truer request` の**実出力**（封筒 `{status,diagnostics,payload}` ＋ `parts[].notches[]` 入り）。
+// **手編集しない。** 上流の emitter が形を変えたらこの fixture を再生成して差分を見る（drift-guard）。再生成:
+//   node <Loomit>/packages/cli/dist/main.js truer request <project> --format json \
+//     > test/fixtures/constraint-payload-cycling-knickers.notches.json
+//   npm run format   # prettier が短い配列を 1 行に畳む。CI は format:check 独立ゲートなので必須（値は不変）
+// 生成元 project は cycling_knickers（waistband の waist が合わない版・front / back / waistband の 3 parts）。
+// この fixture は adapter（strict）・matcher・applicable の実データ回帰で共有する（`matchNotches.test.ts` /
+// `buildSeamApplicable.test.ts` も同じファイルを読む。test ファイル同士は import しない＝test の二重登録を避ける）。
+const REAL_NOTCHES_FIXTURE = "test/fixtures/constraint-payload-cycling-knickers.notches.json";
+
+function loadRealRequest(): ConstraintRequest {
+  const path = join(process.cwd(), REAL_NOTCHES_FIXTURE);
+  return readConstraintRequest(JSON.parse(readFileSync(path, "utf8")));
 }
 
 // v0 の最小 payload を組む helper（bare payload。adapter は封筒無しも受ける）。
@@ -452,6 +469,64 @@ test("readConstraintRequest: diagnostics は表示用に defensive 正規化（m
   assert.equal(request.diagnostics[0]!.message, "ONLY_CODE"); // message 欠落 → code
   assert.ok(request.diagnostics[1]!.message.length > 0); // 空 message → JSON fallback（非空）
   assert.equal(request.diagnostics[2]!.message, "just a string"); // 非 object → String()
+});
+
+test("readConstraintRequest: 実 `loom truer request` 出力（notches 入り）が strict を素通りする", () => {
+  // 守る仕様: adapter は strict（未知フィールドを error）なので、上流 Loomit が emit する形と 1 つでも食い違うと
+  //   real payload を全部 reject し provenance-only ごと壊れる。実出力 fixture を読めること自体が drift-guard。
+  //   ここが落ちたら「Loomit が field を足した / 名前を変えた」ので、fixture 再生成 → adapter と schema copy を同期する。
+  const request = loadRealRequest();
+
+  // 封筒: 健全な project なので ok・診断なし（status!=ok / diagnostics 非空の surface は上の [C7] テストが固定）。
+  assert.equal(request.status, "ok");
+  assert.deepEqual(request.diagnostics, []);
+  assert.equal(request.payload.schema, "loomit.constraint-payload.v0");
+  assert.deepEqual(
+    request.payload.parts.map((part) => part.partId),
+    ["front", "back", "waistband"]
+  );
+  // connectors は join 鍵のみ（dependsOn を持たない）。実データは outseam ＋ waist の 2 種。
+  assert.deepEqual(
+    request.payload.connectors.map((connector) => `${connector.partId}/${connector.connectorId}`),
+    ["front/outseam", "front/waist", "back/outseam", "back/waist", "waistband/waist"]
+  );
+});
+
+test("readConstraintRequest: 実出力の notches が必須 field 込みで読める（notchType は生値写像つき）", () => {
+  // 守る仕様: matcher の入力になる notch 単位グループを実データで固定する。order/anchorPointId/lengthCandidates は
+  //   必須、`rawPassmarkLine` は `.val` の生値 verbatim、`notchType` は layer 由来の弱い tie-breaker（Loomit の
+  //   総写像で実質全 notch に付く）。inv3（refs が params に解決する）も読めた時点で通っている。
+  const payload = loadRealRequest().payload;
+  const back = payload.parts.find((part) => part.partId === "back");
+  assert.ok(back);
+
+  assert.deepEqual(
+    back.notches.map((notch) => notch.order),
+    [0, 1, 2, 3]
+  );
+  assert.deepEqual(
+    back.notches.map((notch) => notch.notchType),
+    ["v", "t", "v", "t"]
+  );
+  assert.deepEqual(
+    back.notches.map((notch) => notch.rawPassmarkLine),
+    ["vMark", "tMark", "vMark", "tMark"]
+  );
+  for (const notch of back.notches) {
+    assert.ok(notch.anchorPointId.length > 0);
+    assert.ok(notch.lengthCandidates.length > 0);
+  }
+  // notch の錨 spline は 84 が 3 個・86 が 1 個。「同じ辺の notch は同じ spline に乗りがち」という実データの形
+  // （applicable を広げるときの discriminator 候補・現 matcher は未使用）。
+  assert.deepEqual(
+    back.notches.map((notch) => notch.splineId),
+    ["84", "84", "84", "86"]
+  );
+
+  // waistband は notch を持たない直辺 piece。**空でも常に emit** される契約なので [] になる（field 欠落ではない）。
+  const waistband = payload.parts.find((part) => part.partId === "waistband");
+  assert.ok(waistband);
+  assert.deepEqual(waistband.notches, []);
 });
 
 test("buildSeamProvenance: pieceWide=true・多 seam piece の別 connector は同じ候補（[C6] の既知限界を明示）", () => {
