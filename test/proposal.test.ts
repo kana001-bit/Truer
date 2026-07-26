@@ -524,6 +524,56 @@ test("seam_length_mismatch without a provenance resolver has no source provenanc
   assert.equal(file.proposals[0]!.seamReconciliation?.sourceProvenance, undefined);
 });
 
+test("seam_length_mismatch carries applicable when a resolver supplies it (--constraints + reference)", () => {
+  // 守る仕様: resolveApplicable 供給かつ reference で調整辺が決まったとき、seamReconciliation.applicable が additive で載る。
+  //           reference=from（BACK 固定）→ conform=to（FRONT・現在 212）が reference(200)へ = deltaMm -12。preview-only は不変。
+  const file = createProposalFile({
+    sourceFile: "seam.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(200, 212)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub("from"),
+    resolveApplicable: ({ piece, conform, deltaMm }) =>
+      piece === SEAM_TO_BLOCK
+        ? {
+            piece,
+            conform,
+            deltaMm,
+            param: { expr: "waist_circ + 2", refs: ["#ease"], pointId: "15" }
+          }
+        : undefined
+  });
+
+  assert.deepEqual(validateProposalFile(file), []);
+  const proposal = file.proposals[0]!;
+  assert.equal(proposal.mode, "preview-only"); // applicable を足しても preview-only は不変
+  const applicable = proposal.seamReconciliation?.applicable;
+  assert.ok(applicable);
+  assert.equal(applicable!.piece, SEAM_TO_BLOCK);
+  assert.equal(applicable!.conform, "to");
+  assert.equal(applicable!.deltaMm, -12);
+  assert.equal(applicable!.param.expr, "waist_circ + 2");
+});
+
+test("seam_length_mismatch without a reference does not carry applicable (direction undecided)", () => {
+  // 守る仕様: reference 未決なら調整辺が決まらない（linkTarget 無し）ので resolveApplicable は呼ばれず applicable も無し（T8）。
+  const file = createProposalFile({
+    sourceFile: "seam.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(200, 212)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: resolveSeamPairStub(),
+    resolveApplicable: ({ piece, conform, deltaMm }) => ({
+      piece,
+      conform,
+      deltaMm,
+      param: { expr: "x", refs: [] }
+    })
+  });
+
+  assert.equal(file.proposals[0]!.seamReconciliation?.applicable, undefined);
+});
+
 test("seam_length_mismatch without length fields is skipped, not crashed", () => {
   // 守る仕様 (T8): from/to/diff mm が欠けると crash させず missing_length_fields で skip。
   const file = createProposalFile({
