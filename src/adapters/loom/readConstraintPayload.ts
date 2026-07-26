@@ -162,8 +162,11 @@ function isNotchType(value: unknown): value is NotchType {
 // order/anchorPointId/lengthCandidates は必須、rawPassmarkLine/notchType/splineId は optional（無ければ落とす）。
 function readNotch(raw: unknown, where: string): ConstraintNotch {
   if (!isObject(raw)) throw new ConstraintPayloadError(`${where} must be an object.`);
-  if (typeof raw.order !== "number" || !Number.isInteger(raw.order))
-    throw new ConstraintPayloadError(`${where}.order must be an integer.`);
+  // order は notch matching の安定キー。schema は safe-integer 範囲（±2^53-1）に制限しているので、adapter も
+  // `Number.isSafeInteger` で揃える。2^53 以上は JSON.parse で丸められ、別 order と衝突しても気付けない（silent に
+  // 受けない）。`Number.isInteger` だけだと 9007199254740992 等の unsafe な整数値を通してしまう。
+  if (typeof raw.order !== "number" || !Number.isSafeInteger(raw.order))
+    throw new ConstraintPayloadError(`${where}.order must be a safe integer (±2^53-1).`);
   if (typeof raw.anchorPointId !== "string")
     throw new ConstraintPayloadError(`${where}.anchorPointId must be a string.`);
   if (!Array.isArray(raw.lengthCandidates))

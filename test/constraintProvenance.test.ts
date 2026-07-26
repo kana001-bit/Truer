@@ -260,6 +260,31 @@ test("readConstraintPayload: notch の strict 検証（未知キー / 不正 not
   }
 });
 
+test("readConstraintPayload: notch.order は safe-integer で検証（unsafe な整数を弾く・matching 安定キー）", () => {
+  // 守る仕様 (P2): order は matching の安定キー。schema と同じ safe-integer 範囲（±2^53-1）に揃える。2^53 以上は
+  //           JSON.parse で丸められ別 order と衝突しうるので、Number.isInteger では通っても弾く。境界は受ける。
+  const withOrder = (order: number) =>
+    v0(
+      {},
+      [
+        {
+          partId: "front",
+          piece: "front",
+          dependsOn: [],
+          notches: [{ order, anchorPointId: "1", lengthCandidates: [] }]
+        }
+      ],
+      []
+    );
+  assert.doesNotThrow(() => readConstraintPayload(withOrder(Number.MAX_SAFE_INTEGER)));
+  assert.doesNotThrow(() => readConstraintPayload(withOrder(Number.MIN_SAFE_INTEGER)));
+  // 2^53（Number.isInteger は true だが unsafe）は reject。
+  assert.throws(
+    () => readConstraintPayload(withOrder(9007199254740992)),
+    (error: unknown) => error instanceof ConstraintPayloadError
+  );
+});
+
 test("buildSeamProvenance: linearity:none を落とし linear を先に並べる（parts 起点）", () => {
   const payload = loadSample();
   const provenance = buildSeamProvenance(payload, { partId: "front", connectorId: "outseam" });
