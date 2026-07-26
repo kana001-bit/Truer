@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
+import { readConstraintPayload } from "../src/adapters/loom/readConstraintPayload.ts";
 import { buildSeamApplicable } from "../src/core/constraint/buildSeamApplicable.ts";
 import type {
   ConstraintNotch,
@@ -121,4 +124,55 @@ test("buildSeamApplicable: 複数 matched notch が同じ linear 候補を共有
   assert.equal(result.conform, "from");
   assert.equal(result.deltaMm, -2.0);
   assert.equal(result.param.pointId, "15");
+});
+
+// --- 実 `.val` notch（上の synthetic を置換せず併設）---
+// **実なのは Loomit `.val` 側だけ。** piece の notch は実 `loom truer request` 出力だが、測定辺側（`MeasuredNotch`）は
+// 下の `measured()` で合成する（`edgePosition` は等間隔の作り値・`notchType` は val notch から複写）。Seamlint 由来の
+// 実 `SeamEdgeNotch`（実 edgePosition / onCorner / ambiguous）を通す 3 者 e2e は task-spec「次にやること (b)」の領分で、
+// **ここではまだ検証していない**。fixture は手編集しない・再生成手順は `constraintProvenance.test.ts` の
+// loadRealRequest コメント参照（test ファイル同士は import しない＝test の二重登録を避ける）。
+const REAL_NOTCHES_FIXTURE = "test/fixtures/constraint-payload-cycling-knickers.notches.json";
+
+function loadRealNotches(partId: string): ConstraintNotch[] {
+  const path = join(process.cwd(), REAL_NOTCHES_FIXTURE);
+  const payload = readConstraintPayload(JSON.parse(readFileSync(path, "utf8")));
+  const part = payload.parts.find((candidate) => candidate.partId === partId);
+  assert.ok(part, `fixture に part "${partId}" が無い`);
+  return part.notches;
+}
+
+test("buildSeamApplicable: 実 .val notch では applicable が発火せず provenance-only に落ちる（測定辺側は合成）", () => {
+  // 守る仕様: 実 cycling_knickers の `.val` notch では **どの署名でも applicable は出ない**。理由は 2 つで、どちらも
+  //   安全側の degrade（T8）:
+  //   (i) 部分署名（1〜3 個）は種別列 [v,t,v,t] が弱く matcher が ambiguous（`matchNotches.test.ts` の同じ回帰）。
+  //   (ii) 全周（4 個）署名は matched だが、別 spline の notch を巻き込むので linear 候補が 2 本以上になり 1 項に絞れない
+  //        （front は各 notch が常に linear 2 本、back は spline 84 の 3 個が linear 1 本でも notch 3 が 2 本を足す）。
+  //   → 「実 .val notch で applicable が 0 件」自体が現状の到達点。ここが**発火する側に変わったら意図した拡張のときだけ**で
+  //   あり、偶発的に confidently-wrong な param を出し始めていないかをこのテストで検知する。
+  for (const partId of ["front", "back"]) {
+    const val = loadRealNotches(partId);
+    // fixture が空 notch に退化すると measured も空 → no-notches → undefined で**何も検証せずに緑になる**（vacuous pass）。
+    // 前提を先に固定して、テストが黙って空回りしないようにする。
+    assert.equal(val.length, 4, `fixture の part ${partId} は notch 4 個が前提`);
+    for (const size of [1, 2, 3, 4]) {
+      const measuredNotches = val
+        .slice(0, size)
+        .map((notch, index) => measured((index + 1) / (size + 1), notch.notchType));
+      assert.equal(
+        buildSeamApplicable(measuredNotches, val, -12, "to"),
+        undefined,
+        `part ${partId} / 署名 ${size} 個で applicable が出るのは想定外`
+      );
+    }
+  }
+});
+
+test("buildSeamApplicable: 実 .val の直辺 piece（waistband）は notch が無く undefined", () => {
+  // 守る仕様: notch 錨を持たない直辺 piece は matcher が no-match → applicable を出さない。合意どおり
+  //   **直辺は v1 対象外・provenance-only**（`waist_circ + 2` のような endLine を数値化するのは別スライス）。
+  assert.equal(
+    buildSeamApplicable([measured(0.5, "v")], loadRealNotches("waistband"), -12, "to"),
+    undefined
+  );
 });
