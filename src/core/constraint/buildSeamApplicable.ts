@@ -28,6 +28,17 @@ export function buildSeamApplicable(
   deltaMm: number,
   conform: "from" | "to"
 ): SeamApplicableResult | undefined {
+  // T8 保守: 測定辺に onCorner の notch があると applicable を出さず provenance-only に留める。matcher は onCorner を
+  // 署名から除く（角は隣辺と共有＝per-edge 署名にならない）ので、その角 val notch の `lengthCandidates` が下の linear 集計
+  // から漏れる。角の錨 spline が**測定辺側**なら point1/point4 の linear 候補は実際に辺長を支配するため、落とすと真の
+  // undercount＝linear 2 本を 1 本に誤認して applicable を誤発火しうる（T8 の穴）。角 spline が測定辺側か隣辺側かは
+  // 幾何の問い（Seamlint の領分）で `.val` だけでは判定できない（Loomit 追跡で確定・`collectEdgeOccurrencesFromVal.ts:44-46`）。
+  // 曖昧なので諦める。発火には Seamlint の厳密 onCorner 判定（1e-6mm 一致）が要り実 .val ではまず起きないので、保険は
+  // ほぼタダ。※ matcher の順序対応は角を落としても連続性を保つので param の誤同定にはならない（純粋に候補の undercount）。
+  if ((measured ?? []).some((notch) => notch.onCorner)) {
+    return undefined;
+  }
+
   const match = matchSeamEdgeNotches(measured, valNotches);
   if (match.status !== "matched") {
     return undefined;
