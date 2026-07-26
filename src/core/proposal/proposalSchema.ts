@@ -270,6 +270,20 @@ export interface SeamSourceProvenance {
   candidates: SeamSourceCandidate[];
 }
 
+// applicable（具体数値・[C6]）。`--constraints` 供給時、reference で調整辺と目標長が決まり、測定辺 ↔ .val notch のマッチで
+// その辺の「直接効く単一 linear param」が絞れたときだけ載る。**advisory・preview-only は不変**（Truer は .val を評価も
+// 書き換えもしない）: 出すのは param の生式と、その辺が何 mm ずれているか。formula 調整は人が Valentina で行う。
+export interface SeamApplicable {
+  piece: string; // conform 辺の piece（= DXF BLOCK 名）
+  conform: "from" | "to"; // 調整する辺（reference の反対側）
+  deltaMm: number; // その辺が目標に合うのに必要な finished 長の変化量（signed・+ = 伸ばす）
+  param: {
+    expr: string; // .val の生式（例 "waist_circ + 2"）。Truer は評価しない。
+    refs: string[]; // 式中の増分参照（#name）
+    pointId?: string; // その linear 候補の .val 点 id（identity）
+  };
+}
+
 export interface SeamReconciliation {
   fromEdge: SeamEdge;
   toEdge: SeamEdge;
@@ -291,6 +305,9 @@ export interface SeamReconciliation {
   // --- 拘束 provenance（2026-07-23 追加・任意・additive, T9）。`--constraints` で拘束 payload を渡したときだけ、
   // from/to 辺の piece ごとに「長さに効く .val パラメータ」を advisory で載せる。数値提案ではない（preview-only は不変）。---
   sourceProvenance?: SeamSourceProvenance[];
+  // --- applicable（[C6]・任意・additive）。reference で調整辺が決まり notch マッチで単一 linear param が絞れたときだけ、
+  // その辺の delta と param を advisory で載せる（数値つき・preview-only は不変）。---
+  applicable?: SeamApplicable;
 }
 
 // band_seam_sum_mismatch の隣接ピース 1 枚ぶんの証跡。identity（どのピースが neighbour か）は Loomit
@@ -466,6 +483,27 @@ function seamSourceProvenanceError(value: unknown): string | undefined {
     )
       return "candidate.usedByHint must be a string[] when present";
   }
+  return undefined;
+}
+
+// applicable の軽い shape 検証（advisory・apply の gate ではない）。壊れた applicable が保存 proposal から人 / Studio へ
+// 届かない程度に守る。deltaMm は signed の有限数（0 も可）。
+function seamApplicableError(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return "must be an object";
+  const applicable = value as Record<string, unknown>;
+  if (!isNonEmptyString(applicable.piece)) return "piece must be a non-empty string";
+  if (applicable.conform !== "from" && applicable.conform !== "to")
+    return 'conform must be "from" or "to"';
+  if (typeof applicable.deltaMm !== "number" || !Number.isFinite(applicable.deltaMm))
+    return "deltaMm must be a finite number";
+  if (typeof applicable.param !== "object" || applicable.param === null)
+    return "param must be an object";
+  const param = applicable.param as Record<string, unknown>;
+  if (typeof param.expr !== "string") return "param.expr must be a string";
+  if (!(Array.isArray(param.refs) && param.refs.every((item) => typeof item === "string")))
+    return "param.refs must be a string[]";
+  if (param.pointId !== undefined && typeof param.pointId !== "string")
+    return "param.pointId must be a string when present";
   return undefined;
 }
 
@@ -769,6 +807,13 @@ function validateProposal(candidate: unknown, index: number, errors: string[]): 
               errors.push(`${at}.seamReconciliation.sourceProvenance[${entryIndex}] ${problem}`);
             }
           });
+        }
+      }
+      // applicable（任意・追加的）: 存在するときだけ軽く検証（advisory・apply の gate ではない）。
+      if (seam.applicable !== undefined) {
+        const problem = seamApplicableError(seam.applicable);
+        if (problem !== undefined) {
+          errors.push(`${at}.seamReconciliation.applicable ${problem}`);
         }
       }
     }

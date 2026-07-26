@@ -9,6 +9,7 @@ import { basename, dirname, extname, join } from "node:path";
 import { text as readStream } from "node:stream/consumers";
 
 import { createProposalFile } from "../core/proposal/createProposalFile.ts";
+import type { ResolveApplicable } from "../core/proposal/createProposalFile.ts";
 import { validateProposalFile } from "../core/proposal/proposalSchema.ts";
 import type {
   Proposal,
@@ -20,6 +21,7 @@ import {
   type ConstraintRequest
 } from "../adapters/loom/readConstraintPayload.ts";
 import { buildSeamProvenance } from "../core/constraint/buildSeamProvenance.ts";
+import { buildSeamApplicable } from "../core/constraint/buildSeamApplicable.ts";
 import type { ConstraintPayload } from "../core/constraint/constraintTypes.ts";
 import { planApply } from "../core/apply/applyProposal.ts";
 import {
@@ -320,6 +322,19 @@ function makeResolveProvenance(
   };
 }
 
+// applicable resolver: conform 辺の測定 notch × その piece の .val notch を matcher にかけ、単一 linear param が絞れたとき
+// だけ SeamApplicable を返す（piece を添える）。piece → part の照合は provenance と同じ（`candidate.piece === piece`）。
+// piece 不一致 / notch マッチ不成立 / linear が 0 or 複数 なら undefined（applicable を載せない = provenance-only）。
+function makeResolveApplicable(payload: ConstraintPayload): ResolveApplicable {
+  return ({ piece, measured, deltaMm, conform }) => {
+    const part = payload.parts.find((candidate) => candidate.piece === piece);
+    if (!part) return undefined;
+    const result = buildSeamApplicable(measured, part.notches, deltaMm, conform);
+    if (!result) return undefined;
+    return { piece, ...result };
+  };
+}
+
 // [C7]: 拘束 payload の封筒が「構築時に問題があった」（status!=ok / diagnostics 非空）と報告しているとき、
 // source provenance は不完全になりうる（該当 piece が payload から欠けている等）。黙って進めず stderr に
 // 警告を出す（propose 自体は成功＝advisory）。IO なので CLI 層に置く（core は純粋のまま）。
@@ -433,6 +448,7 @@ async function runPropose(args: string[]): Promise<number> {
   // resolver を組む。指定が無ければ resolver も無し（seam 提案に provenance は載らない）。`-` なら stdin から読む
   // ＝パイプ配送 `loom truer request --format json | tru propose --constraints -` の受け口（file 方式も従来どおり）。
   let resolveProvenance: ((piece: string) => SeamSourceProvenance | undefined) | undefined;
+  let resolveApplicable: ResolveApplicable | undefined;
   if (options.constraints) {
     let request: ConstraintRequest;
     try {
@@ -457,6 +473,7 @@ async function runPropose(args: string[]): Promise<number> {
       warnPartialConstraints(request);
     }
     resolveProvenance = makeResolveProvenance(request.payload);
+    resolveApplicable = makeResolveApplicable(request.payload);
   }
 
   const file = createProposalFile({
@@ -473,7 +490,9 @@ async function runPropose(args: string[]): Promise<number> {
     // band 診断（N-ary）も同じ `--reference` 集合を band/neighbour の blockName と照合して固定側を決める。
     resolveBandSeam: buildResolveBandSeam(runEdges, options.reference),
     // 拘束 payload が渡されたときだけ seam 提案に source provenance を additive で載せる。
-    ...(resolveProvenance ? { resolveProvenance } : {})
+    ...(resolveProvenance ? { resolveProvenance } : {}),
+    // 同じく拘束 payload 供給時のみ: reference で調整辺が決まり notch マッチで単一 linear param が絞れれば applicable（数値）。
+    ...(resolveApplicable ? { resolveApplicable } : {})
   });
 
   // --out は任意。省略時は output/<dxf 名>.proposal.json を既定にし、親ディレクトリが無ければ作る。

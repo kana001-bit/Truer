@@ -47,6 +47,7 @@ import type {
   ProposalFile,
   ProposalSource,
   ProposalTarget,
+  SeamApplicable,
   SeamEdge,
   SeamReconciliation,
   SeamSourceProvenance,
@@ -206,8 +207,19 @@ export interface CreateProposalFileInput {
   // seam の piece（= 辺 blockName）ごとの拘束 provenance を返す。任意: `--constraints` で拘束 payload を渡した
   // ときだけ CLI が供給する。無い / piece 不一致なら seam 提案に provenance は載らない。
   resolveProvenance?: (piece: string) => SeamSourceProvenance | undefined;
+  // applicable（具体数値・[C6]）を解決する。任意: `--constraints` かつ reference で調整辺が決まったときだけ CLI が供給する。
+  // conform 辺の測定 notch × その piece の .val notch を matcher にかけ、単一 linear param が絞れれば数値を返す。
+  resolveApplicable?: ResolveApplicable;
   createdBy?: string;
 }
+
+// applicable resolver: 調整（conform）辺の測定 notch とその piece・必要 delta から applicable を解決する（CLI が payload で組む）。
+export type ResolveApplicable = (args: {
+  piece: string;
+  measured: readonly SeamEdgeNotch[] | undefined;
+  deltaMm: number;
+  conform: "from" | "to";
+}) => SeamApplicable | undefined;
 
 // seam length mismatch の confidence 帯。Seamlint は差が既に tolerance を超えたときだけ mismatch を
 // 出すので、届く mismatch はすべて「tolerance 超過」。残差が小さければ true-up の妥当な候補
@@ -362,6 +374,7 @@ interface BuildContext {
   resolveSeamPair?: (diagnostic: DiagnosticInput) => SeamPairResolution;
   resolveBandSeam?: (diagnostic: DiagnosticInput) => BandSeamResolution;
   resolveProvenance?: (piece: string) => SeamSourceProvenance | undefined;
+  resolveApplicable?: ResolveApplicable;
 }
 
 type SkipReason = { code: string; message: string };
@@ -446,7 +459,8 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
   diagnostic,
   resolveTarget,
   resolveSeamPair,
-  resolveProvenance
+  resolveProvenance,
+  resolveApplicable
 }) => {
   const lengths = readSeamLengths(diagnostic.actual);
   if (!lengths) {
@@ -521,12 +535,23 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
     // V1）。candidates が空 = どの角も解けない（曲線隣辺 / 幾何的に解なし）ことの明示。数値は emit
     // 境界のここで丸める（roundCoord = EMIT_DECIMALS）。Δ(finished)=Δ(raw)（dart は辺内側）なので
     // finished 目標との差をそのまま raw の polyline に適用できる。
+    // applicable（具体数値・[C6]）: reference で調整（conform）辺と目標長が決まったときだけ、その辺の測定 notch ×
+    // その piece の .val notch を matcher にかけ、単一 linear param が絞れれば「param + 辺の delta」を advisory で載せる。
+    // reference 未決（linkTarget 無し）なら向きが決まらないので出さない（provenance-only に留める・T8）。
+    let applicable: SeamApplicable | undefined;
     let cornerSlide: CornerSlide | undefined;
     if (linkTarget !== undefined) {
       const conformResolved = linkTarget.conform === "from" ? pair.fromEdge : pair.toEdge;
       const conformLen =
         linkTarget.conform === "from" ? fromSeamEdge.lengthMm : toSeamEdge.lengthMm;
       const signedDeltaMm = linkTarget.targetFinishedMm - conformLen;
+
+      applicable = resolveApplicable?.({
+        piece: conformResolved.blockName,
+        measured: conformResolved.notches,
+        deltaMm: roundCoord(signedDeltaMm),
+        conform: linkTarget.conform
+      });
       const candidates: CornerSlideCandidate[] = [];
       for (const corner of ["start", "end"] as const) {
         const neighbor = conformResolved.neighbors?.[corner];
@@ -582,7 +607,8 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
       ...(pair.reference !== undefined ? { reference: pair.reference } : {}),
       ...(linkTarget !== undefined ? { linkTarget } : {}),
       ...(cornerSlide !== undefined ? { cornerSlide } : {}),
-      ...(sourceProvenance.length > 0 ? { sourceProvenance } : {})
+      ...(sourceProvenance.length > 0 ? { sourceProvenance } : {}),
+      ...(applicable !== undefined ? { applicable } : {})
     };
 
     // target は依然 "from" edge を addressing する（表示 anchor であって、どちらを変えるかの主張では
@@ -806,7 +832,8 @@ export function createProposalFile(input: CreateProposalFileInput): ProposalFile
       resolveTarget: input.resolveTarget,
       resolveSeamPair: input.resolveSeamPair,
       resolveBandSeam: input.resolveBandSeam,
-      resolveProvenance: input.resolveProvenance
+      resolveProvenance: input.resolveProvenance,
+      resolveApplicable: input.resolveApplicable
     });
 
     if ("skip" in result) {
