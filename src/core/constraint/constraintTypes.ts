@@ -24,7 +24,8 @@ export type ConstraintParam =
   | { declared: true; value: string; usedBy: string[]; note?: string }
   | { declared: false; usedBy: string[] };
 
-// dependsOn の 1 要素。point 由来（pointId + type）か spline handle 由来（splineId + handle）の**排他**。
+// occurrence（出現）の 1 要素。`dependsOn` と `notches[].lengthCandidates` の両方で使う（同形）。
+// point 由来（pointId + type）か spline handle 由来（splineId + handle）の**排他**。
 export interface ConstraintOccurrence {
   pointId?: string;
   splineId?: string;
