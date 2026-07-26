@@ -16,31 +16,22 @@ import type {
   DiagnosticInput,
   ResolvedSeamEdge,
   SeamEdgeNeighbor,
+  SeamEdgeNotch,
   SeamPairResolution
 } from "../../core/proposal/createProposalFile.ts";
 import type { Point } from "../../core/proposal/proposalSchema.ts";
-import type { NotchType } from "../../core/constraint/constraintTypes.ts";
 import { readEdgeAddress } from "./edgeAddress.ts";
 import type { EdgeAddress } from "./edgeAddress.ts";
 
-// 測定辺に射影された notch のうち applicable の [C6] matcher が使う部分（Seamlint `StructuralNotch` の部分集合）。
-// 座標 / offsetMm / loopPosition は matcher（順序＋種別マッチ）に不要なので carry しない。`notchType` は
-// ASTM レイヤ由来で **弱い tie-breaker**（Seamlint 側は必須だが、想定外入力に備え optional に読む）。
-export interface SlntNotch {
-  edgePosition: number; // 辺始点からの 0..1 位置。matcher の主キー（順序）。
-  notchType?: NotchType; // 弱い tie-breaker（order を上書きしない）。
-  onCorner: boolean; // 角に乗る notch（隣接両辺に重複出力）→ matcher が dedupe する。
-  ambiguous: boolean; // 辺内位置が一意でない → matcher が除去する。
-}
-
 // この resolver が消費する `slnt edges --json` 出力の部分集合: 各 edge の id・points・notches。
 // address と length は diagnostic から来るので arcRange/lengthMm/darts 等は無視するが、**notches は
-// applicable の [C6] matcher（測定辺 ↔ `.val` occurrence の対応）に要るので carry する**（consume は後段）。
+// applicable の [C6] matcher（測定辺 ↔ `.val` occurrence の対応）に要るので carry し、`resolveEdge` が
+// `ResolvedSeamEdge.notches` まで伝播する**（型は core の `SeamEdgeNotch`。consume は後段の matcher）。
 export interface SlntEdge {
   edgeId: number;
   points: Point[];
   // 実 runner（`coerceEdge`）は常に設定する（無ければ []）。直接構築する test stub では省略可なので optional。
-  notches?: SlntNotch[];
+  notches?: SeamEdgeNotch[];
 }
 
 export interface SlntEdgesResult {
@@ -93,7 +84,10 @@ function resolveEdge(
     ...(address.arcRange ? { arcRange: address.arcRange } : {}),
     points: edge.points,
     lengthMm,
-    ...(neighbors !== undefined ? { neighbors } : {})
+    ...(neighbors !== undefined ? { neighbors } : {}),
+    // 測定辺の notch を matcher の消費点（`ResolvedSeamEdge`）まで伝播する（[C6]）。runner が carry した
+    // `edge.notches` をここで載せないと notch が resolver 境界で捨てられる。proposal JSON には出ない。
+    ...(edge.notches !== undefined ? { notches: edge.notches } : {})
   };
 }
 

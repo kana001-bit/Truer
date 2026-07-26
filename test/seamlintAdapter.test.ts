@@ -11,6 +11,7 @@ import {
 import type { SlntEdgesRunner, SlntEdgesResult } from "../src/adapters/seamlint/index.ts";
 import { readEdgeAddress } from "../src/adapters/seamlint/edgeAddress.ts";
 import { createProposalFile } from "../src/core/proposal/createProposalFile.ts";
+import type { SeamEdgeNotch } from "../src/core/proposal/createProposalFile.ts";
 import { validateProposalFile } from "../src/core/proposal/proposalSchema.ts";
 import { digestEdgePoints } from "../src/core/proposal/proposalDigest.ts";
 
@@ -471,4 +472,48 @@ test("adapter + createProposalFile produce a self-contained overlay proposal", (
   assert.deepEqual(fromEdge.points, BACK_POINTS);
   // self-contained: 描く points は記録された edgeDigest に digest される。
   assert.equal(digestEdgePoints(fromEdge.points), proposal.seamReconciliation!.fromEdge.edgeDigest);
+});
+
+test("buildResolveSeamPair carries edge notches to fromEdge/toEdge, but they do not leak into the proposal (step2 レビュー P2)", () => {
+  // 守る仕様: runner が持つ edge.notches を resolveEdge が ResolvedSeamEdge まで伝播する（ここで捨てると次段の
+  //           [C6] matcher が fromEdge/toEdge から notch を読めない）。ただし proposal JSON には出さない
+  //           （overlay/digest は points のみ。buildSeamEdge / preview.edges はフィールドを明示 pick する）。
+  const backNotches: SeamEdgeNotch[] = [
+    { edgePosition: 0.2, notchType: "v", onCorner: false, ambiguous: false },
+    { edgePosition: 0.6, notchType: "t", onCorner: false, ambiguous: false }
+  ];
+  const frontNotches: SeamEdgeNotch[] = [
+    { edgePosition: 0.3, notchType: "v", onCorner: false, ambiguous: false }
+  ];
+  const runner: SlntEdgesRunner = (blockName): SlntEdgesResult => {
+    if (blockName === "BACK") {
+      return { blockName, edges: [{ edgeId: 1, points: BACK_POINTS, notches: backNotches }] };
+    }
+    if (blockName === "FRONT") {
+      return { blockName, edges: [{ edgeId: 1, points: FRONT_POINTS, notches: frontNotches }] };
+    }
+    throw new Error(`unexpected block ${blockName}`);
+  };
+  const [diagnostic] = parseSeamlintReport(seamReport());
+
+  // (1) resolver 跨ぎで保持される（matcher の消費点）。
+  const result = buildResolveSeamPair(runner)(diagnostic!);
+  assert.equal(result.status, "resolved");
+  if (result.status !== "resolved") return;
+  assert.deepEqual(result.fromEdge.notches, backNotches);
+  assert.deepEqual(result.toEdge.notches, frontNotches);
+
+  // (2) proposal JSON には出さない（leak しない）。
+  const file = createProposalFile({
+    sourceFile: "x.dxf",
+    sourceText: "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n",
+    diagnostics: parseSeamlintReport(seamReport()),
+    resolveTarget: () => ({ status: "not-found" }),
+    resolveSeamPair: buildResolveSeamPair(runner)
+  });
+  assert.deepEqual(validateProposalFile(file), []);
+  const seam = file.proposals[0]!.seamReconciliation!;
+  assert.ok(!("notches" in seam.fromEdge));
+  assert.ok(!("notches" in seam.toEdge));
+  assert.ok(file.proposals[0]!.preview.edges!.every((edge) => !("notches" in edge)));
 });

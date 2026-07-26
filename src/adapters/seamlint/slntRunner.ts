@@ -11,7 +11,8 @@ import { statSync } from "node:fs";
 import { basename, delimiter, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import type { Point } from "../../core/proposal/proposalSchema.ts";
 import type { NotchType } from "../../core/constraint/constraintTypes.ts";
-import type { SlntEdge, SlntEdgesResult, SlntEdgesRunner, SlntNotch } from "./resolveSeamPair.ts";
+import type { SeamEdgeNotch } from "../../core/proposal/createProposalFile.ts";
+import type { SlntEdge, SlntEdgesResult, SlntEdgesRunner } from "./resolveSeamPair.ts";
 
 export const SLNT_RUN_FAILED = "seamlint.slnt_run_failed";
 
@@ -43,7 +44,7 @@ function isNotchType(value: unknown): value is NotchType {
 // `StructuralNotch` を matcher が使う部分集合へ coerce（[C6]）。matcher の主キーである `edgePosition` を持たない
 // notch は順序付けできないので落とす（coerceEdge が壊れた edge を落とすのと同方針・defensive）。`notchType` は
 // 弱い tie-breaker なので、欠落 / 不正値は undefined 扱いにして notch 自体は落とさない（order で拾える）。
-function coerceNotch(value: unknown): SlntNotch | undefined {
+function coerceNotch(value: unknown): SeamEdgeNotch | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const notch = value as Record<string, unknown>;
   if (typeof notch.edgePosition !== "number" || !Number.isFinite(notch.edgePosition)) {
@@ -64,7 +65,7 @@ function coerceEdge(value: unknown): SlntEdge | undefined {
   if (!Array.isArray(edge.points) || !edge.points.every(isPoint)) return undefined;
   // notches は applicable の matcher 用に carry する（[C6]）。無ければ []、壊れた notch（edgePosition 欠落）は落とす。
   const notches = Array.isArray(edge.notches)
-    ? edge.notches.map(coerceNotch).filter((notch): notch is SlntNotch => notch !== undefined)
+    ? edge.notches.map(coerceNotch).filter((notch): notch is SeamEdgeNotch => notch !== undefined)
     : [];
   return { edgeId: edge.edgeId, points: edge.points as Point[], notches };
 }
