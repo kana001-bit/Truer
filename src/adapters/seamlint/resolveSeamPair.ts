@@ -16,18 +16,22 @@ import type {
   DiagnosticInput,
   ResolvedSeamEdge,
   SeamEdgeNeighbor,
+  SeamEdgeNotch,
   SeamPairResolution
 } from "../../core/proposal/createProposalFile.ts";
 import type { Point } from "../../core/proposal/proposalSchema.ts";
 import { readEdgeAddress } from "./edgeAddress.ts";
 import type { EdgeAddress } from "./edgeAddress.ts";
 
-// この resolver が消費する `slnt edges --json` 出力の部分集合: 各 edge の id と points。
-// 余分な field（arcRange/lengthMm/darts/notches/...）はここでは無視する — address と length は
-// diagnostic から来る。
+// この resolver が消費する `slnt edges --json` 出力の部分集合: 各 edge の id・points・notches。
+// address と length は diagnostic から来るので arcRange/lengthMm/darts 等は無視するが、**notches は
+// applicable の [C6] matcher（測定辺 ↔ `.val` occurrence の対応）に要るので carry し、`resolveEdge` が
+// `ResolvedSeamEdge.notches` まで伝播する**（型は core の `SeamEdgeNotch`。consume は後段の matcher）。
 export interface SlntEdge {
   edgeId: number;
   points: Point[];
+  // 実 runner（`coerceEdge`）は常に設定する（無ければ []）。直接構築する test stub では省略可なので optional。
+  notches?: SeamEdgeNotch[];
 }
 
 export interface SlntEdgesResult {
@@ -80,7 +84,10 @@ function resolveEdge(
     ...(address.arcRange ? { arcRange: address.arcRange } : {}),
     points: edge.points,
     lengthMm,
-    ...(neighbors !== undefined ? { neighbors } : {})
+    ...(neighbors !== undefined ? { neighbors } : {}),
+    // 測定辺の notch を matcher の消費点（`ResolvedSeamEdge`）まで伝播する（[C6]）。runner が carry した
+    // `edge.notches` をここで載せないと notch が resolver 境界で捨てられる。proposal JSON には出ない。
+    ...(edge.notches !== undefined ? { notches: edge.notches } : {})
   };
 }
 

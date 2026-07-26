@@ -57,6 +57,7 @@ import { digestEdgePoints, digestText } from "./proposalDigest.ts";
 import { buildCurveKinkFix } from "../fixes/curveKink.ts";
 import { solveCornerSlide } from "../fixes/cornerSlide.ts";
 import { roundCoord } from "../geometry-edit/index.ts";
+import type { NotchType } from "../constraint/constraintTypes.ts";
 
 // Truer が読む Seamlint diagnostic の部分集合。この shape を作るのは Seamlint adapter
 //（Milestone 3）の責務で、core は Seamlint の厳密な JSON に依存しない。
@@ -118,6 +119,17 @@ export interface SeamEdgeNeighbor {
   points: Point[];
 }
 
+// 測定辺に射影された ASTM notch のうち applicable の [C6] matcher が使う部分（Seamlint `StructuralNotch` の部分集合）。
+// 座標 / offsetMm / loopPosition は matcher（順序＋種別マッチ）に不要なので持たない。`notchType` は ASTM レイヤ由来で
+// **弱い tie-breaker**（Seamlint 側は必須だが、想定外入力に備え optional に読む）。**proposal JSON には出さない**
+// （overlay / digest は `points` のみ・`buildSeamEdge` と `preview.edges` はフィールドを明示 pick する）。
+export interface SeamEdgeNotch {
+  edgePosition: number; // 辺始点からの 0..1 位置。matcher の主キー（順序）。
+  notchType?: NotchType; // 弱い tie-breaker（order を上書きしない）。
+  onCorner: boolean; // 角に乗る notch（隣接両辺に重複出力）→ matcher が dedupe する。
+  ambiguous: boolean; // 辺内位置が一意でない → matcher が除去する。
+}
+
 export interface ResolvedSeamEdge {
   blockName: string;
   edgeId?: string;
@@ -127,6 +139,9 @@ export interface ResolvedSeamEdge {
   // start = points[0]（始点角）を共有する隣辺 / end = points[最後]（終点角）を共有する隣辺。
   // 任意（additive）: 供給が無ければ corner-slide を solve しないだけで、①structural-link 経路は不変。
   neighbors?: { start?: SeamEdgeNeighbor; end?: SeamEdgeNeighbor };
+  // 測定辺の notch（[C6] matcher 用）。additive・proposal JSON には出さない。供給が無ければ matcher は notch 錨付けを
+  // 諦め provenance-only に留まる（applicable を出さない・T8）。
+  notches?: SeamEdgeNotch[];
 }
 
 // seam ペアの両 edge を解決した結果。`reference` は Loomit/人間の token が指定したとき、正とする
