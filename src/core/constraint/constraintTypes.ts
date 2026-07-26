@@ -35,11 +35,32 @@ export interface ConstraintOccurrence {
   refs: string[]; // 式中の増分名（#name）。measurement / CurrentLength は入らない
 }
 
+// notch（合印）の ASTM レイヤ由来の種別。Seamlint の `StructuralNotch.notchType` と同じ enum（layer 粒度）。
+// **弱い tie-breaker にのみ使う**: layer 4 が slit と V を束ね、互換モードで V が check へ飛ぶこともあるので、
+// 真の Valentina マークと食い違いうる（[C6] の framing・Seamlint §10）。matcher は order を主キーにし、種別で上書きしない。
+export type NotchType = "v" | "t" | "castle" | "check" | "u";
+
+// notch 単位のグループ（Loomit `parts[].notches[]`・applicable 用の view）。dependsOn をフラットに持つのとは別に、
+// 「この notch → 錨 spline → その長さ候補」を束ね直したもの。測定辺の Seamlint notch と order/種別でマッチして
+// spline を錨付け、`lengthCandidates` から applicable（具体数値）へ辿るための入口（[C6]）。
+export interface ConstraintNotch {
+  order: number; // piece 輪郭順（安定・両方向マッチ用）。
+  rawPassmarkLine?: string; // .val の生 passmark 種別（verbatim・provenance）。
+  notchType?: NotchType; // 正規化種別（一意写像時のみ）。弱い tie-breaker。
+  anchorPointId: string; // 錨点（cutSpline calc 点）の id。
+  splineId?: string; // 錨付ける spline の id。
+  // 錨 spline の長さ候補 = 端点/ハンドルの occurrence（point occ か spline handle occ）。linear かつ 1 項なら applicable 対象。
+  lengthCandidates: ConstraintOccurrence[];
+}
+
 // part（piece）単位の依存。その piece の全 seam の occurrence が混ざる（connector 単位では絞れない = [C6]）。
 export interface ConstraintPart {
   partId: string;
   piece: string;
   dependsOn: ConstraintOccurrence[];
+  // notch 単位グループ（applicable 用）。v0 で optional・旧 payload には無い。新 Loomit は空でも常に emit するので
+  // adapter は無ければ [] に正規化する（下流は常に配列を回せる）。
+  notches: ConstraintNotch[];
 }
 
 // connector は join 鍵のみ（dependsOn を持たない）。Seamlint 診断の (partId, connectorId) と突き合わせる。

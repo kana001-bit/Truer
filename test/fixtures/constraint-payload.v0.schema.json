@@ -126,6 +126,94 @@
                 }
               ]
             }
+          },
+          "notches": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "order": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "rawPassmarkLine": {
+                  "type": "string"
+                },
+                "notchType": {
+                  "type": "string",
+                  "enum": ["v", "t", "castle", "check", "u"]
+                },
+                "anchorPointId": {
+                  "type": "string"
+                },
+                "splineId": {
+                  "type": "string"
+                },
+                "lengthCandidates": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "pointId": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string"
+                          },
+                          "linearity": {
+                            "type": "string",
+                            "enum": ["linear", "nonlinear", "none"]
+                          },
+                          "expr": {
+                            "type": "string"
+                          },
+                          "refs": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": ["pointId", "type", "linearity", "expr", "refs"],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "splineId": {
+                            "type": "string"
+                          },
+                          "handle": {
+                            "type": "string",
+                            "enum": ["length1", "length2", "angle1", "angle2"]
+                          },
+                          "linearity": {
+                            "type": "string",
+                            "enum": ["linear", "nonlinear", "none"]
+                          },
+                          "expr": {
+                            "type": "string"
+                          },
+                          "refs": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": ["splineId", "handle", "linearity", "expr", "refs"],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                }
+              },
+              "required": ["order", "anchorPointId", "lengthCandidates"],
+              "additionalProperties": false
+            }
           }
         },
         "required": ["partId", "piece", "dependsOn"],
