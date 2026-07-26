@@ -170,3 +170,87 @@ test(
     }
   }
 );
+
+// `node <stub>` で slnt を模し、edges JSON を stdout に出す（クロスプラットフォーム。`.cmd` 版と違い Windows 限定でない）。
+function runnerWithEdges(edges: unknown): ReturnType<typeof createSlntEdgesRunner> {
+  const dir = mkdtempSync(join(tmpdir(), "truer-slnt-notch-"));
+  const script = join(dir, "fake-slnt.mjs");
+  writeFileSync(
+    script,
+    `process.stdout.write(JSON.stringify({ blockName: "BODY", edges: ${JSON.stringify(edges)} }));\n`
+  );
+  return createSlntEdgesRunner({
+    slntCommand: [process.execPath, script],
+    dxfFile: join(dir, "pattern.dxf")
+  });
+}
+
+test("createSlntEdgesRunner carries each edge's notches (edgePosition/notchType/onCorner/ambiguous)", () => {
+  // 守る仕様 (step2/[C6]): runner は各 edge の notches を落とさず carry する（旧実装は {edgeId, points} だけにしていた）。
+  //           matcher の主キー edgePosition が無い notch は落とし、notchType の欠落は undefined（弱 tie-breaker）にする。
+  //           座標 / offsetMm / loopPosition は matcher に不要なので carry しない。
+  const runner = runnerWithEdges([
+    {
+      edgeId: 0,
+      points: [
+        { x: 0, y: 0 },
+        { x: 10, y: 0 }
+      ],
+      notches: [
+        {
+          point: { x: 5, y: 0 },
+          offsetMm: 2,
+          edgePosition: 0.5,
+          loopPosition: 0.3,
+          onCorner: false,
+          ambiguous: false,
+          notchType: "v"
+        },
+        {
+          point: { x: 0, y: 0 },
+          offsetMm: 0,
+          edgePosition: 0,
+          loopPosition: 0,
+          onCorner: true,
+          ambiguous: false,
+          notchType: "t"
+        },
+        {
+          point: { x: 9, y: 0 },
+          offsetMm: 1,
+          edgePosition: 0.9,
+          loopPosition: 0.9,
+          onCorner: false,
+          ambiguous: true
+        },
+        { point: { x: 1, y: 0 }, offsetMm: 1, onCorner: false, ambiguous: false, notchType: "v" }
+      ]
+    }
+  ]);
+  const notches = runner("BODY").edges[0]!.notches!;
+  assert.equal(notches.length, 3); // edgePosition 欠落の 1 件は落ちる
+  assert.deepEqual(notches[0], {
+    edgePosition: 0.5,
+    onCorner: false,
+    ambiguous: false,
+    notchType: "v"
+  });
+  assert.equal(notches[1]!.onCorner, true);
+  assert.equal(notches[1]!.notchType, "t");
+  assert.equal(notches[2]!.ambiguous, true);
+  assert.equal(notches[2]!.notchType, undefined); // notchType 欠落 → undefined
+});
+
+test("createSlntEdgesRunner: notches 無しの edge は notches=[]（後方互換）", () => {
+  // 守る仕様: notches を持たない slnt 出力でも壊れず、下流が常に配列を回せるよう [] にする。
+  const runner = runnerWithEdges([
+    {
+      edgeId: 0,
+      points: [
+        { x: 0, y: 0 },
+        { x: 10, y: 0 }
+      ]
+    }
+  ]);
+  assert.deepEqual(runner("BODY").edges[0]!.notches, []);
+});
