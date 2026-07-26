@@ -144,6 +144,147 @@ test("readConstraintPayload: occurrence の discriminated union を検証する�
   );
 });
 
+test("readConstraintPayload: parts[].notches[] を parse する（[C6]・applicable 用グループ）", () => {
+  // 守る仕様: Loomit の additive な notch 単位グループを内部形へ読む。lengthCandidates は occurrence 同形。
+  const payload = readConstraintPayload(
+    v0(
+      {},
+      [
+        {
+          partId: "front",
+          piece: "front",
+          dependsOn: [],
+          notches: [
+            {
+              order: 0,
+              rawPassmarkLine: "vMark",
+              notchType: "v",
+              anchorPointId: "146",
+              splineId: "31",
+              lengthCandidates: [
+                {
+                  pointId: "15",
+                  type: "alongLine",
+                  linearity: "linear",
+                  expr: "waist_circ/4+5",
+                  refs: []
+                },
+                {
+                  pointId: "2",
+                  type: "endLine",
+                  linearity: "linear",
+                  expr: "rise_length_side_sitting",
+                  refs: []
+                },
+                { splineId: "31", handle: "length2", linearity: "nonlinear", expr: "15", refs: [] }
+              ]
+            }
+          ]
+        }
+      ],
+      [{ partId: "front", connectorId: "outseam" }]
+    )
+  );
+  const notch = payload.parts[0]!.notches[0]!;
+  assert.equal(notch.order, 0);
+  assert.equal(notch.notchType, "v");
+  assert.equal(notch.rawPassmarkLine, "vMark");
+  assert.equal(notch.anchorPointId, "146");
+  assert.equal(notch.splineId, "31");
+  assert.equal(notch.lengthCandidates.length, 3);
+  assert.equal(notch.lengthCandidates[0]!.pointId, "15");
+  assert.equal(notch.lengthCandidates[2]!.handle, "length2");
+});
+
+test("readConstraintPayload: notches 省略（旧 payload）は [] に正規化（後方互換）", () => {
+  // 守る仕様: notches を持たない旧 v0 payload も壊れず、下流が常に配列を回せるよう [] にする。
+  const payload = readConstraintPayload(
+    v0({}, [{ partId: "front", piece: "front", dependsOn: [] }], [])
+  );
+  assert.deepEqual(payload.parts[0]!.notches, []);
+});
+
+test("readConstraintPayload: notches 無しの実 fixture は各 part notches=[]（後方互換の回帰）", () => {
+  // 守る仕様: 現行の実 fixture（notches 無し）が strict 化した adapter を素通りし、notches=[] になる。
+  const payload = loadSample();
+  assert.ok(
+    payload.parts.every((part) => Array.isArray(part.notches) && part.notches.length === 0)
+  );
+});
+
+test("readConstraintPayload: notch の strict 検証（未知キー / 不正 notchType / order / anchor / 未解決 ref）", () => {
+  // 守る仕様: notch も strict（additionalProperties:false 同等）＋必須 field ＋ lengthCandidates の refs も inv3 に載せる。
+  const wrap = (notch: Record<string, unknown>) =>
+    v0({}, [{ partId: "front", piece: "front", dependsOn: [], notches: [notch] }], []);
+  const base = { order: 0, anchorPointId: "146", lengthCandidates: [] as unknown[] };
+  const bad: unknown[] = [
+    wrap({ ...base, extra: 1 }), // 未知キー
+    wrap({ ...base, notchType: "bogus" }), // enum 外
+    wrap({ order: "0", anchorPointId: "146", lengthCandidates: [] }), // order 非整数
+    wrap({ order: 0, lengthCandidates: [] }), // anchorPointId 欠け
+    wrap({ order: 0, anchorPointId: "146" }), // lengthCandidates 欠け
+    // lengthCandidate の未定義 ref → inv3（notches 経由でも confidently-wrong を弾く）
+    v0(
+      {},
+      [
+        {
+          partId: "front",
+          piece: "front",
+          dependsOn: [],
+          notches: [
+            {
+              order: 0,
+              anchorPointId: "1",
+              lengthCandidates: [
+                {
+                  pointId: "9",
+                  type: "endLine",
+                  linearity: "linear",
+                  expr: "#ghost",
+                  refs: ["#ghost"]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      []
+    )
+  ];
+  for (const payload of bad) {
+    assert.throws(
+      () => readConstraintPayload(payload),
+      (error: unknown) => error instanceof ConstraintPayloadError,
+      JSON.stringify(payload)
+    );
+  }
+});
+
+test("readConstraintPayload: notch.order は safe-integer で検証（unsafe な整数を弾く・matching 安定キー）", () => {
+  // 守る仕様 (P2): order は matching の安定キー。schema と同じ safe-integer 範囲（±2^53-1）に揃える。2^53 以上は
+  //           JSON.parse で丸められ別 order と衝突しうるので、Number.isInteger では通っても弾く。境界は受ける。
+  const withOrder = (order: number) =>
+    v0(
+      {},
+      [
+        {
+          partId: "front",
+          piece: "front",
+          dependsOn: [],
+          notches: [{ order, anchorPointId: "1", lengthCandidates: [] }]
+        }
+      ],
+      []
+    );
+  assert.doesNotThrow(() => readConstraintPayload(withOrder(Number.MAX_SAFE_INTEGER)));
+  assert.doesNotThrow(() => readConstraintPayload(withOrder(Number.MIN_SAFE_INTEGER)));
+  // 2^53（Number.isInteger は true だが unsafe）は reject。
+  assert.throws(
+    () => readConstraintPayload(withOrder(9007199254740992)),
+    (error: unknown) => error instanceof ConstraintPayloadError
+  );
+});
+
 test("buildSeamProvenance: linearity:none を落とし linear を先に並べる（parts 起点）", () => {
   const payload = loadSample();
   const provenance = buildSeamProvenance(payload, { partId: "front", connectorId: "outseam" });

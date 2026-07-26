@@ -12,11 +12,13 @@
 
 import type {
   ConstraintConnectorRef,
+  ConstraintNotch,
   ConstraintOccurrence,
   ConstraintParam,
   ConstraintPart,
   ConstraintPayload,
-  Linearity
+  Linearity,
+  NotchType
 } from "../../core/constraint/constraintTypes.ts";
 import { CONSTRAINT_PAYLOAD_SCHEMA_ID } from "../../core/constraint/constraintTypes.ts";
 
@@ -128,6 +130,8 @@ function readOccurrence(raw: unknown, where: string): ConstraintOccurrence {
 }
 
 // part（piece）単位の依存。dependsOn はその piece の全 seam の occurrence（connector 単位で絞らない = [C6]）。
+// notches は applicable 用の notch 単位グループ（[C6]）。v0 で optional・旧 payload には無い。新 Loomit は空でも常に
+// 載せるので、無ければ [] に正規化して下流が常に配列を回せるようにする。
 function readPart(raw: unknown, index: number): ConstraintPart {
   if (!isObject(raw)) throw new ConstraintPayloadError(`parts[${index}] must be an object.`);
   if (typeof raw.partId !== "string")
@@ -136,11 +140,59 @@ function readPart(raw: unknown, index: number): ConstraintPart {
     throw new ConstraintPayloadError(`parts[${index}].piece must be a string.`);
   if (!Array.isArray(raw.dependsOn))
     throw new ConstraintPayloadError(`parts[${index}].dependsOn must be an array.`);
-  rejectExtraKeys(raw, ["partId", "piece", "dependsOn"], `parts[${index}]`);
+  if (raw.notches !== undefined && !Array.isArray(raw.notches))
+    throw new ConstraintPayloadError(`parts[${index}].notches must be an array when present.`);
+  rejectExtraKeys(raw, ["partId", "piece", "dependsOn", "notches"], `parts[${index}]`);
   const dependsOn = raw.dependsOn.map((occurrence, occurrenceIndex) =>
     readOccurrence(occurrence, `parts[${index}].dependsOn[${occurrenceIndex}]`)
   );
-  return { partId: raw.partId, piece: raw.piece, dependsOn };
+  const notches = Array.isArray(raw.notches)
+    ? raw.notches.map((notch, notchIndex) =>
+        readNotch(notch, `parts[${index}].notches[${notchIndex}]`)
+      )
+    : [];
+  return { partId: raw.partId, piece: raw.piece, dependsOn, notches };
+}
+
+function isNotchType(value: unknown): value is NotchType {
+  return value === "v" || value === "t" || value === "castle" || value === "check" || value === "u";
+}
+
+// notch 単位グループ（[C6]・applicable 用）。lengthCandidates は occurrence と同形なので readOccurrence を再利用する。
+// order/anchorPointId/lengthCandidates は必須、rawPassmarkLine/notchType/splineId は optional（無ければ落とす）。
+function readNotch(raw: unknown, where: string): ConstraintNotch {
+  if (!isObject(raw)) throw new ConstraintPayloadError(`${where} must be an object.`);
+  // order は notch matching の安定キー。schema は safe-integer 範囲（±2^53-1）に制限しているので、adapter も
+  // `Number.isSafeInteger` で揃える。2^53 以上は JSON.parse で丸められ、別 order と衝突しても気付けない（silent に
+  // 受けない）。`Number.isInteger` だけだと 9007199254740992 等の unsafe な整数値を通してしまう。
+  if (typeof raw.order !== "number" || !Number.isSafeInteger(raw.order))
+    throw new ConstraintPayloadError(`${where}.order must be a safe integer (±2^53-1).`);
+  if (typeof raw.anchorPointId !== "string")
+    throw new ConstraintPayloadError(`${where}.anchorPointId must be a string.`);
+  if (!Array.isArray(raw.lengthCandidates))
+    throw new ConstraintPayloadError(`${where}.lengthCandidates must be an array.`);
+  if (raw.rawPassmarkLine !== undefined && typeof raw.rawPassmarkLine !== "string")
+    throw new ConstraintPayloadError(`${where}.rawPassmarkLine must be a string when present.`);
+  if (raw.notchType !== undefined && !isNotchType(raw.notchType))
+    throw new ConstraintPayloadError(`${where}.notchType must be v|t|castle|check|u when present.`);
+  if (raw.splineId !== undefined && typeof raw.splineId !== "string")
+    throw new ConstraintPayloadError(`${where}.splineId must be a string when present.`);
+  rejectExtraKeys(
+    raw,
+    ["order", "rawPassmarkLine", "notchType", "anchorPointId", "splineId", "lengthCandidates"],
+    where
+  );
+  const lengthCandidates = raw.lengthCandidates.map((candidate, candidateIndex) =>
+    readOccurrence(candidate, `${where}.lengthCandidates[${candidateIndex}]`)
+  );
+  return {
+    order: raw.order,
+    anchorPointId: raw.anchorPointId,
+    lengthCandidates,
+    ...(typeof raw.rawPassmarkLine === "string" ? { rawPassmarkLine: raw.rawPassmarkLine } : {}),
+    ...(isNotchType(raw.notchType) ? { notchType: raw.notchType } : {}),
+    ...(typeof raw.splineId === "string" ? { splineId: raw.splineId } : {})
+  };
 }
 
 // connector は join 鍵のみ（partId + connectorId、dependsOn なし）。
@@ -182,10 +234,14 @@ export function readConstraintPayload(json: unknown): ConstraintPayload {
   const parts = root.parts.map((raw, index) => readPart(raw, index));
   const connectors = root.connectors.map((raw, index) => readConnectorRef(raw, index));
 
-  // inv3: parts[].dependsOn の各 occurrence の refs は params に解決する。破れは confidently-wrong な provenance を
-  // 避けるため silent に流さず explicit error（Truer は不確実を推測で流さない）。
+  // inv3: 各 occurrence の refs は params に解決する（`dependsOn` ＋ `notches[].lengthCandidates` の両方）。破れは
+  // confidently-wrong な provenance を避けるため silent に流さず explicit error（Truer は不確実を推測で流さない）。
   for (const part of parts) {
-    for (const occurrence of part.dependsOn) {
+    const occurrences = [
+      ...part.dependsOn,
+      ...part.notches.flatMap((notch) => notch.lengthCandidates)
+    ];
+    for (const occurrence of occurrences) {
       for (const ref of occurrence.refs) {
         if (!(ref in params)) {
           throw new ConstraintPayloadError(
