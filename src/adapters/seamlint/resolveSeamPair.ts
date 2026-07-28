@@ -11,6 +11,11 @@
 // blockName を照合して決める（片側だけ一致→その側が reference）。集合が空、両側一致、どちらも不一致のときは
 // 決めない（reference undefined＝両方向 preview-only, T6、推測しない）。人が打つ part 名→BLOCK 名の翻訳は
 // 上流（Loomit の `loom match`）が持ち、ここには解決済みの BLOCK 名が届く。
+//
+// **照合は `foldBlockName`（trim+uppercase）で畳む**（[C10]）。実 `part.loom` は同じ piece を connector ごとに
+// 別綴りで書ける（`path_ref: BACK` / `path_ref: back`）ので、人が小文字を見て `--reference back` と打つと生比較では
+// 外れ、**reference が決まらず `linkTarget` / `cornerSlide` / `applicable` が丸ごと出なくなる**（しかも T6 の
+// 「決めない」に落ちるので警告も出ず silent）。Seamlint の BLOCK 探索も同規則で畳むので、ここを揃えるのが正しい。
 
 import type {
   DiagnosticInput,
@@ -20,6 +25,7 @@ import type {
   SeamPairResolution
 } from "../../core/proposal/createProposalFile.ts";
 import type { Point } from "../../core/proposal/proposalSchema.ts";
+import { foldBlockName } from "../../core/proposal/blockName.ts";
 import { readEdgeAddress } from "./edgeAddress.ts";
 import type { EdgeAddress } from "./edgeAddress.ts";
 
@@ -94,10 +100,10 @@ function resolveEdge(
 export function buildResolveSeamPair(
   runEdges: SlntEdgesRunner,
   // 固定（基準 = reference）とみなす辺の BLOCK 名集合（`--reference`）。省略 / 空なら reference を決めず
-  // 両方向 preview-only（T6）。順序は無関係なので Set 化して照合する。
+  // 両方向 preview-only（T6）。順序は無関係なので Set 化して照合する（キーは `foldBlockName` で畳む）。
   referenceBlockNames: readonly string[] = []
 ): (diagnostic: DiagnosticInput) => SeamPairResolution {
-  const referenceBlocks = new Set(referenceBlockNames);
+  const referenceBlocks = new Set(referenceBlockNames.map(foldBlockName));
   // 各 BLOCK の edges を propose run ごとに高々 1 回だけ問い合わせる（1 つの report が同じ block 上に
   // 複数の mismatch を持ちうる）。propose を決定的に保ち、冗長な subprocess 起動を避ける。
   const cache = new Map<string, SlntEdgesResult>();
@@ -123,8 +129,8 @@ export function buildResolveSeamPair(
     // reference（固定辺）の決定: from/to の blockName が `--reference` 集合にあるかを見て、片側だけ一致すれば
     // その側を固定とする。両側一致（同一 BLOCK 内 seam / 両方指定）や、どちらも不一致は決めない
     //（reference undefined＝両方向を提示, T6、推測しない）。
-    const fromIsReference = referenceBlocks.has(fromAddress.blockName);
-    const toIsReference = referenceBlocks.has(toAddress.blockName);
+    const fromIsReference = referenceBlocks.has(foldBlockName(fromAddress.blockName));
+    const toIsReference = referenceBlocks.has(foldBlockName(toAddress.blockName));
     let reference: "from" | "to" | undefined;
     if (fromIsReference && !toIsReference) {
       reference = "from";

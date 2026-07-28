@@ -513,6 +513,40 @@ test("seam_length_mismatch carries source provenance when a resolver supplies it
   assert.equal(provenance![0]!.candidates[0]!.coupling, "part-local");
 });
 
+test("seam_length_mismatch: from/to が同一 BLOCK の別綴りなら provenance は 1 件に畳む（[P2] 回帰）", () => {
+  // 守る仕様: 重複排除は `foldBlockName`（trim+uppercase）で判定する。resolver 側の join も同じ規則で畳むので、
+  //   ここを生文字列で見ると from=`BACK` / to=`back`（同一 BLOCK の別綴り。実 part.loom は connector ごとに
+  //   綴りを変えて書ける）で **同じ provenance が 2 件出る**。残す綴りは先に来る from 辺のもの（決定的・T10）。
+  //   resolver は「どの綴りでも同じ part に join する」実装（case-insensitive）を模して常に provenance を返す。
+  const lowerCaseTo: (diagnostic: DiagnosticInput) => SeamPairResolution = (diagnostic) => {
+    const resolved = resolveSeamPairStub("from")(diagnostic);
+    if (resolved.status !== "resolved") return resolved;
+    // to 辺だけ from と同じ BLOCK を小文字で指す（geometry は別のまま = 別の辺・同じ piece）。
+    return { ...resolved, toEdge: { ...resolved.toEdge, blockName: SEAM_BLOCK.toLowerCase() } };
+  };
+
+  const file = createProposalFile({
+    sourceFile: "seam.dxf",
+    sourceText: DXF,
+    diagnostics: [seamLengthMismatch(200, 212)],
+    resolveTarget: resolveSeamFrom,
+    resolveSeamPair: lowerCaseTo,
+    resolveProvenance: (piece) => ({
+      piece,
+      pieceWide: true,
+      candidates: [
+        { expr: "waist_circ + 2", linearity: "linear", coupling: "part-local", reason: "inline" }
+      ]
+    })
+  });
+
+  assert.deepEqual(validateProposalFile(file), []);
+  const provenance = file.proposals[0]!.seamReconciliation?.sourceProvenance;
+  assert.ok(provenance);
+  assert.equal(provenance!.length, 1); // 生文字列で dedupe していた頃はここが 2 になる
+  assert.equal(provenance![0]!.piece, SEAM_BLOCK); // 残るのは from 辺の綴り
+});
+
 test("seam_length_mismatch without a provenance resolver has no source provenance", () => {
   const file = createProposalFile({
     sourceFile: "seam.dxf",

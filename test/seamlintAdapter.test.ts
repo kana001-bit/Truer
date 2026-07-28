@@ -310,6 +310,25 @@ test("buildResolveSeamPair marks the --reference side as the fixed edge (blockNa
   assert.equal(frontFixed.reference, "to");
 });
 
+test("buildResolveSeamPair: --reference は BLOCK 名の case を畳んで照合する（[C10] 回帰）", () => {
+  // 守る仕様: 実 part.loom は同じ piece を connector ごとに別綴りで書ける（`path_ref: BACK` / `back`）ので、
+  //   人が小文字を見て `--reference back` と打っても fromEdge=BACK に当たる。生比較だと外れて reference が
+  //   決まらず、**linkTarget / cornerSlide / applicable が丸ごと silent に消える**（T6 の「決めない」に落ちるので
+  //   警告も出ない）。前後の空白も落とす（`foldBlockName` = trim + uppercase。Seamlint の BLOCK 探索と同規則）。
+  const [diagnostic] = parseSeamlintReport(seamReport());
+
+  for (const spelling of ["back", "BaCk", "  back  "]) {
+    const result = buildResolveSeamPair(fakeRunner([]), [spelling])(diagnostic!);
+    assert.equal(result.status, "resolved");
+    if (result.status !== "resolved") return;
+    assert.equal(result.reference, "from", `--reference "${spelling}" は BACK(from) に当たる`);
+  }
+
+  // to 辺（FRONT）側も同じ規則で当たる。
+  const toFixed = buildResolveSeamPair(fakeRunner([]), ["front"])(diagnostic!);
+  assert.equal(toFixed.status === "resolved" ? toFixed.reference : "unresolved", "to");
+});
+
 test("buildResolveSeamPair leaves reference undecided when neither or both sides match (T6)", () => {
   // 守る仕様: --reference 未指定 / この seam に無い BLOCK / 両側とも指定、のいずれも reference を決めない
   //           （両方向 preview-only、推測しない）。

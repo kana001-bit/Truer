@@ -195,6 +195,22 @@ test("buildResolveBandSeam decides reference: band fixed vs neighbours fixed (bl
   );
 });
 
+test("buildResolveBandSeam: --reference は BLOCK 名の case を畳んで照合する（seam 側と同規則・[C10] 回帰）", () => {
+  // 守る仕様: band 側も `foldBlockName`（trim + uppercase）で照合する。seam（`resolveSeamPair`）と規則を違えると、
+  //   同じ `--reference` 集合が診断の種類によって当たる / 当たらないに分かれて silent に挙動が変わる。
+  const diagnostic = bandDiagnostic();
+  assert.equal(
+    (buildResolveBandSeam(bandRunner(), ["waistband"])(diagnostic) as { reference?: string })
+      .reference,
+    "band"
+  );
+  assert.equal(
+    (buildResolveBandSeam(bandRunner(), ["  front  "])(diagnostic) as { reference?: string })
+      .reference,
+    "neighbours"
+  );
+});
+
 test("buildResolveBandSeam returns not-found for a missing bandEdge (old report) without spawning slnt", () => {
   // 守る仕様 (B1 訂正 / T6): bandEdge 住所を持たない report は band 辺を addressing できない → not-found。
   //           住所欠落なので slnt runner は呼ばれない（呼べば throw する runner で確認）。

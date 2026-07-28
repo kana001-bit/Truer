@@ -14,6 +14,7 @@ import test from "node:test";
 
 import { createProposalFile } from "../src/core/proposal/createProposalFile.ts";
 import type { DiagnosticInput } from "../src/core/proposal/createProposalFile.ts";
+import type { SeamReconciliation } from "../src/core/proposal/proposalSchema.ts";
 import { buildResolveBandSeam } from "../src/adapters/seamlint/index.ts";
 import type { SlntEdgesRunner, SlntEdgesResult } from "../src/adapters/seamlint/index.ts";
 
@@ -386,6 +387,177 @@ test("propose --constraints -: 封筒 status=ok / diagnostics 空は警告を出
   );
   assert.equal(result.status, 0);
   assert.doesNotMatch(result.stderr, /警告/);
+});
+
+// ---- --constraints の piece ↔ 辺 blockName join（[C10]）----
+// 実 `part.loom` は payload の piece（`files.piece`）と診断の blockName（`connectors.*.path_ref`）を**別綴りで
+// 書ける**（実データで `files.piece: back` / `path_ref: BACK`）。Seamlint の BLOCK 探索は `trim().toUpperCase()` で
+// case を畳むが、**要求された綴りをそのまま blockName に echo する**ので、Truer 側が case-sensitive に join すると
+// provenance / applicable が丸ごと落ちる（2026-07-27 の実 3 者パイプで発見）。落ちるときに silent だと
+// 「候補ゼロ」と「join 失敗」を人が区別できないので、stderr に理由を出す。
+
+// seam ペア診断 1 件（from=BACK / to=FRONT、いずれも edgeId 0）。長さは診断側から読まれる。
+const JOIN_REPORT = {
+  status: "warning",
+  target: "geometry-request",
+  diagnostics: [
+    {
+      severity: "warning",
+      code: "geometry.seam_length_mismatch",
+      target: "back.outseam/front.outseam",
+      message: "Seam path lengths differ more than the configured tolerance.",
+      expected: { maxLengthDiffMm: 3 },
+      actual: {
+        fromLengthMm: 100,
+        toLengthMm: 112,
+        lengthDiffMm: 12,
+        fromEdge: { blockName: "BACK", edgeId: 0 },
+        toEdge: { blockName: "FRONT", edgeId: 0 }
+      }
+    }
+  ],
+  reports: []
+};
+
+// fake slnt: どの --block でも「2 点の辺 0 ＋ 内部 notch 1 個」を返す。join のテストなので幾何は最小で足りる。
+// notch を 1 個返すのは、conform 側（FRONT）で matcher → applicable まで通すため（k=n=1 で一意に matched）。
+function writeJoinSlnt(dir: string): string {
+  const script = [
+    "const a = process.argv.slice(2);",
+    'const bi = a.indexOf("--block");',
+    'const block = bi >= 0 ? a[bi + 1] : "?";',
+    "const edges = [",
+    "  {",
+    "    edgeId: 0,",
+    "    points: [ { x: 0, y: 0 }, { x: 100, y: 0 } ],",
+    "    notches: [ { edgePosition: 0.5, onCorner: false, ambiguous: false } ]",
+    "  }",
+    "];",
+    "process.stdout.write(JSON.stringify({ blockName: block, edges }));"
+  ].join("\n");
+  const path = join(dir, "join-slnt.js");
+  writeFileSync(path, script);
+  return path;
+}
+
+// piece 名だけを差し替えられる最小 payload。各 part に linear occurrence を 1 つ持たせて provenance 候補を作り、
+// notch 1 個（linear 候補 1 本）を持たせて applicable が絞れる形にする。
+function joinPayload(pieces: readonly string[]): string {
+  const linear = {
+    pointId: "9",
+    type: "endLine",
+    linearity: "linear",
+    expr: "waist_circ + 2",
+    refs: []
+  };
+  return JSON.stringify({
+    schema: "loomit.constraint-payload.v0",
+    params: {},
+    parts: pieces.map((piece, index) => ({
+      partId: `p${index}`,
+      piece,
+      dependsOn: [linear],
+      notches: [{ order: 0, anchorPointId: "9", splineId: "s1", lengthCandidates: [linear] }]
+    })),
+    connectors: pieces.map((_piece, index) => ({ partId: `p${index}`, connectorId: "outseam" }))
+  });
+}
+
+interface JoinRunResult {
+  status: number | null;
+  stderr: string;
+  seam: SeamReconciliation | undefined;
+}
+
+// join テスト共通の propose 実行。payload は stdin、辺ジオメトリは fake slnt から取る。
+function runJoinPropose(pieces: readonly string[], reference?: string): JoinRunResult {
+  const dir = mkdtempSync(join(tmpdir(), "truer-piece-join-"));
+  writeFileSync(join(dir, "solo.dxf"), "x");
+  writeFileSync(join(dir, "seam.report.json"), JSON.stringify(JOIN_REPORT));
+  const slnt = writeJoinSlnt(dir);
+  const result = spawnSync(
+    process.execPath,
+    [
+      TRU_ABS,
+      "propose",
+      "solo.dxf",
+      "--diagnostic",
+      "seam.report.json",
+      "--out",
+      "p.json",
+      "--constraints",
+      "-",
+      "--slnt",
+      `node ${slnt}`,
+      ...(reference !== undefined ? ["--reference", reference] : [])
+    ],
+    { cwd: dir, encoding: "utf8", input: joinPayload(pieces) }
+  );
+  const outPath = join(dir, "p.json");
+  const file = existsSync(outPath)
+    ? (JSON.parse(readFileSync(outPath, "utf8")) as {
+        proposals: { seamReconciliation?: SeamReconciliation }[];
+      })
+    : undefined;
+  return {
+    status: result.status,
+    stderr: result.stderr,
+    seam: file?.proposals[0]?.seamReconciliation
+  };
+}
+
+test("propose --constraints: piece と 辺 blockName の case が違っても join する（[C10] 回帰）", () => {
+  // 守る仕様: payload の piece が `back`/`front`、診断の blockName が `BACK`/`FRONT` でも provenance が載る。
+  //           case-sensitive に比較していた頃はここが丸ごと undefined になり、しかも silent だった。
+  //           `piece` は診断側の綴り（人が住所として見る側）で返す。join できたので警告は出ない。
+  const run = runJoinPropose(["back", "front"]);
+
+  assert.equal(run.status, 0);
+  const provenance = run.seam?.sourceProvenance;
+  assert.ok(provenance, "sourceProvenance が載る");
+  assert.deepEqual(
+    provenance.map((entry) => entry.piece),
+    ["BACK", "FRONT"]
+  );
+  assert.equal(provenance[0]!.candidates[0]!.expr, "waist_circ + 2");
+  assert.doesNotMatch(run.stderr, /警告/);
+});
+
+test("propose --constraints: case 違いでも applicable まで届く（join は provenance と共有・[C10] 回帰）", () => {
+  // 守る仕様: applicable の resolver も同じ join を使う。`--reference BACK` で conform=FRONT が決まり、
+  //           payload の piece が `front`（小文字）でも FRONT の notch に届いて applicable が載る。
+  //           deltaMm は conform 辺（112mm）を 100mm に縮める向きなので負。
+  const run = runJoinPropose(["back", "front"], "BACK");
+
+  assert.equal(run.status, 0);
+  const applicable = run.seam?.applicable;
+  assert.ok(applicable, "applicable が載る");
+  assert.equal(applicable.piece, "FRONT");
+  assert.equal(applicable.conform, "to");
+  assert.equal(applicable.param.expr, "waist_circ + 2");
+  assert.equal(applicable.deltaMm, -12);
+});
+
+test("propose --constraints: piece が payload に無ければ警告を出す（silent に落とさない・[C10]）", () => {
+  // 守る仕様: join が失敗したら「候補ゼロ」と区別できるよう理由を出す。payload にある piece 名も並べる
+  //           （出ない原因が綴り違いだと人が気付けるようにする）。propose 自体は advisory なので exit 0。
+  const run = runJoinPropose(["sleeve"]);
+
+  assert.equal(run.status, 0);
+  assert.equal(run.seam?.sourceProvenance, undefined);
+  assert.match(run.stderr, /BACK/);
+  assert.match(run.stderr, /拘束 payload にありません/);
+  assert.match(run.stderr, /sleeve/); // 利用可能な piece を並べる
+});
+
+test("propose --constraints: case だけ違う piece が複数なら推測せず諦めて警告（T6・[C10]）", () => {
+  // 守る仕様: `back` と `BACK` が両方 payload にあると join は一意でない。どちらか選ぶと誤った piece の
+  //           provenance を confidently-wrong に出すので、載せずに理由を出す（T6: 推測しない）。
+  const run = runJoinPropose(["back", "BACK"]);
+
+  assert.equal(run.status, 0);
+  assert.equal(run.seam?.sourceProvenance, undefined);
+  assert.match(run.stderr, /複数あります/);
 });
 
 // ---- tru cut（band 印刷 stopgap SVG）----
