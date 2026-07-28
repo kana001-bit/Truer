@@ -16,6 +16,7 @@ import type {
   ResolvedSeamEdge
 } from "../../core/proposal/createProposalFile.ts";
 import type { Point } from "../../core/proposal/proposalSchema.ts";
+import { foldBlockName } from "../../core/proposal/blockName.ts";
 import { readEdgeAddress, readArcRange } from "./edgeAddress.ts";
 import type { SlntEdgesRunner } from "./resolveSeamPair.ts";
 
@@ -83,10 +84,11 @@ function readNeighbor(value: unknown, runEdges: SlntEdgesRunner): ResolvedBandNe
 export function buildResolveBandSeam(
   runEdges: SlntEdgesRunner,
   // 固定（基準 = reference）とみなす BLOCK 名集合（`--reference`）。band と neighbour で共有する
-  // （pairwise の resolveSeamPair と同じ集合を CLI が渡す）。
+  // （pairwise の resolveSeamPair と同じ集合を CLI が渡す）。照合は `foldBlockName` で畳む（理由は
+  // `resolveSeamPair.ts` の冒頭コメント・[C10]。seam と band で規則を違えない）。
   referenceBlockNames: readonly string[] = []
 ): (diagnostic: DiagnosticInput) => BandSeamResolution {
-  const referenceBlocks = new Set(referenceBlockNames);
+  const referenceBlocks = new Set(referenceBlockNames.map(foldBlockName));
   const cache = new Map<string, ReturnType<SlntEdgesRunner>>();
   const cachedRun: SlntEdgesRunner = (blockName) => {
     const hit = cache.get(blockName);
@@ -147,8 +149,10 @@ export function buildResolveBandSeam(
 
     // reference: band 固定か neighbours 固定か。片側だけ集合に一致すればその側を正とする。
     // 両側一致 / どちらも不一致 / 集合が空は undefined（両方向 preview-only, T6）。
-    const bandInSet = referenceBlocks.has(bandAddress.blockName);
-    const neighbourInSet = neighbours.some((neighbour) => referenceBlocks.has(neighbour.blockName));
+    const bandInSet = referenceBlocks.has(foldBlockName(bandAddress.blockName));
+    const neighbourInSet = neighbours.some((neighbour) =>
+      referenceBlocks.has(foldBlockName(neighbour.blockName))
+    );
     let reference: "band" | "neighbours" | undefined;
     if (bandInSet && !neighbourInSet) {
       reference = "band";

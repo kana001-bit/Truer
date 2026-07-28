@@ -11,6 +11,7 @@ import { text as readStream } from "node:stream/consumers";
 import { createProposalFile } from "../core/proposal/createProposalFile.ts";
 import type { ResolveApplicable } from "../core/proposal/createProposalFile.ts";
 import { validateProposalFile } from "../core/proposal/proposalSchema.ts";
+import { foldBlockName } from "../core/proposal/blockName.ts";
 import type {
   Proposal,
   ProposalFile,
@@ -22,7 +23,7 @@ import {
 } from "../adapters/loom/readConstraintPayload.ts";
 import { buildSeamProvenance } from "../core/constraint/buildSeamProvenance.ts";
 import { buildSeamApplicable } from "../core/constraint/buildSeamApplicable.ts";
-import type { ConstraintPayload } from "../core/constraint/constraintTypes.ts";
+import type { ConstraintPart, ConstraintPayload } from "../core/constraint/constraintTypes.ts";
 import { planApply } from "../core/apply/applyProposal.ts";
 import {
   parseSeamlintReport,
@@ -291,14 +292,56 @@ function defaultCutOutPath(dxfFile: string): string {
   return join("output", `${basename(dxfFile, extname(dxfFile))}.cut.svg`);
 }
 
+// piece(= 辺 blockName) ↔ payload の part を突き合わせる join（[C10]）。
+//
+// **case-insensitive に比較する**（規則は `foldBlockName`＝core と共有。seam provenance の重複排除も同じ規則を
+// 使う・[P2]）。Loomit の `part.loom` は payload の piece（`files.piece`）と診断の blockName
+// （`connectors.*.path_ref`）を別綴りで書けて、実データでも `files.piece: back` / `path_ref: BACK` のように
+// case がずれる（`loomitest3-band-mismatch/parts/back/part.loom`）。Seamlint の BLOCK 探索も同規則で case を
+// 畳むため同一 BLOCK を返すが、**要求された綴りをそのまま blockName に echo する**ので、Truer だけが
+// case で区別すると provenance / applicable が丸ごと落ちる（2026-07-27 の e2e で発見）。
+//
+// **join できないときは silent にしない。** `--constraints` を渡した人が「候補ゼロ」と「join 失敗」を区別できないと、
+// 出ない理由が分からない。piece ごとに 1 度だけ stderr へ理由を出す（IO なので CLI 層。core は純粋のまま）。
+// 複数一致（case だけ違う piece が payload に複数）は**どれか推測せず諦める**（T6）。
+function makePieceJoin(payload: ConstraintPayload): (piece: string) => ConstraintPart | undefined {
+  const warned = new Set<string>();
+  return (piece) => {
+    const folded = foldBlockName(piece);
+    const hits = payload.parts.filter((candidate) => foldBlockName(candidate.piece) === folded);
+    if (hits.length === 1) {
+      return hits[0];
+    }
+    if (warned.has(folded)) {
+      return undefined;
+    }
+    warned.add(folded);
+    if (hits.length > 1) {
+      process.stderr.write(
+        `tru propose: 警告: 辺 BLOCK "${piece}" に対応する拘束 payload の piece が複数あります` +
+          `（${hits.map((hit) => hit.piece).join(" / ")}）。どれか推測せず provenance / applicable を載せません。\n`
+      );
+      return undefined;
+    }
+    const available = payload.parts.map((part) => part.piece);
+    process.stderr.write(
+      `tru propose: 警告: 辺 BLOCK "${piece}" に対応する piece が拘束 payload にありません` +
+        `（payload の piece: ${available.length > 0 ? available.join(" / ") : "なし"}）。` +
+        `この辺の provenance / applicable は載りません。\n`
+    );
+    return undefined;
+  };
+}
+
 // piece(= 辺 blockName) → part → その part の最初の connector → buildSeamProvenance → contract 用の
-// SeamSourceProvenance に写す。provenance は piece 単位なので connector はどれでも同結果（[C6]）。piece 不一致 /
+// SeamSourceProvenance に写す。provenance は piece 単位なので connector はどれでも同結果（[C6]）。join 失敗 /
 // 候補ゼロは undefined（seam 提案に載せない）。.val 内部詳細（pointId/refs 等）は出さず式・役割・coupling だけ載せる。
 function makeResolveProvenance(
-  payload: ConstraintPayload
+  payload: ConstraintPayload,
+  joinPiece: (piece: string) => ConstraintPart | undefined
 ): (piece: string) => SeamSourceProvenance | undefined {
   return (piece) => {
-    const part = payload.parts.find((candidate) => candidate.piece === piece);
+    const part = joinPiece(piece);
     if (!part) return undefined;
     const connector = payload.connectors.find((candidate) => candidate.partId === part.partId);
     if (!connector) return undefined;
@@ -323,11 +366,14 @@ function makeResolveProvenance(
 }
 
 // applicable resolver: conform 辺の測定 notch × その piece の .val notch を matcher にかけ、単一 linear param が絞れたとき
-// だけ SeamApplicable を返す（piece を添える）。piece → part の照合は provenance と同じ（`candidate.piece === piece`）。
-// piece 不一致 / notch マッチ不成立 / linear が 0 or 複数 なら undefined（applicable を載せない = provenance-only）。
-function makeResolveApplicable(payload: ConstraintPayload): ResolveApplicable {
+// だけ SeamApplicable を返す（piece を添える）。piece → part の照合は provenance と**同一の join**（`makePieceJoin`）を
+// 共有する（[C10]。2 箇所で規則がずれないように 1 つに寄せた）。join 失敗 / notch マッチ不成立 / linear が 0 or
+// 複数 なら undefined（applicable を載せない = provenance-only）。
+function makeResolveApplicable(
+  joinPiece: (piece: string) => ConstraintPart | undefined
+): ResolveApplicable {
   return ({ piece, measured, deltaMm, conform }) => {
-    const part = payload.parts.find((candidate) => candidate.piece === piece);
+    const part = joinPiece(piece);
     if (!part) return undefined;
     const result = buildSeamApplicable(measured, part.notches, deltaMm, conform);
     if (!result) return undefined;
@@ -472,8 +518,11 @@ async function runPropose(args: string[]): Promise<number> {
     ) {
       warnPartialConstraints(request);
     }
-    resolveProvenance = makeResolveProvenance(request.payload);
-    resolveApplicable = makeResolveApplicable(request.payload);
+    // piece↔blockName の join は provenance / applicable で共有する（規則が 2 箇所でずれないように・[C10]）。
+    // warn の dedupe 状態も共有されるので、同じ piece の join 失敗は 1 回しか出ない。
+    const joinPiece = makePieceJoin(request.payload);
+    resolveProvenance = makeResolveProvenance(request.payload, joinPiece);
+    resolveApplicable = makeResolveApplicable(joinPiece);
   }
 
   const file = createProposalFile({

@@ -21,7 +21,7 @@ Seamlint の `slnt edges`（subprocess, A1）に委譲し、Truer 自身は DXF 
 Seamlint の diagnostic report と DXF から補正案（proposal）を作る。source は書き換えない。
 
 ```text
-tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--cut [<cut.svg>] --scale fit-a4|actual [--seam-allowance <mm>] [--on-fold long|short]] [--slnt <cmd>]
+tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--constraints <file|->] [--preview <preview.svg>] [--cut [<cut.svg>] --scale fit-a4|actual [--seam-allowance <mm>] [--on-fold long|short]] [--slnt <cmd>]
 ```
 
 オプション:
@@ -32,12 +32,26 @@ tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [
   引数ゼロで通すため。渡せば従来どおり（override）。`loom` 経由では常に明示パスが渡るので影響なし。
 - `--diagnostic <file>`（必須）— Seamlint の report JSON（`CheckReport` または `GeometryRequestReport`）。
 - `--reference <block>`（任意・複数可）— 固定（基準 = reference）とする側の **BLOCK 名**（例 `FRONT`）。
+  照合は前後の空白を落として **case を無視**する（`trim().toUpperCase()`。Seamlint の BLOCK 探索・`--constraints` の
+  piece 照合と同規則）。`part.loom` が同じ piece を connector ごとに別綴りで書いていても当たる。
   相手側をこれに合わせる目標を出す。人が打つのは part 名だが、part→BLOCK 名の翻訳は上流（Loomit の
   `loom match`）が持ち、ここには解決済み BLOCK 名が渡る。診断ごとの意味:
   - `seam_length_mismatch`: 固定辺を指定 → 相手辺の目標 finished 長（`linkTarget`）を出す。
   - `band_seam_sum_mismatch`: band を指定 → band 固定（neighbours 側を直す向きだけ）。neighbour を指定
     → band が conform で band 長の目標（`targetBandLengthMm`）を出す。
   - どの blockName にも一致しない / 両側一致なら向きを決めず両方向 preview-only のまま（T6、推測しない）。
+- `--constraints <file|->`（任意）— Loomit の拘束 payload（`loomit.constraint-payload.v0`）。`-` なら stdin から読む
+  ＝配送は `loom truer request --format json | tru propose --constraints -` の**パイプ**（Truer は loom を spawn しない）。
+  渡すと seam 提案の `seamReconciliation` に **additive** で次が載る（**preview-only は不変。Truer は `.val` を評価も
+  書き換えもしない**）:
+  - `sourceProvenance` — その seam の長さに効く `.val` パラメータの一覧（生式 / `linearity` / coupling の弱いヒント）。
+    **数値は出さない。** piece 単位なので多 seam piece では他 seam の候補も混ざる（`pieceWide: true` で明示）。
+  - `applicable` — `--reference` で調整辺が決まり、測定辺の notch と `.val` notch のマッチで「直接効く単一 linear
+    param」が絞れたときだけ、その param の生式と辺の `deltaMm`。**絞れなければ載せない**（provenance-only に留まる）。
+  - 拘束は piece（= DXF BLOCK 名）で突き合わせる。綴りの case は `trim().toUpperCase()` で畳む（Seamlint の BLOCK
+    探索と同規則）。**当たらない / case だけ違う候補が複数あるときは載せず stderr に理由を出す**（「候補ゼロ」と
+    「join 失敗」を人が区別できるようにする）。封筒の `status != "ok"` / `diagnostics` 非空も stderr に出す
+    （provenance が不完全になりうる）。いずれも advisory なので **exit code は 0 のまま**。
 - `--out <file>`（任意）— proposal JSON の書き出し先。**省略時は `output/<dxf 名>.proposal.json`**（親ディレクトリが
   無ければ作成）。`loom match` 経由では loom が絶対パスを組み立てて渡すので、この既定は直叩きデバッグ用。
 - `--preview <file>`（任意）— overlay SVG の書き出し先（seam の Δ / band の closure / curve_kink の before+after）。

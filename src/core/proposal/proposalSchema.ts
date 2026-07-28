@@ -264,7 +264,11 @@ export interface SeamSourceCandidate {
 }
 
 export interface SeamSourceProvenance {
-  piece: string; // どの piece（= DXF BLOCK 名）の provenance か
+  // どの piece（= DXF BLOCK 名）の provenance か。**綴りは診断側（Seamlint の `blockName`）のもの**で、拘束 payload の
+  // `parts[].piece` とは **case が違いうる**（実データで payload `back` / 診断 `BACK`。突き合わせは `trim().toUpperCase()`
+  // で畳む＝Seamlint の BLOCK 探索と同規則。[C10]）。**下流がこの値を payload の piece と `===` で join すると同じ罠を踏む**
+  // ので、join するなら同じ規則で畳むこと。人が住所として読む側（診断）に揃える意図でこの綴りにしている。
+  piece: string;
   // piece 単位（connector では絞れない・[C6]）＝多 seam piece では他 seam の候補も含む。
   pieceWide: boolean;
   candidates: SeamSourceCandidate[];
@@ -274,7 +278,9 @@ export interface SeamSourceProvenance {
 // その辺の「直接効く単一 linear param」が絞れたときだけ載る。**advisory・preview-only は不変**（Truer は .val を評価も
 // 書き換えもしない）: 出すのは param の生式と、その辺が何 mm ずれているか。formula 調整は人が Valentina で行う。
 export interface SeamApplicable {
-  piece: string; // conform 辺の piece（= DXF BLOCK 名）
+  // conform 辺の piece（= DXF BLOCK 名）。綴りの扱いは `SeamSourceProvenance.piece` と同じ（診断側の綴り・payload の
+  // `piece` とは case が違いうる。[C10]）。
+  piece: string;
   conform: "from" | "to"; // 調整する辺（reference の反対側）
   deltaMm: number; // その辺が目標に合うのに必要な finished 長の変化量（signed・+ = 伸ばす）
   param: {

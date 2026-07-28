@@ -25,6 +25,8 @@ function loadSample(): ConstraintPayload {
 //     > test/fixtures/constraint-payload-cycling-knickers.notches.json
 //   npm run format   # prettier が短い配列を 1 行に畳む。CI は format:check 独立ゲートなので必須（値は不変）
 // 生成元 project は cycling_knickers（waistband の waist が合わない版・front / back / waistband の 3 parts）。
+// **封筒の `status` / `diagnostics` は project の readiness 状態で変わる**（契約ではない）ので、下のテストは値を
+// pin しない。再生成したら payload 側（params / parts / notches）の差分だけ見ればよい。
 // この fixture は adapter（strict）・matcher・applicable の実データ回帰で共有する（`matchNotches.test.ts` /
 // `buildSeamApplicable.test.ts` も同じファイルを読む。test ファイル同士は import しない＝test の二重登録を避ける）。
 const REAL_NOTCHES_FIXTURE = "test/fixtures/constraint-payload-cycling-knickers.notches.json";
@@ -477,9 +479,10 @@ test("readConstraintRequest: 実 `loom truer request` 出力（notches 入り）
   //   ここが落ちたら「Loomit が field を足した / 名前を変えた」ので、fixture 再生成 → adapter と schema copy を同期する。
   const request = loadRealRequest();
 
-  // 封筒: 健全な project なので ok・診断なし（status!=ok / diagnostics 非空の surface は上の [C7] テストが固定）。
-  assert.equal(request.status, "ok");
-  assert.deepEqual(request.diagnostics, []);
+  // 封筒（status / diagnostics）は**ここでは検証しない**。あれは契約ではなく project の readiness 状態で、上流が
+  // チェックを増やすと同じ project でも値が変わる（実際に 2026-07-27 の Loomit 再ビルドで `PART_FILE_COPY_STALE` が
+  // 付き `ok` → `warning` になった）。値を pin すると **fixture を再生成しただけでテストが落ちる**。封筒を読んで
+  // surface する挙動は上の [C7] テスト 3 本が synthetic で固定済みなので、実 fixture 側は payload の固定に専念する。
   assert.equal(request.payload.schema, "loomit.constraint-payload.v0");
   assert.deepEqual(
     request.payload.parts.map((part) => part.partId),

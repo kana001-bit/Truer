@@ -55,6 +55,7 @@ import type {
   SourceDiagnostic
 } from "./proposalSchema.ts";
 import { digestEdgePoints, digestText } from "./proposalDigest.ts";
+import { foldBlockName } from "./blockName.ts";
 import { buildCurveKinkFix } from "../fixes/curveKink.ts";
 import { solveCornerSlide } from "../fixes/cornerSlide.ts";
 import { roundCoord } from "../geometry-edit/index.ts";
@@ -586,13 +587,17 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
 
     // 拘束 provenance（`--constraints` 供給時のみ）: from/to 両辺の piece（= blockName）ごとに「長さに効く
     // .val パラメータ」を advisory で載せる（数値提案ではない・preview-only は不変）。piece が payload に無ければ
-    // 載せず、from/to が同 piece のときは 1 回だけ。
+    // 載せず、**from/to が同 piece のときは 1 回だけ**。
+    // 重複排除は `foldBlockName`（`trim().toUpperCase()`）で畳んで判定する。resolver 側の join も同じ規則で
+    // 畳むので、ここを生文字列で見ると from=`BACK` / to=`back`（同一 BLOCK の別綴り）で**同じ provenance が
+    // 2 件出る**（[P2]）。残す綴りは先に来る from 辺のもの（決定的・T10。target も from anchor）。
     const sourceProvenance: SeamSourceProvenance[] = [];
     if (resolveProvenance) {
       const seenPieces = new Set<string>();
       for (const blockName of [fromSeamEdge.blockName, toSeamEdge.blockName]) {
-        if (seenPieces.has(blockName)) continue;
-        seenPieces.add(blockName);
+        const folded = foldBlockName(blockName);
+        if (seenPieces.has(folded)) continue;
+        seenPieces.add(folded);
         const provenance = resolveProvenance(blockName);
         if (provenance) sourceProvenance.push(provenance);
       }
