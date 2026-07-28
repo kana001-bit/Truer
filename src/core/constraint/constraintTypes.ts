@@ -64,10 +64,19 @@ export interface ConstraintPart {
   notches: ConstraintNotch[];
 }
 
-// connector は join 鍵のみ（dependsOn を持たない）。Seamlint 診断の (partId, connectorId) と突き合わせる。
+// connector は join 鍵（dependsOn を持たない）。Seamlint 診断の (partId, connectorId) と突き合わせる。
 export interface ConstraintConnectorRef {
   partId: string;
   connectorId: string;
+  // その connector の path が幾何ソース上のどこにあるか（Loomit `part.loom` の `connectors.*.path_ref` 由来。
+  // DXF なら BLOCK 名 `BACK`、SVG なら path id）。**Seamlint 診断の `blockName` と突き合わせてよいのはこの値だけ**で、
+  // `parts[].piece`（= `.val` の detail 名）は住所の権威ではない（[C10]・Loomit 回答 2026-07-28）。値は Loomit が
+  // Seamlint request と同じ normalize を通した後のものなので、診断の `blockName` と綴りまで一致する。
+  //
+  // **optional**: `path_ref` は `part.loom` の schema でも optional で、identity だけの connector（path_ref 未宣言）が
+  // 実在しうる。旧 payload にも無いので、無いことは異常ではない。名前が `blockName` でないのは、値が BLOCK 名とは
+  // 限らないため（SVG 経路では path id）。
+  pathRef?: string;
 }
 
 export interface ConstraintPayload {

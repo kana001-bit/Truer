@@ -195,15 +195,24 @@ function readNotch(raw: unknown, where: string): ConstraintNotch {
   };
 }
 
-// connector は join 鍵のみ（partId + connectorId、dependsOn なし）。
+// connector は join 鍵（partId + connectorId、dependsOn なし）＋幾何ソース上の住所 `pathRef`（[C10]）。
+// `pathRef` は v0 で optional: 旧 payload には無く、`part.loom` の `path_ref` 自体も optional なので
+// 「identity だけの connector」が実在しうる。**無ければ落として undefined のまま**にし、`piece` へ暗黙 fallback は
+// しない（住所の権威は `pathRef` だけ・Loomit 回答 2026-07-28。fallback するなら呼び出し側が明示的に surface する）。
 function readConnectorRef(raw: unknown, index: number): ConstraintConnectorRef {
   if (!isObject(raw)) throw new ConstraintPayloadError(`connectors[${index}] must be an object.`);
   if (typeof raw.partId !== "string")
     throw new ConstraintPayloadError(`connectors[${index}].partId must be a string.`);
   if (typeof raw.connectorId !== "string")
     throw new ConstraintPayloadError(`connectors[${index}].connectorId must be a string.`);
-  rejectExtraKeys(raw, ["partId", "connectorId"], `connectors[${index}]`);
-  return { partId: raw.partId, connectorId: raw.connectorId };
+  if (raw.pathRef !== undefined && typeof raw.pathRef !== "string")
+    throw new ConstraintPayloadError(`connectors[${index}].pathRef must be a string when present.`);
+  rejectExtraKeys(raw, ["partId", "connectorId", "pathRef"], `connectors[${index}]`);
+  return {
+    partId: raw.partId,
+    connectorId: raw.connectorId,
+    ...(typeof raw.pathRef === "string" ? { pathRef: raw.pathRef } : {})
+  };
 }
 
 // 外部 JSON（封筒 `{ payload, diagnostics }` / `{ status, diagnostics, payload }` / payload 直）を検証して

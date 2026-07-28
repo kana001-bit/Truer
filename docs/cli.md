@@ -48,10 +48,14 @@ tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [
     **数値は出さない。** piece 単位なので多 seam piece では他 seam の候補も混ざる（`pieceWide: true` で明示）。
   - `applicable` — `--reference` で調整辺が決まり、測定辺の notch と `.val` notch のマッチで「直接効く単一 linear
     param」が絞れたときだけ、その param の生式と辺の `deltaMm`。**絞れなければ載せない**（provenance-only に留まる）。
-  - 拘束は piece（= DXF BLOCK 名）で突き合わせる。綴りの case は `trim().toUpperCase()` で畳む（Seamlint の BLOCK
-    探索と同規則）。**当たらない / case だけ違う候補が複数あるときは載せず stderr に理由を出す**（「候補ゼロ」と
-    「join 失敗」を人が区別できるようにする）。封筒の `status != "ok"` / `diagnostics` 非空も stderr に出す
-    （provenance が不完全になりうる）。いずれも advisory なので **exit code は 0 のまま**。
+  - 拘束と辺の突き合わせは **`connectors[].pathRef`（幾何ソース上の住所）が権威**。`parts[].piece` は `.val` の
+    detail 名なので住所には使わない（一致は上流の既定値によるもので保証されない）。**`pathRef` が一つも宣言されて
+    いない旧 payload だけ `piece` 照合に落とし、代用したことを注記する。** 綴りの case は `trim().toUpperCase()` で
+    畳む（Seamlint の BLOCK 探索・`--reference` と同規則）。
+  - **当たらない / 複数 part に跨る / connector は在るが part が payload に無い、のいずれも載せず stderr に理由を
+    出す**（「候補ゼロ」「join 失敗」「宣言が足りない」を人が区別できるようにする）。封筒の `status != "ok"` /
+    `diagnostics` 非空も stderr に出す（provenance が不完全になりうる）。いずれも advisory なので
+    **exit code は 0 のまま**。
 - `--out <file>`（任意）— proposal JSON の書き出し先。**省略時は `output/<dxf 名>.proposal.json`**（親ディレクトリが
   無ければ作成）。`loom match` 経由では loom が絶対パスを組み立てて渡すので、この既定は直叩きデバッグ用。
 - `--preview <file>`（任意）— overlay SVG の書き出し先（seam の Δ / band の closure / curve_kink の before+after）。

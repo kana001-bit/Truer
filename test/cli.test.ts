@@ -440,9 +440,12 @@ function writeJoinSlnt(dir: string): string {
   return path;
 }
 
-// piece 名だけを差し替えられる最小 payload。各 part に linear occurrence を 1 つ持たせて provenance 候補を作り、
-// notch 1 個（linear 候補 1 本）を持たせて applicable が絞れる形にする。
-function joinPayload(pieces: readonly string[]): string {
+// piece 名（と任意で connector の pathRef）を差し替えられる最小 payload。各 part に linear occurrence を 1 つ持たせて
+// provenance 候補を作り、notch 1 個（linear 候補 1 本）を持たせて applicable が絞れる形にする。
+function joinPayload(
+  pieces: readonly string[],
+  pathRefs?: readonly (string | undefined)[]
+): string {
   const linear = {
     pointId: "9",
     type: "endLine",
@@ -459,7 +462,13 @@ function joinPayload(pieces: readonly string[]): string {
       dependsOn: [linear],
       notches: [{ order: 0, anchorPointId: "9", splineId: "s1", lengthCandidates: [linear] }]
     })),
-    connectors: pieces.map((_piece, index) => ({ partId: `p${index}`, connectorId: "outseam" }))
+    // pathRefs を渡すと connector に住所（`pathRef`）を宣言する＝Loomit が案A を emit した後の形。
+    // 渡さなければ旧 payload（住所なし）＝`piece` 照合の後方互換経路。
+    connectors: pieces.map((_piece, index) => ({
+      partId: `p${index}`,
+      connectorId: "outseam",
+      ...(pathRefs?.[index] !== undefined ? { pathRef: pathRefs[index] } : {})
+    }))
   });
 }
 
@@ -470,7 +479,12 @@ interface JoinRunResult {
 }
 
 // join テスト共通の propose 実行。payload は stdin、辺ジオメトリは fake slnt から取る。
-function runJoinPropose(pieces: readonly string[], reference?: string): JoinRunResult {
+// `pathRefs` を渡すと connector に住所を宣言した payload（案A 後の形）になる。
+function runJoinPropose(
+  pieces: readonly string[],
+  reference?: string,
+  pathRefs?: readonly (string | undefined)[]
+): JoinRunResult {
   const dir = mkdtempSync(join(tmpdir(), "truer-piece-join-"));
   writeFileSync(join(dir, "solo.dxf"), "x");
   writeFileSync(join(dir, "seam.report.json"), JSON.stringify(JOIN_REPORT));
@@ -491,7 +505,7 @@ function runJoinPropose(pieces: readonly string[], reference?: string): JoinRunR
       `node ${slnt}`,
       ...(reference !== undefined ? ["--reference", reference] : [])
     ],
-    { cwd: dir, encoding: "utf8", input: joinPayload(pieces) }
+    { cwd: dir, encoding: "utf8", input: joinPayload(pieces, pathRefs) }
   );
   const outPath = join(dir, "p.json");
   const file = existsSync(outPath)
@@ -558,6 +572,64 @@ test("propose --constraints: case だけ違う piece が複数なら推測せず
   assert.equal(run.status, 0);
   assert.equal(run.seam?.sourceProvenance, undefined);
   assert.match(run.stderr, /複数あります/);
+});
+
+// ---- 住所の権威は connectors[].pathRef（[C10] 案A の consumer 側）----
+// `parts[].piece` は `.val` の detail 名で **住所の権威ではない**（Loomit 回答 2026-07-28）。pathRef を宣言した
+// payload では pathRef で引き、**`piece` へ暗黙 fallback しない**。下の 2 本は「piece と pathRef が食い違う」形で
+// どちらが効いているかを固定する（受理しただけで consumer が旧 join のままだと、この 2 本が落ちる）。
+
+test("propose --constraints: pathRef が宣言されていれば piece ではなく pathRef で join する（[C10] 案A）", () => {
+  // 守る仕様: piece（`back`/`front`）と pathRef（`BODY_BACK`/`BODY_FRONT`）が**別名**で、診断の blockName は
+  //           pathRef 側（fake slnt / report は BACK / FRONT ではなく BODY_* を返す設定にはできないので、
+  //           ここでは pathRef を診断の綴り BACK / FRONT に合わせ、piece をまったく別名にする）。
+  //           piece で join していたら当たらない組み合わせで provenance が載ることを固定する。
+  const run = runJoinPropose(["sleeve", "cuff"], undefined, ["BACK", "FRONT"]);
+
+  assert.equal(run.status, 0);
+  const provenance = run.seam?.sourceProvenance;
+  assert.ok(provenance, "pathRef で join できて provenance が載る");
+  assert.deepEqual(
+    provenance.map((entry) => entry.piece),
+    ["BACK", "FRONT"]
+  );
+  // 旧 join（piece 照合）なら `sleeve`/`cuff` は BACK/FRONT に当たらず、no-match 警告が出ていたはず。
+  assert.doesNotMatch(run.stderr, /拘束 payload にありません/);
+  // pathRef が宣言されているので piece 代用の注記も出ない。
+  assert.doesNotMatch(run.stderr, /pathRef が無いため/);
+});
+
+test("propose --constraints: pathRef 宣言時に piece だけ一致しても join しない（権威を混ぜない・[C10]）", () => {
+  // 守る仕様（鳴ってはいけない面）: piece は診断の blockName（BACK / FRONT）と一致するが、pathRef は別名。
+  //           `pathRef` が権威なので **join は失敗させる**（piece へ暗黙 fallback すると「住所の権威は pathRef だけ」
+  //           という契約が崩れ、[C10] と同じ誤 join に戻る）。失敗は silent にせず、宣言済み pathRef を並べて出す。
+  const run = runJoinPropose(["BACK", "FRONT"], undefined, ["BODY_BACK", "BODY_FRONT"]);
+
+  assert.equal(run.status, 0);
+  assert.equal(run.seam?.sourceProvenance, undefined);
+  assert.match(run.stderr, /一致する pathRef が拘束 payload にありません/);
+  assert.match(run.stderr, /BODY_BACK/); // 宣言済み pathRef を並べる
+});
+
+test("propose --constraints: pathRef が一つも無い旧 payload は piece 照合に落として注記する（後方互換）", () => {
+  // 守る仕様: Loomit が emit を始める前の payload（現行の実データ）は従来どおり piece で join する。ただし
+  //           **代用したことを注記**する（silent に戻さない・Loomit 回答 §5b）。注記は run で 1 回だけ。
+  const run = runJoinPropose(["back", "front"]);
+
+  assert.equal(run.status, 0);
+  assert.ok(run.seam?.sourceProvenance, "後方互換: piece 照合で provenance は載る");
+  assert.match(run.stderr, /pathRef が無いため/);
+  assert.equal(run.stderr.match(/pathRef が無いため/g)?.length, 1); // 1 回だけ
+});
+
+test("propose --constraints: pathRef が複数 part に跨るなら推測せず諦めて警告（T6・[C10]）", () => {
+  // 守る仕様: 同じ pathRef を別 part の connector が宣言していたら、どちらの provenance か決められない。
+  //           推測せず載せず、理由を出す（case だけ違う綴りも畳んで同一視するので同じ扱い）。
+  const run = runJoinPropose(["sleeve", "cuff"], undefined, ["BACK", "back"]);
+
+  assert.equal(run.status, 0);
+  assert.equal(run.seam?.sourceProvenance, undefined);
+  assert.match(run.stderr, /複数の part に跨っています/);
 });
 
 // ---- tru cut（band 印刷 stopgap SVG）----
