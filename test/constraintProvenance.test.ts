@@ -65,6 +65,53 @@ test("readConstraintPayload: v0 の params(declared) / parts / connectors(join�
   ]);
 });
 
+test("readConstraintPayload: connectors[].pathRef を additive に受ける（[C10] 案A・v0 据置）", () => {
+  // 守る仕様: `pathRef` は connector の「幾何ソース上の住所」（`part.loom` の `path_ref` 由来。DXF なら BLOCK 名、
+  //   SVG なら path id）で、**Seamlint 診断の blockName と突き合わせてよい唯一の値**（`parts[].piece` は `.val` の
+  //   detail 名で住所の権威ではない・Loomit 回答 2026-07-28）。上流が emit を始めた瞬間に payload 全体を reject
+  //   しないよう、**Truer 側が先に受け入れ側を用意する**（notches のときと同じ strict lockstep の罠を避ける）。
+  const payload = readConstraintPayload(
+    v0({}, [], [{ partId: "back", connectorId: "outseam", pathRef: "BACK" }])
+  );
+  assert.deepEqual(payload.connectors, [
+    { partId: "back", connectorId: "outseam", pathRef: "BACK" }
+  ]);
+
+  // 値は BLOCK 名に限らない（SVG 経路の path id）。adapter は文字列として素通しするだけで解釈しない。
+  const svg = readConstraintPayload(
+    v0({}, [], [{ partId: "front", connectorId: "armhole", pathRef: "armhole" }])
+  );
+  assert.equal(svg.connectors[0]!.pathRef, "armhole");
+});
+
+test("readConstraintPayload: pathRef は optional。無ければ落として piece へ暗黙 fallback しない", () => {
+  // 守る仕様（鳴ってはいけない面）: `path_ref` は part.loom でも optional で、identity だけの connector が実在しうる。
+  //   旧 payload にも無い。**無いことは異常ではない**ので error にせず、`pathRef` を持たない形で読む。ここで
+  //   `piece` を代入して埋めると「住所の権威は pathRef だけ」という契約が崩れ、[C10] と同じ silent な誤 join に戻る。
+  const payload = readConstraintPayload(v0({}, [], [{ partId: "back", connectorId: "outseam" }]));
+  assert.deepEqual(payload.connectors, [{ partId: "back", connectorId: "outseam" }]);
+  assert.equal("pathRef" in payload.connectors[0]!, false);
+
+  // 旧 v0 fixture（pathRef 無し）も従来どおり読める＝後方互換。
+  assert.equal(
+    loadSample().connectors.every((connector) => connector.pathRef === undefined),
+    true
+  );
+});
+
+test("readConstraintPayload: pathRef が文字列でなければ explicit error（型を推測で通さない）", () => {
+  // 守る仕様: 外部入力なので型を信頼しない。数値や null を silent に受けると住所の join が静かに壊れる。
+  for (const bad of [1, null, {}, ["BACK"]]) {
+    assert.throws(
+      () =>
+        readConstraintPayload(
+          v0({}, [], [{ partId: "back", connectorId: "outseam", pathRef: bad }])
+        ),
+      ConstraintPayloadError
+    );
+  }
+});
+
 test("readConstraintPayload: 未知 schema 版は explicit error（未知版を弾く）", () => {
   assert.throws(
     () =>
