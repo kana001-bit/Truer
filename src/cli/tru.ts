@@ -292,56 +292,119 @@ function defaultCutOutPath(dxfFile: string): string {
   return join("output", `${basename(dxfFile, extname(dxfFile))}.cut.svg`);
 }
 
-// piece(= 辺 blockName) ↔ payload の part を突き合わせる join（[C10]）。
+// 辺 blockName（Seamlint 診断の住所）↔ payload の part を突き合わせる join（[C10]）。
 //
-// **case-insensitive に比較する**（規則は `foldBlockName`＝core と共有。seam provenance の重複排除も同じ規則を
-// 使う・[P2]）。Loomit の `part.loom` は payload の piece（`files.piece`）と診断の blockName
-// （`connectors.*.path_ref`）を別綴りで書けて、実データでも `files.piece: back` / `path_ref: BACK` のように
-// case がずれる（`loomitest3-band-mismatch/parts/back/part.loom`）。Seamlint の BLOCK 探索も同規則で case を
-// 畳むため同一 BLOCK を返すが、**要求された綴りをそのまま blockName に echo する**ので、Truer だけが
-// case で区別すると provenance / applicable が丸ごと落ちる（2026-07-27 の e2e で発見）。
+// **住所の権威は `connectors[].pathRef`**（Loomit 回答 2026-07-28）。`parts[].piece` は `.val` の `<detail>` 名＝
+// **export 前の綴り**（DXF の BLOCK 名は Valentina が export 時に大文字化した結果）なので、BLOCK 名として使っては
+// いけない。実データで一致していたのは `loom connect` が `path_ref` の既定を `files.piece` にしているだけで、
+// `--path-ref-a/b` で上書きできるし SVG 経路（`svg:path#armhole`）では必然的に別物になる。
 //
-// **join できないときは silent にしない。** `--constraints` を渡した人が「候補ゼロ」と「join 失敗」を区別できないと、
-// 出ない理由が分からない。piece ごとに 1 度だけ stderr へ理由を出す（IO なので CLI 層。core は純粋のまま）。
-// 複数一致（case だけ違う piece が payload に複数）は**どれか推測せず諦める**（T6）。
-function makePieceJoin(payload: ConstraintPayload): (piece: string) => ConstraintPart | undefined {
+// 手順:
+//   1. payload に `pathRef` を宣言した connector が 1 つでもあれば **pathRef を権威**として引く。当たらなければ
+//      join 失敗として扱い、**`piece` へ暗黙 fallback しない**（権威を混ぜると [C10] と同じ silent な誤 join に戻る）。
+//   2. `pathRef` がどこにも無い旧 payload（Loomit が emit を始める前＝現行の実データ）だけ、従来の `piece` 照合に
+//      落とす。**代用したことは run で 1 度だけ注記する**（silent に戻さない。Loomit が emit すれば自動で 1 に切り替わる）。
+//
+// 比較は `foldBlockName`（core と共有）で畳む。Loomit は normalize 済みの `pathRef` を出すので綴りは一致する想定
+// だが、手書きの `path_ref` の case 揺れ（実データの `BACK` / `back`）に対する多層防御として残す。
+//
+// **join できないときは silent にしない。** 「候補ゼロ」「join 失敗」「part が payload に無い」を人が区別できるよう、
+// 理由ごとに 1 度だけ stderr へ出す（IO なので CLI 層。core は純粋のまま）。複数 part に跨る一致は**推測せず諦める**（T6）。
+function makeBlockNameJoin(
+  payload: ConstraintPayload
+): (blockName: string) => ConstraintPart | undefined {
   const warned = new Set<string>();
-  return (piece) => {
-    const folded = foldBlockName(piece);
+  let noticedPieceFallback = false;
+  // 住所を宣言している connector。1 つでもあれば pathRef を権威とする。
+  const addressed = payload.connectors.flatMap((connector) =>
+    connector.pathRef !== undefined
+      ? [{ partId: connector.partId, pathRef: connector.pathRef }]
+      : []
+  );
+
+  const warnOnce = (key: string, message: string): undefined => {
+    if (!warned.has(key)) {
+      warned.add(key);
+      process.stderr.write(`tru propose: 警告: ${message}\n`);
+    }
+    return undefined;
+  };
+
+  return (blockName) => {
+    const folded = foldBlockName(blockName);
+
+    if (addressed.length > 0) {
+      const partIds = [
+        ...new Set(
+          addressed
+            .filter((connector) => foldBlockName(connector.pathRef) === folded)
+            .map((connector) => connector.partId)
+        )
+      ];
+      if (partIds.length > 1) {
+        return warnOnce(
+          `ambiguous:${folded}`,
+          `辺 BLOCK "${blockName}" の pathRef が複数の part に跨っています（${partIds.join(" / ")}）。` +
+            `どれか推測せず provenance / applicable を載せません。`
+        );
+      }
+      if (partIds.length === 0) {
+        const declared = [...new Set(addressed.map((connector) => connector.pathRef))];
+        return warnOnce(
+          `no-match:${folded}`,
+          `辺 BLOCK "${blockName}" に一致する pathRef が拘束 payload にありません` +
+            `（宣言済み pathRef: ${declared.join(" / ")}）。この辺の provenance / applicable は載りません。`
+        );
+      }
+      const part = payload.parts.find((candidate) => candidate.partId === partIds[0]);
+      if (part) return part;
+      // connector は見つかったが part 本体が無い: `files.source` / `files.piece` を持たない part は payload の
+      // `parts[]` に載らない（Loomit 回答 §5c）。「宣言が足りない」と「join に失敗した」を区別して出す。
+      return warnOnce(
+        `missing-part:${folded}`,
+        `辺 BLOCK "${blockName}" は connector（part "${partIds[0]}"）に一致しましたが、その part は拘束 payload の ` +
+          `parts に含まれていません（.val source / piece 未宣言の part は載りません）。provenance / applicable は載りません。`
+      );
+    }
+
+    // --- 旧 payload（pathRef 未宣言）の後方互換経路 ---
+    if (!noticedPieceFallback) {
+      noticedPieceFallback = true;
+      process.stderr.write(
+        `tru propose: 注記: 拘束 payload の connectors に pathRef が無いため、辺 BLOCK と ` +
+          `parts[].piece の照合で代用します（住所の権威は pathRef。上流が emit すれば自動で切り替わります）。\n`
+      );
+    }
     const hits = payload.parts.filter((candidate) => foldBlockName(candidate.piece) === folded);
     if (hits.length === 1) {
       return hits[0];
     }
-    if (warned.has(folded)) {
-      return undefined;
-    }
-    warned.add(folded);
     if (hits.length > 1) {
-      process.stderr.write(
-        `tru propose: 警告: 辺 BLOCK "${piece}" に対応する拘束 payload の piece が複数あります` +
-          `（${hits.map((hit) => hit.piece).join(" / ")}）。どれか推測せず provenance / applicable を載せません。\n`
+      return warnOnce(
+        `ambiguous:${folded}`,
+        `辺 BLOCK "${blockName}" に対応する拘束 payload の piece が複数あります` +
+          `（${hits.map((hit) => hit.piece).join(" / ")}）。どれか推測せず provenance / applicable を載せません。`
       );
-      return undefined;
     }
     const available = payload.parts.map((part) => part.piece);
-    process.stderr.write(
-      `tru propose: 警告: 辺 BLOCK "${piece}" に対応する piece が拘束 payload にありません` +
+    return warnOnce(
+      `no-match:${folded}`,
+      `辺 BLOCK "${blockName}" に対応する piece が拘束 payload にありません` +
         `（payload の piece: ${available.length > 0 ? available.join(" / ") : "なし"}）。` +
-        `この辺の provenance / applicable は載りません。\n`
+        `この辺の provenance / applicable は載りません。`
     );
-    return undefined;
   };
 }
 
-// piece(= 辺 blockName) → part → その part の最初の connector → buildSeamProvenance → contract 用の
+// 辺 blockName → part（`makeBlockNameJoin`）→ その part の最初の connector → buildSeamProvenance → contract 用の
 // SeamSourceProvenance に写す。provenance は piece 単位なので connector はどれでも同結果（[C6]）。join 失敗 /
 // 候補ゼロは undefined（seam 提案に載せない）。.val 内部詳細（pointId/refs 等）は出さず式・役割・coupling だけ載せる。
 function makeResolveProvenance(
   payload: ConstraintPayload,
-  joinPiece: (piece: string) => ConstraintPart | undefined
+  joinBlockName: (blockName: string) => ConstraintPart | undefined
 ): (piece: string) => SeamSourceProvenance | undefined {
   return (piece) => {
-    const part = joinPiece(piece);
+    const part = joinBlockName(piece);
     if (!part) return undefined;
     const connector = payload.connectors.find((candidate) => candidate.partId === part.partId);
     if (!connector) return undefined;
@@ -366,14 +429,14 @@ function makeResolveProvenance(
 }
 
 // applicable resolver: conform 辺の測定 notch × その piece の .val notch を matcher にかけ、単一 linear param が絞れたとき
-// だけ SeamApplicable を返す（piece を添える）。piece → part の照合は provenance と**同一の join**（`makePieceJoin`）を
-// 共有する（[C10]。2 箇所で規則がずれないように 1 つに寄せた）。join 失敗 / notch マッチ不成立 / linear が 0 or
-// 複数 なら undefined（applicable を載せない = provenance-only）。
+// だけ SeamApplicable を返す（piece を添える）。辺 blockName → part の照合は provenance と**同一の join**
+// （`makeBlockNameJoin`）を共有する（[C10]。2 箇所で規則がずれないように 1 つに寄せた）。join 失敗 / notch マッチ
+// 不成立 / linear が 0 or 複数 なら undefined（applicable を載せない = provenance-only）。
 function makeResolveApplicable(
-  joinPiece: (piece: string) => ConstraintPart | undefined
+  joinBlockName: (blockName: string) => ConstraintPart | undefined
 ): ResolveApplicable {
   return ({ piece, measured, deltaMm, conform }) => {
-    const part = joinPiece(piece);
+    const part = joinBlockName(piece);
     if (!part) return undefined;
     const result = buildSeamApplicable(measured, part.notches, deltaMm, conform);
     if (!result) return undefined;
@@ -518,11 +581,11 @@ async function runPropose(args: string[]): Promise<number> {
     ) {
       warnPartialConstraints(request);
     }
-    // piece↔blockName の join は provenance / applicable で共有する（規則が 2 箇所でずれないように・[C10]）。
-    // warn の dedupe 状態も共有されるので、同じ piece の join 失敗は 1 回しか出ない。
-    const joinPiece = makePieceJoin(request.payload);
-    resolveProvenance = makeResolveProvenance(request.payload, joinPiece);
-    resolveApplicable = makeResolveApplicable(joinPiece);
+    // 辺 blockName → part の join は provenance / applicable で共有する（規則が 2 箇所でずれないように・[C10]）。
+    // warn / 注記の dedupe 状態も共有されるので、同じ理由のメッセージは run で 1 回しか出ない。
+    const joinBlockName = makeBlockNameJoin(request.payload);
+    resolveProvenance = makeResolveProvenance(request.payload, joinBlockName);
+    resolveApplicable = makeResolveApplicable(joinBlockName);
   }
 
   const file = createProposalFile({

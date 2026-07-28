@@ -4,7 +4,8 @@
 //
 // **BLOCK 名を比べる箇所はすべてこの規則を通す。** 一部だけ畳むと「片方は同一と見なし、もう片方は別物と
 // 見なす」不整合になる。現在の利用者:
-//   1. 拘束 payload の `parts[].piece` ↔ 辺 `blockName` の join（`src/cli/tru.ts` の `makePieceJoin`）
+//   1. 辺 `blockName` ↔ 拘束 payload の join（`src/cli/tru.ts` の `makeBlockNameJoin`。住所の権威は
+//      `connectors[].pathRef`。pathRef 未宣言の旧 payload だけ `parts[].piece` に落とす）
 //   2. seam 提案の `sourceProvenance` の重複排除（`createProposalFile` の seam builder）
 //   3. `--reference` の BLOCK 名照合（`resolveSeamPair` / `resolveBandSeam`）
 // 実際に踏んだ不整合: 1 だけ畳んだ結果、2 で「join は同一なのに別物として同じ provenance を 2 件出す」（[P2]）、
