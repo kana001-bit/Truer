@@ -229,7 +229,11 @@ export interface CornerSlideCandidate {
   // conform 辺の points 並びでどちらの角か。
   corner: "start" | "end";
   // 滑らせる先の隣辺（共有角を持つ同 BLOCK の辺）。直線隣辺だけが候補になる。
-  slideAlong: { blockName: string; edgeId: string };
+  // `edgeDigest` は additive（2026-08-01）: この候補が**どの隣辺ジオメトリに基づくか**の identity。
+  // 下流（`tru cut`）が「propose 後に隣辺が変わっていないか」を確認するのに要る。slide 量や隣辺長のような
+  // **スカラーでは同一性を判定できない**（例: 共有角と conform 隣接頂点を通る直線について隣辺を鏡像にすると
+  // 長さも slide 量も完全に一致するが、滑った先の角は別の点になる = 別の輪郭が刷られる）。
+  slideAlong: { blockName: string; edgeId: string; edgeDigest?: string };
   couplingClass: CouplingClass;
   // 隣辺に沿ったスライド量 mm（参考値・advisory）。
   slideDistanceMm: number;
@@ -529,6 +533,10 @@ function cornerSlideCandidateError(value: unknown): string | undefined {
     !isNonEmptyString(along.edgeId)
   ) {
     return "slideAlong must address the neighbor edge with blockName and edgeId";
+  }
+  // additive・optional（旧 proposal には無い）。present なら非空文字列であること。
+  if (along.edgeDigest !== undefined && !isNonEmptyString(along.edgeDigest)) {
+    return "slideAlong.edgeDigest must be a non-empty string when present";
   }
   if (!(COUPLING_CLASSES as readonly string[]).includes(candidate.couplingClass as string)) {
     return `couplingClass must be one of ${COUPLING_CLASSES.join(" | ")}`;

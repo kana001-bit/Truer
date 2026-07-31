@@ -11,6 +11,7 @@ import { text as readStream } from "node:stream/consumers";
 import { createProposalFile } from "../core/proposal/createProposalFile.ts";
 import type { ResolveApplicable } from "../core/proposal/createProposalFile.ts";
 import { validateProposalFile } from "../core/proposal/proposalSchema.ts";
+import { digestEdgePoints } from "../core/proposal/proposalDigest.ts";
 import { foldBlockName } from "../core/proposal/blockName.ts";
 import type {
   Proposal,
@@ -41,24 +42,31 @@ import {
 } from "../adapters/seamlint/slntRunner.ts";
 import { DxfEditError, editNetLineVertex } from "../adapters/dxf/editNetLineVertex.ts";
 import { renderProposalPreview } from "../preview/index.ts";
-import { renderBandCutsheet, type CutScale, type OnFold } from "../preview/cutsheet.ts";
+import {
+  renderBandCutsheet,
+  renderPieceCutsheet,
+  type CutScale,
+  type OnFold
+} from "../preview/cutsheet.ts";
 import { computeBandCutOutline } from "../core/geometry-edit/bandCutOutline.ts";
+import { computeSeamCutOutline } from "../core/geometry-edit/seamCutOutline.ts";
+import type { SeamCutCorner } from "../core/geometry-edit/seamCutOutline.ts";
 import { writeFileAtomic } from "./writeFileAtomic.ts";
 import { isSameFilePath } from "./samePath.ts";
 
 const USAGE = `tru — Truer CLI (MVP)
 
 Usage:
-  tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--constraints <payload.json>|-] [--cut [<cut.svg>] --scale fit-a4|actual [--seam-allowance <mm>] [--on-fold long|short]] [--slnt <cmd>]
+  tru propose [<pattern.dxf>] --diagnostic <report.json> [--out <proposal.json>] [--reference <block>...] [--preview <preview.svg>] [--constraints <payload.json>|-] [--cut [<cut.svg>] --scale fit-a4|actual [--seam-allowance <mm>] [--on-fold long|short] [--corner start|end]] [--slnt <cmd>]
   tru apply   [<pattern.dxf>] --proposal <proposal.json> --accepted <id...> --out <out.dxf> [--slnt <cmd>]
-  tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--seam-allowance <mm>] [--on-fold long|short] [--slnt <cmd>]
+  tru cut     [<pattern.dxf>] --proposal <proposal.json> --scale fit-a4|actual --out <cut.svg> [--seam-allowance <mm>] [--on-fold long|short] [--corner start|end] [--slnt <cmd>]
 
   <pattern.dxf> は省略可: 省略時は cwd 直下の *.dxf を使う（ちょうど 1 つのとき。0/複数なら明示指定を促す）。
 
 Commands:
-  propose   Seamlint 診断 (DXF) から補正案 (proposal) と preview を作る（--cut で band を裁つ stopgap SVG も）。source は書き換えない。
+  propose   Seamlint 診断 (DXF) から補正案 (proposal) と preview を作る（--cut で band / seam を裁つ stopgap SVG も）。source は書き換えない。
   apply     採用された proposal の補正を --out の DXF に書く。source は不変・書き込みは atomic。
-  cut       既存 proposal JSON から band stopgap SVG を再レンダ（新規は propose --cut を推奨）。正式パターン(DXF)は書き換えない。
+  cut       既存 proposal JSON から stopgap SVG を再レンダ（新規は propose --cut を推奨）。正式パターン(DXF)は書き換えない。
 
 propose options:
   --diagnostic <file>   Seamlint report JSON (CheckReport or GeometryRequestReport).
@@ -78,6 +86,7 @@ propose options:
   --scale <mode>        --cut 用: fit-a4 (A4 1枚のミニチュア) / actual (1:1 実寸・10cm 四角つきカバー + A4 タイル)。
   --seam-allowance <mm> --cut 用: 縫い代（裁ち線を仕上がり線の外へ）。既定 10。0 で仕上がり線のみ。矩形バンドのみ。
   --on-fold <long|short> --cut 用: わ辺（縫い代 0）の代表 1 辺。long=長辺 / short=短辺。省略=全辺一様。矩形バンドのみ。
+  --corner <start|end>  --cut 用（seam のみ）: Δ を吸う角。省略時は slide 最小（minimal-change）。
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
 apply options:
@@ -87,7 +96,8 @@ apply options:
   --slnt <cmd>          slnt command for edge geometry (default: $SEAMLINT_CLI or "slnt").
 
 cut options:
-  --proposal <file>     propose が書いた proposal JSON。band conform（targetBandLengthMm あり）を裁つ。
+  --proposal <file>     propose が書いた proposal JSON。band conform（targetBandLengthMm あり）と
+                        seam conform（linkTarget あり = corner-slide で合わせたピース輪郭）を裁つ。
   --scale <mode>        fit-a4 (A4 1枚のミニチュア=デザイン確認・単一ファイル) / actual (1:1 実寸=フィット
                         確認。10cm 実寸四角つきカバー + A4 タイル複数枚)。
   --out <file>          印刷用 SVG の基底パス。actual は <base>.calibration.svg / <base>.tile-NofM.svg を、
@@ -125,6 +135,8 @@ interface ProposeOptions {
   scale?: string;
   seamAllowanceMm?: number;
   onFold?: OnFold;
+  // seam cut で Δ を吸う角の明示指定（`--corner start|end`）。省略時は slide 最小の角（minimal-change）。
+  corner?: SeamCutCorner;
 }
 
 // flag の値の取り方。value=次の 1 token、multi=続く非 flag token を貪欲に（--accepted / --reference）、
@@ -203,6 +215,14 @@ function parseOnFold(raw: string): OnFold {
   return raw;
 }
 
+// --corner は seam cut で「どちらの角で Δ を吸うか」の明示指定（省略時は slide 最小）。propose --cut と cut で同義。
+function parseCorner(raw: string): SeamCutCorner {
+  if (raw !== "start" && raw !== "end") {
+    throw new Error('--corner must be "start" or "end".');
+  }
+  return raw;
+}
+
 const PROPOSE_SPEC: Record<string, ArgArity> = {
   "--diagnostic": "value",
   "--out": "value",
@@ -213,7 +233,8 @@ const PROPOSE_SPEC: Record<string, ArgArity> = {
   "--cut": "optional-value",
   "--scale": "value",
   "--seam-allowance": "value",
-  "--on-fold": "value"
+  "--on-fold": "value",
+  "--corner": "value"
 };
 
 function parseProposeArgs(args: string[]): ProposeOptions {
@@ -242,6 +263,9 @@ function parseProposeArgs(args: string[]): ProposeOptions {
   }
   if (parsed.values["--on-fold"] !== undefined) {
     options.onFold = parseOnFold(parsed.values["--on-fold"]);
+  }
+  if (parsed.values["--corner"] !== undefined) {
+    options.corner = parseCorner(parsed.values["--corner"]);
   }
   return options;
 }
@@ -511,10 +535,11 @@ async function runPropose(args: string[]): Promise<number> {
     !options.cutRequested &&
     (options.scale !== undefined ||
       options.seamAllowanceMm !== undefined ||
-      options.onFold !== undefined)
+      options.onFold !== undefined ||
+      options.corner !== undefined)
   ) {
     process.stderr.write(
-      "tru propose: --scale / --seam-allowance / --on-fold は --cut と一緒に指定してください。\n\n" +
+      "tru propose: --scale / --seam-allowance / --on-fold / --corner は --cut と一緒に指定してください。\n\n" +
         USAGE
     );
     return 2;
@@ -622,29 +647,42 @@ async function runPropose(args: string[]): Promise<number> {
     process.stdout.write(`preview: overlay -> ${options.preview}\n`);
   }
 
-  // --cut（opt-in）: この場で band conform 提案を印刷 stopgap SVG に裁つ（tru cut を propose に畳んだ口）。
-  // read-only な派生 SVG なので propose と同居できる（apply とは別・ゲート無し）。propose 用に組んだ runEdges を
-  // そのまま流用する。scale は上で検証済み（cutRequested なら fit-a4|actual）。
+  // --cut（opt-in）: この場で band conform / seam conform 提案を印刷 stopgap SVG に裁つ（tru cut を propose に
+  // 畳んだ口）。read-only な派生 SVG なので propose と同居できる（apply とは別・ゲート無し）。propose 用に組んだ
+  // runEdges をそのまま流用する。scale は上で検証済み（cutRequested なら fit-a4|actual）。
   if (options.cutRequested && (options.scale === "fit-a4" || options.scale === "actual")) {
     const scale: CutScale = options.scale;
-    const cuttable = cuttableBandProposals(file);
-    if (cuttable.length === 0) {
+    const cuttableBands = cuttableBandProposals(file);
+    const cuttableSeams = cuttableSeamProposals(file);
+    if (cuttableBands.length === 0 && cuttableSeams.length === 0) {
       process.stdout.write(
-        "cut: 裁断できる band 提案がありません（band conform の targetBandLengthMm が必要）。何も書きません。\n"
+        "cut: 裁断できる提案がありません（band は targetBandLengthMm、seam は linkTarget が必要）。何も書きません。\n"
       );
     } else {
       const cutOut = options.cut ?? defaultCutOutPath(dxfFile);
-      const cutStatus = await writeBandCutsheets({
-        cuttable,
-        runEdges,
-        scale,
-        out: cutOut,
-        ...(options.seamAllowanceMm !== undefined
-          ? { seamAllowanceMm: options.seamAllowanceMm }
-          : {}),
-        ...(options.onFold ? { onFold: options.onFold } : {})
-      });
-      if (cutStatus !== 0) return cutStatus;
+      if (cuttableBands.length > 0) {
+        const cutStatus = await writeBandCutsheets({
+          cuttable: cuttableBands,
+          runEdges,
+          scale,
+          out: cutOut,
+          ...(options.seamAllowanceMm !== undefined
+            ? { seamAllowanceMm: options.seamAllowanceMm }
+            : {}),
+          ...(options.onFold ? { onFold: options.onFold } : {})
+        });
+        if (cutStatus !== 0) return cutStatus;
+      }
+      if (cuttableSeams.length > 0) {
+        const seamStatus = await writeSeamCutsheets({
+          cuttable: cuttableSeams,
+          runEdges,
+          scale,
+          out: cutOut,
+          ...(options.corner ? { corner: options.corner } : {})
+        });
+        if (seamStatus !== 0) return seamStatus;
+      }
     }
   }
 
@@ -762,6 +800,8 @@ interface CutOptions {
   slnt?: string;
   seamAllowanceMm?: number;
   onFold?: OnFold;
+  // seam cut で Δ を吸う角の明示指定（省略時は slide 最小）。band cut には効かない。
+  corner?: SeamCutCorner;
 }
 
 const CUT_SPEC: Record<string, ArgArity> = {
@@ -770,7 +810,8 @@ const CUT_SPEC: Record<string, ArgArity> = {
   "--out": "value",
   "--slnt": "value",
   "--seam-allowance": "value",
-  "--on-fold": "value"
+  "--on-fold": "value",
+  "--corner": "value"
 };
 
 function parseCutArgs(args: string[]): CutOptions {
@@ -786,6 +827,9 @@ function parseCutArgs(args: string[]): CutOptions {
   }
   if (parsed.values["--on-fold"] !== undefined) {
     options.onFold = parseOnFold(parsed.values["--on-fold"]);
+  }
+  if (parsed.values["--corner"] !== undefined) {
+    options.corner = parseCorner(parsed.values["--corner"]);
   }
   return options;
 }
@@ -803,12 +847,230 @@ function cutOutPathFor(outPath: string, ...suffixes: (string | undefined)[]): st
   return `${stem}${suffix}${ext}`;
 }
 
+// ファイル名の一部に使ってよい文字だけ（`prop_001` のような propose 由来の id は必ず通る）。
+const FILENAME_SAFE_PART = /^[A-Za-z0-9._-]+$/;
+
+// `proposal.id` は cut の出力名（`<base>.<id>.…`）に混ぜるが、**proposal JSON は外部入力**（`tru cut` は任意の
+// ファイルを受ける。schema の検証は「非空文字列」までで中身を縛らない）。パス区切りや `..` を含む id を素で
+// 連結すると、`mkdir(dirname(...), {recursive:true})` と併せて **`--out` の外にディレクトリを作って書ける**。
+// 「頼んでいない場所へ書かない」（T1）が Truer の土台なので、安全でない id は**書かずに skip** する。
+// 黙って別名へ書き換えないのは、別々の id が同名に潰れて**上書き**しうるため（id を挟む目的そのものが壊れる）。
+function isFilenameSafeId(id: string): boolean {
+  return FILENAME_SAFE_PART.test(id) && !/^\.+$/.test(id);
+}
+
 // 裁てるのは band conform（targetBandLengthMm がある band 提案）だけ。目標長が無い（band 固定 / 未決）提案は
 // 縮める寸法が定まらないので出さない（推測しない、T8）。propose --cut と tru cut が同じ判定を共有する。
 function cuttableBandProposals(file: ProposalFile): Proposal[] {
   return file.proposals.filter(
     (proposal) => proposal.bandReconciliation?.targetBandLengthMm !== undefined
   );
+}
+
+// 裁てる seam 提案 = `linkTarget`（conform 辺 + 目標 finished 長）がある物だけ。reference 未決（両方向 preview-only）
+// では「どちらの辺をどの長さに」が決まらないので裁てない — band が targetBandLengthMm 無しを skip するのと同型。
+function cuttableSeamProposals(file: ProposalFile): Proposal[] {
+  return file.proposals.filter((proposal) => proposal.seamReconciliation?.linkTarget !== undefined);
+}
+
+// 裁てる seam 提案を印刷 stopgap SVG（piece cutsheet）へ書き出す。conform 辺の piece の全辺を slnt edges で取り、
+// corner-slide で共有角を滑らせた**補正後ピース輪郭**を出す（`computeSeamCutOutline`）。解けない角しか無い
+// （曲線隣辺 / 幾何的に届かない等）ときは推測せず理由を出して次へ（T8）。正式パターン(DXF)は書き換えない。
+//
+// 出力名は **常に proposal.id を挟む**（`<base>.<id>.…`）。band 側は「複数のときだけ id を挟む」規約なので、
+// band 単体 + seam 単体が同じ run に来たときにファイル名が衝突するのを確実に避けるため（band の規約は変えない）。
+async function writeSeamCutsheets(params: {
+  cuttable: Proposal[];
+  runEdges: SlntEdgesRunner;
+  scale: CutScale;
+  out: string;
+  corner?: SeamCutCorner;
+}): Promise<number> {
+  const { cuttable, runEdges, scale, out } = params;
+  for (const proposal of cuttable) {
+    // seam は出力名に**必ず** id を挟むので、安全でない id は必ずここで止まる（`--out` の外へ書かせない）。
+    if (!isFilenameSafeId(proposal.id)) {
+      process.stdout.write(
+        `cut: skipped（proposal.id ${JSON.stringify(proposal.id)} はファイル名に使えません）— ` +
+          `出力名に混ぜると --out の外へ書けてしまうため何も書きません。\n`
+      );
+      continue;
+    }
+    const seam = proposal.seamReconciliation!;
+    const linkTarget = seam.linkTarget!;
+    // conform = reference の反対側の辺。その piece（BLOCK）の輪郭を裁つ。
+    const conformEdge = linkTarget.conform === "from" ? seam.fromEdge : seam.toEdge;
+    const blockName = conformEdge.blockName;
+
+    let edgesResult;
+    try {
+      edgesResult = runEdges(blockName);
+    } catch (error) {
+      process.stderr.write(`cut: ${errorMessage(error)}\n`);
+      return 1;
+    }
+
+    // 診断の edgeId（string）→ ループ内の index。見つからなければ推測せず skip（T6/T8）。
+    const conformEdgeIndex = edgesResult.edges.findIndex(
+      (edge) => String(edge.edgeId) === conformEdge.edgeId
+    );
+    if (conformEdgeIndex < 0) {
+      process.stdout.write(
+        `cut: skipped ${blockName}（conform 辺 edgeId=${conformEdge.edgeId ?? "?"} が ${blockName} に見つかりません）— 出力しません。\n`
+      );
+      continue;
+    }
+
+    // **stale guard**: Δ は proposal に**記録された**長さ（`conformEdge.lengthMm`）基準で計算するのに、当てる
+    // 相手はいま `slnt edges` から取った**現在の**点列。propose 後に DXF が変わっていると、Δ の基準がずれた
+    // まま輪郭を作り、**1:1 で刷った線が目標長に届かない**（人はそれを定規で測って布を裁つ）。band cut は
+    // 絶対長（targetBandLengthMm）へスケールするのでこの穴が無いが、seam は相対 Δ なので効く。
+    // 記録済み `edgeDigest` と現在の点列の digest を照合し、食い違えば**書かずに skip**する（T8）。
+    const liveConformPoints = edgesResult.edges[conformEdgeIndex]!.points;
+    const liveDigest = digestEdgePoints(liveConformPoints);
+    if (liveDigest !== conformEdge.edgeDigest) {
+      process.stdout.write(
+        `cut: skipped ${blockName}（stale proposal）— conform 辺の digest が propose 時と違います` +
+          `（propose 時 ${conformEdge.edgeDigest} / 現在 ${liveDigest}）。DXF が変わっているので目標長に届く輪郭を出せません。` +
+          `propose をやり直してください。\n`
+      );
+      continue;
+    }
+
+    // **reference 辺の stale guard**: `targetFinishedMm` は propose 時の **reference 辺**の長さから決まる。
+    // conform 辺の digest だけ見ても、reference 辺（多くは別 BLOCK）が変わっていれば目標長が古く、
+    // **相手ピースと合わない長さに裁つ**ことになる。reference 辺の digest も記録済みなので照合する。
+    const referenceEdge = linkTarget.conform === "from" ? seam.toEdge : seam.fromEdge;
+    let referenceEdges = edgesResult;
+    if (foldBlockName(referenceEdge.blockName) !== foldBlockName(blockName)) {
+      try {
+        referenceEdges = runEdges(referenceEdge.blockName);
+      } catch (error) {
+        process.stderr.write(`cut: ${errorMessage(error)}\n`);
+        return 1;
+      }
+    }
+    const liveReference = referenceEdges.edges.find(
+      (edge) => String(edge.edgeId) === referenceEdge.edgeId
+    );
+    const liveReferenceDigest = liveReference ? digestEdgePoints(liveReference.points) : undefined;
+    if (liveReferenceDigest !== referenceEdge.edgeDigest) {
+      process.stdout.write(
+        `cut: skipped ${blockName}（stale proposal）— reference 辺 ${referenceEdge.blockName} edgeId=${referenceEdge.edgeId ?? "?"} が propose 時と違います` +
+          `（propose 時 ${referenceEdge.edgeDigest} / 現在 ${liveReferenceDigest ?? "見つかりません"}）。` +
+          `目標長 ${linkTarget.targetFinishedMm}mm の根拠が古いので裁てません。propose をやり直してください。\n`
+      );
+      continue;
+    }
+
+    // 符号付き Δ = 目標 − 現在（伸ばすなら正）。現在長は診断由来の finished 長（seamReconciliation）。
+    // 上の digest 照合（conform / reference）を通っているので、記録長と現在の geometry は同じものを指している。
+    const deltaMm = linkTarget.targetFinishedMm - conformEdge.lengthMm;
+    const outline = computeSeamCutOutline({
+      edges: edgesResult.edges.map((edge) => edge.points),
+      conformEdgeIndex,
+      deltaMm,
+      ...(params.corner ? { corner: params.corner } : {})
+    });
+    if (!outline.ok) {
+      const detail =
+        outline.reason === "no-solvable-corner"
+          ? `角ごとの理由: ${(["start", "end"] as const)
+              .map((corner) => `${corner}=${outline.cornerReasons?.[corner] ?? "未試行"}`)
+              .join(" / ")}`
+          : outline.reason;
+      process.stdout.write(
+        `cut: skipped ${blockName}（${outline.reason}）— corner-slide が解けないため出力しません。${detail}\n`
+      );
+      continue;
+    }
+
+    const solved = outline.outline;
+
+    // **隣辺の stale guard**: 角を滑らせる先の隣辺は conform / reference のどちらでもないので、上 2 つの digest では
+    // 守られない（隣辺の digest は proposal に記録されていない）。代わりに **propose 時に人が見た advisory**
+    // （`cornerSlide.candidates`）と突き合わせる: propose と cut は同じ solver・同じ Δ・同じ丸めを通るので、
+    // 隣辺が変わっていなければ slide 量と隣辺長は**厳密一致**する。ずれていれば隣辺が変わった＝人が見た指示と
+    // 違う輪郭を刷ることになるので裁たない（T2 の精神: 見せたものと出すものを一致させる）。
+    const cornerSlide = seam.cornerSlide;
+    if (!cornerSlide) {
+      process.stdout.write(
+        `cut: skipped ${blockName}（cornerSlide の記録がありません）— 隣辺が propose 時と同じか確認できないため裁てません。\n`
+      );
+      continue;
+    }
+    const recorded = cornerSlide.candidates.find((candidate) => candidate.corner === solved.corner);
+    if (!recorded) {
+      process.stdout.write(
+        `cut: skipped ${blockName}（stale proposal）— 角 ${solved.corner} は propose 時の corner-slide 候補に無い` +
+          `（候補: ${cornerSlide.candidates.map((candidate) => candidate.corner).join(" / ") || "なし"}）。` +
+          `隣辺が変わっている可能性があります。propose をやり直してください。\n`
+      );
+      continue;
+    }
+    // **隣辺の同一性は digest で見る。** slide 量や隣辺長は**スカラーなので同一性を判定できない**: 共有角と
+    // conform 隣接頂点を通る直線について隣辺を鏡像にすると、|隣辺| も slide 量も完全に一致するのに滑った先の
+    // 角は別の点になり、**別の輪郭が刷られる**（2026-08-01 のレビュー指摘・実測で再現）。だから propose 時に
+    // 記録した隣辺 digest（`slideAlong.edgeDigest`）と、いま core が実際に使った隣辺の digest を照合する。
+    const liveNeighborPoints = edgesResult.edges[solved.neighborEdgeIndex]?.points;
+    const liveNeighborDigest = liveNeighborPoints
+      ? digestEdgePoints(liveNeighborPoints)
+      : undefined;
+    if (recorded.slideAlong.edgeDigest === undefined) {
+      process.stdout.write(
+        `cut: skipped ${blockName}（隣辺 digest の記録がありません）— propose 時の隣辺と同じか確認できないため裁てません。` +
+          `propose をやり直してください（この proposal は隣辺 digest を記録する前の版です）。\n`
+      );
+      continue;
+    }
+    if (liveNeighborDigest !== recorded.slideAlong.edgeDigest) {
+      process.stdout.write(
+        `cut: skipped ${blockName}（stale proposal）— 角 ${solved.corner} の隣辺が propose 時と違います` +
+          `（propose 時 ${recorded.slideAlong.edgeDigest} / 現在 ${liveNeighborDigest ?? "見つかりません"}）。` +
+          `滑らせる先が変わると人が見た指示と違う輪郭になります。propose をやり直してください。\n`
+      );
+      continue;
+    }
+    // 数値の照合も残す: 隣辺が同一でも Δ の根拠（targetFinishedMm など）が書き換えられていれば slide 量がずれる。
+    if (
+      recorded.slideDistanceMm !== solved.slideDistanceMm ||
+      recorded.neighborLengthChange.fromMm !== solved.neighborLengthBeforeMm
+    ) {
+      process.stdout.write(
+        `cut: skipped ${blockName}（stale proposal）— 角 ${solved.corner} の corner-slide が propose 時と違います` +
+          `（slide ${recorded.slideDistanceMm} → ${solved.slideDistanceMm}mm / 隣辺長 ${recorded.neighborLengthChange.fromMm} → ${solved.neighborLengthBeforeMm}mm）。` +
+          `隣辺が変わっているので人が見た指示と違う輪郭になります。propose をやり直してください。\n`
+      );
+      continue;
+    }
+
+    const pages = renderPieceCutsheet({
+      corners: solved.corners,
+      scale,
+      title: `${blockName}（seam conform）`,
+      // 寸法行には縫い代の扱いも畳む（band の dimText が「縫い代 Xmm 込み」を同じ行に出すのと同じ流儀。
+      // fit-a4 は 1 行のラベル帯しか無いので、ここに入れないと「縫い代なし」が伝わらない）。
+      dimLine:
+        `conform 辺 ${n1(solved.conformFromLengthMm)} → ${n1(solved.conformToLengthMm)}mm` +
+        ` / 角 ${solved.corner} を ${n1(solved.slideDistanceMm)}mm スライド` +
+        ` / 隣辺 ${n1(solved.neighborLengthBeforeMm)} → ${n1(solved.neighborLengthAfterMm)}mm` +
+        ` / 縫い代なし（仕上がり線のみ）`
+    });
+    for (const page of pages) {
+      const outPath = cutOutPathFor(out, proposal.id, page.label || undefined);
+      await mkdir(dirname(outPath), { recursive: true });
+      await writeFileAtomic(outPath, page.svg);
+      process.stdout.write(
+        `cut: ${blockName} seam (${scale})${page.label ? ` [${page.label}]` : ""} -> ${outPath}\n`
+      );
+    }
+  }
+  return 0;
+}
+
+// 表示用の 1 桁丸め（cut のラベルは人が読む値。幾何そのものは core で emit 丸め済み）。
+function n1(value: number): string {
+  return (Math.round(value * 10) / 10).toString();
 }
 
 // 裁てる band 提案を印刷 stopgap SVG（cutsheet）へ書き出す共有ルーチン。propose --cut（in-memory の proposal
@@ -828,6 +1090,16 @@ async function writeBandCutsheets(params: {
     const band = proposal.bandReconciliation!;
     const blockName = band.bandEdge.blockName;
     const targetLengthMm = band.targetBandLengthMm!;
+
+    // band が id を出力名に挟むのは「複数のとき」だけだが、そのときは seam と同じ穴（外部入力の id を
+    // パスに連結）が開くので同じガードを通す。単体（id を使わない）ケースは影響なし。
+    if (cuttable.length > 1 && !isFilenameSafeId(proposal.id)) {
+      process.stdout.write(
+        `cut: skipped ${blockName}（proposal.id ${JSON.stringify(proposal.id)} はファイル名に使えません）— ` +
+          `出力名に混ぜると --out の外へ書けてしまうため何も書きません。\n`
+      );
+      continue;
+    }
 
     // band ブロックの全辺を slnt edges で取り、閉じた輪郭を作る（A1: 辺 geometry は subprocess で取得）。
     let edgesResult;
@@ -924,15 +1196,16 @@ async function runCut(args: string[]): Promise<number> {
   }
   const file = parsed as ProposalFile;
 
-  const cuttable = cuttableBandProposals(file);
-  if (cuttable.length === 0) {
+  const cuttableBands = cuttableBandProposals(file);
+  const cuttableSeams = cuttableSeamProposals(file);
+  if (cuttableBands.length === 0 && cuttableSeams.length === 0) {
     process.stdout.write(
-      "cut: 裁断できる band 提案がありません（band conform の targetBandLengthMm が必要）。何も書きません。\n"
+      "cut: 裁断できる提案がありません（band は targetBandLengthMm、seam は linkTarget が必要）。何も書きません。\n"
     );
     return 0;
   }
 
-  // 裁つものがある場合だけ DXF を要求する（band ブロックの全辺を slnt edges で取るため）。
+  // 裁つものがある場合だけ DXF を要求する（対象 BLOCK の全辺を slnt edges で取るため）。
   let dxfFile: string;
   try {
     dxfFile = await resolveDxfFile(options.dxfFile);
@@ -948,14 +1221,30 @@ async function runCut(args: string[]): Promise<number> {
     process.stderr.write(`tru cut: warning: ${cmdRisk}\n`);
   }
 
-  return await writeBandCutsheets({
-    cuttable,
-    runEdges,
-    scale,
-    out: options.out,
-    ...(options.seamAllowanceMm !== undefined ? { seamAllowanceMm: options.seamAllowanceMm } : {}),
-    ...(options.onFold ? { onFold: options.onFold } : {})
-  });
+  if (cuttableBands.length > 0) {
+    const bandStatus = await writeBandCutsheets({
+      cuttable: cuttableBands,
+      runEdges,
+      scale,
+      out: options.out,
+      ...(options.seamAllowanceMm !== undefined
+        ? { seamAllowanceMm: options.seamAllowanceMm }
+        : {}),
+      ...(options.onFold ? { onFold: options.onFold } : {})
+    });
+    if (bandStatus !== 0) return bandStatus;
+  }
+  if (cuttableSeams.length > 0) {
+    const seamStatus = await writeSeamCutsheets({
+      cuttable: cuttableSeams,
+      runEdges,
+      scale,
+      out: options.out,
+      ...(options.corner ? { corner: options.corner } : {})
+    });
+    if (seamStatus !== 0) return seamStatus;
+  }
+  return 0;
 }
 
 async function main(argv: string[]): Promise<number> {

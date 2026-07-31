@@ -864,9 +864,16 @@ test("seam ② corner-slide: solved corner candidates ride along when reference 
   assert.equal(slide.candidates.length, 1);
   // 末端 segment 100 → 105: 円∩線の解は √(105²−100²)=√1025=32.0156…、emit 丸めで 32.016。
   // 隣辺（長さ 50）は N 側へ滑るので 50−√1025=17.984…。
+  // `slideAlong.edgeDigest`（2026-08-01 additive）は「この候補がどの隣辺ジオメトリに基づくか」の identity。
+  // 下流（`tru cut`）が propose 後の隣辺変更を検出するのに要る — slide 量や隣辺長では同一性を判定できない
+  // （共有角と conform 隣接頂点を通る直線について鏡像にすると、それらは完全に一致するが滑る先は別の点になる）。
   assert.deepEqual(slide.candidates[0], {
     corner: "end",
-    slideAlong: { blockName: SEAM_TO_BLOCK, edgeId: "2" },
+    slideAlong: {
+      blockName: SEAM_TO_BLOCK,
+      edgeId: "2",
+      edgeDigest: digestEdgePoints(SLIDE_TO_NEIGHBORS.end.points)
+    },
     couplingClass: "unknown",
     slideDistanceMm: 32.016,
     neighborLengthChange: { fromMm: 50, toMm: 17.984 }

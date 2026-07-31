@@ -566,7 +566,13 @@ const buildSeamLengthMismatchProposal: ProposalBuilder = ({
         if (!solved.ok) continue;
         candidates.push({
           corner,
-          slideAlong: { blockName: conformResolved.blockName, edgeId: neighbor.edgeId },
+          // `edgeDigest` は「この候補がどの隣辺ジオメトリに基づくか」の identity。下流（`tru cut`）が
+          // propose 後の隣辺変更を検出するのに要る — slide 量や隣辺長では同一性を判定できない（鏡像で一致する）。
+          slideAlong: {
+            blockName: conformResolved.blockName,
+            edgeId: neighbor.edgeId,
+            edgeDigest: digestEdgePoints(neighbor.points)
+          },
           couplingClass: "unknown",
           slideDistanceMm: roundCoord(solved.slideDistanceMm),
           neighborLengthChange: {

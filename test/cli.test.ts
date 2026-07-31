@@ -9,7 +9,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { createProposalFile } from "../src/core/proposal/createProposalFile.ts";
@@ -780,8 +780,9 @@ test("cut: --proposal and --out are required (exit 2)", () => {
   assert.match(result.stderr, /--proposal and --out are required/);
 });
 
-test("cut: no band-conform proposal writes nothing (exit 0, slnt not spawned)", () => {
-  // 守る仕様: targetBandLengthMm を持つ band 提案が無ければ、推測せず何も書かず exit 0（理由を出す）。
+test("cut: no cuttable proposal writes nothing (exit 0, slnt not spawned)", () => {
+  // 守る仕様: 裁てる提案（band = targetBandLengthMm / seam = linkTarget）が無ければ、推測せず何も書かず
+  //           exit 0（理由を出す）。seam cut 追加でメッセージは band 限定でなく両方を挙げる形になった。
   const dir = mkdtempSync(join(tmpdir(), "truer-cut-none-"));
   const file = createProposalFile({
     sourceFile: "pattern.dxf",
@@ -794,7 +795,8 @@ test("cut: no band-conform proposal writes nothing (exit 0, slnt not spawned)", 
   const out = join(dir, "cut.svg");
   const result = runTruIn(dir, ["cut", "--proposal", pp, "--scale", "actual", "--out", out]);
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /裁断できる band 提案がありません/);
+  assert.match(result.stdout, /裁断できる提案がありません/);
+  assert.match(result.stdout, /seam は linkTarget/); // band 限定の文面に戻っていないこと
   assert.equal(existsSync(out), false);
 });
 
@@ -1091,18 +1093,446 @@ test("propose without --cut writes no cutsheet (opt-in)", () => {
   assert.deepEqual(svgs, []);
 });
 
-test("propose: --scale / --seam-allowance / --on-fold は --cut 無しだと usage error (exit 2)", () => {
+test("propose: --scale / --seam-allowance / --on-fold / --corner は --cut 無しだと usage error (exit 2)", () => {
   // 守る仕様 (P2): cut 専用オプションを --cut 無しで渡す打ち間違いを silent 無視せず exit 2 にする。
   //           diagnostic チェックの直後・file も slnt も触る前で止まる（x.dxf / r.json は存在不要）。
   for (const extra of [
     ["--scale", "actual"],
     ["--seam-allowance", "10"],
-    ["--on-fold", "long"]
+    ["--on-fold", "long"],
+    ["--corner", "start"]
   ]) {
     const result = runTru(["propose", "x.dxf", "--diagnostic", "r.json", ...extra]);
     assert.equal(result.status, 2, `${extra.join(" ")}: ${result.stdout}${result.stderr}`);
     assert.match(result.stderr, /--cut と一緒に指定/);
   }
+});
+
+// ---- seam cut（corner-slide の解を「裁てるピース輪郭」として刷る）----
+// band cut と同じページ機構を通すが、対象は **piece 輪郭**で仕上がり線のみ（縫い代なし）。裁てるのは
+// `linkTarget`（conform 辺 + 目標長）がある seam 提案だけ = reference 未決なら裁てない。
+
+// fake slnt（seam 用）: piece（FRONT / BACK）と band（WAISTBAND）を 1 つの stub で返す。
+//   piece = 台形で、conform 辺 edge0 は**曲線**（3 点）・隣辺 edge1/edge3 は**直線 2 点**（corner-slide 可解）。
+//   `curvedNeighbors` を立てると隣辺も曲線にして「解けない piece」を作る（skip 経路の確認用）。
+function writeSeamCutSlnt(
+  dir: string,
+  options: {
+    curvedNeighbors?: boolean;
+    shiftConform?: boolean;
+    // reference 辺（BACK edge0）だけを変えた「別の DXF」。conform（FRONT edge0）は propose 時と同じ。
+    shiftReference?: boolean;
+    // 隣辺（FRONT edge1）の遠い端だけを変える。conform / reference は propose 時と同じ。
+    shiftNeighbor?: boolean;
+    // 隣辺を「共有角 (200,0) と conform 隣接頂点 (100,-6) を通る直線」について**鏡像**にする。この反射は
+    // |隣辺| と slide 量を厳密に保つので、**スカラー比較では検出できない**（digest でしか捕まらない）。
+    mirrorNeighbor?: boolean;
+    fileName?: string;
+  } = {}
+): string {
+  const neighbor3 = options.curvedNeighbors
+    ? "[{x:0,y:300},{x:-60,y:150},{x:0,y:0}]"
+    : "[{x:0,y:300},{x:0,y:0}]";
+  // shiftConform: conform 辺の中間頂点だけを動かした「別の DXF」を模す（propose 後に型紙が変わった状態）。
+  const conform = options.shiftConform
+    ? "[{x:0,y:0},{x:100,y:-9},{x:200,y:0}]"
+    : "[{x:0,y:0},{x:100,y:-6},{x:200,y:0}]";
+  // shiftNeighbor: 隣辺（edge1）の**遠い端**だけを動かす。共有角 (200,0) は動かさないので conform 辺の
+  // digest は変わらず、「conform は同じなのに滑らせる先が変わった」状態を作れる。edge2 の始点も合わせて
+  // 閉ループを保つ（崩すと not-a-closed-loop で別の理由になってしまう）。
+  // mirrorNeighbor の座標は、C=(200,0) を通り (C−V)=(100,6) 方向の直線について N=(220,300) を反射した点
+  // （実測で |CN| と slide 量が元と一致することを確認済み: どちらも 300.666mm / 34.936mm）。
+  const far = options.mirrorNeighbor
+    ? "{x:255.727381,y:-295.456357}"
+    : options.shiftNeighbor
+      ? "{x:260,y:300}"
+      : "{x:220,y:300}";
+  const neighbor1 = options.curvedNeighbors
+    ? "[{x:200,y:0},{x:260,y:150},{x:220,y:300}]"
+    : `[{x:200,y:0},${far}]`;
+  const edge2 = options.curvedNeighbors ? "[{x:220,y:300},{x:0,y:300}]" : `[${far},{x:0,y:300}]`;
+  const script = [
+    "const a = process.argv.slice(2);",
+    'const bi = a.indexOf("--block");',
+    'const block = bi >= 0 ? a[bi + 1] : "?";',
+    'if (block === "WAISTBAND") {',
+    "  const c = [[0,0],[350,0],[350,40],[0,40]];",
+    "  const edges = c.map((p, i) => ({ edgeId: i, points: [ { x: p[0], y: p[1] }, { x: c[(i + 1) % c.length][0], y: c[(i + 1) % c.length][1] } ] }));",
+    "  process.stdout.write(JSON.stringify({ blockName: block, edges }));",
+    "} else {",
+    // shiftReference は **BACK だけ** conform 相当の辺（edge0）を変える。FRONT（= cut 対象の piece）は不変。
+    `  const isReference = block === "BACK";`,
+    `  const conform = isReference && ${String(options.shiftReference === true)}`,
+    "    ? [{x:0,y:0},{x:100,y:-12},{x:200,y:0}]",
+    `    : ${conform};`,
+    "  const edges = [",
+    "    { edgeId: 0, points: conform },",
+    `    { edgeId: 1, points: ${neighbor1} },`,
+    `    { edgeId: 2, points: ${edge2} },`,
+    `    { edgeId: 3, points: ${neighbor3} }`,
+    "  ];",
+    "  process.stdout.write(JSON.stringify({ blockName: block, edges }));",
+    "}"
+  ].join("\n");
+  const path = join(dir, options.fileName ?? "seam-cut-slnt.js");
+  writeFileSync(path, script);
+  return path;
+}
+
+// conform 辺（FRONT edge0）の実長は 2*hypot(100,6) ≈ 200.36mm。目標を +10mm にした seam 診断。
+// `withBand` を立てると band 診断も足して「band と seam が同じ run に来る」形にする。
+function writeSeamCutReport(dir: string, options: { withBand?: boolean } = {}): string {
+  const seam = {
+    severity: "warning",
+    code: "geometry.seam_length_mismatch",
+    target: "back.side/front.side",
+    message: "Seam path lengths differ more than the configured tolerance.",
+    expected: { maxLengthDiffMm: 3 },
+    actual: {
+      fromLengthMm: 210.36,
+      toLengthMm: 200.36,
+      lengthDiffMm: 10,
+      fromEdge: { blockName: "BACK", edgeId: 0 },
+      toEdge: { blockName: "FRONT", edgeId: 0 }
+    }
+  };
+  const report = {
+    status: "warning",
+    target: "geometry-request",
+    diagnostics: options.withBand ? [seam, cutBandDiagnostic()] : [seam],
+    reports: []
+  };
+  const path = join(dir, "seam.report.json");
+  writeFileSync(path, JSON.stringify(report));
+  return path;
+}
+
+// seam cut を propose --cut で走らせる共通ルーチン。`--reference BACK` で conform=FRONT（to）が決まる。
+function runSeamCut(
+  dir: string,
+  extra: string[] = [],
+  slntOptions: { curvedNeighbors?: boolean } = {},
+  reportOptions: { withBand?: boolean } = {}
+) {
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const reportPath = writeSeamCutReport(dir, reportOptions);
+  const slnt = writeSeamCutSlnt(dir, slntOptions);
+  return runTruIn(dir, [
+    "propose",
+    "pattern.dxf",
+    "--diagnostic",
+    reportPath,
+    "--reference",
+    "BACK",
+    "--out",
+    join(dir, "prop.json"),
+    "--cut",
+    join(dir, "cut.svg"),
+    "--scale",
+    "fit-a4",
+    "--slnt",
+    `node "${slnt}"`,
+    ...extra
+  ]);
+}
+
+// SVG のラベル文字列（<text> の中身）を集める。
+function svgTexts(path: string): string[] {
+  return [...readFileSync(path, "utf8").matchAll(/<text[^>]*>([^<]*)<\/text>/g)].map(
+    (match) => match[1]!
+  );
+}
+
+test("propose --cut: seam conform 提案を補正後ピース輪郭として裁つ（仕上がり線のみ）", () => {
+  // 守る仕様: linkTarget がある seam 提案は corner-slide を解いてピース輪郭を刷る。ラベルに conform 辺の
+  //   before→after・どの角を何 mm 滑らせたか・巻き添えで変わる隣辺長を出す（人が判断する材料）。
+  //   **縫い代は含まれない**ことを明記する（piece 輪郭は矩形でなくオフセットできないため・曲線バンドと同じ扱い）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-seam-cut-"));
+  const result = runSeamCut(dir);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /cut: FRONT seam \(fit-a4\)/);
+  // seam は常に proposal.id を挟む（band と同じ run でもファイル名が衝突しないように）。
+  const out = join(dir, "cut.prop_001.svg");
+  assert.equal(existsSync(out), true);
+  const texts = svgTexts(out);
+  assert.ok(texts.some((text) => text.includes("FRONT（seam conform）")));
+  assert.ok(texts.some((text) => /conform 辺 200\.4 → 210\.4mm/.test(text)));
+  assert.ok(texts.some((text) => /角 (start|end) を [\d.]+mm スライド/.test(text)));
+  // fit-a4 は 1 行のラベル帯なので、縫い代の扱いは寸法行に畳んで出す（band の dimText と同じ流儀）。
+  assert.ok(texts.some((text) => text.includes("縫い代なし（仕上がり線のみ）")));
+});
+
+test("propose --cut: --corner で Δ を吸う角を上書きできる（既定は slide 最小）", () => {
+  // 守る仕様: どの角で吸うかは V1（カップリング）の判断で人が持つ。既定は最小移動だが `--corner` で選べる。
+  const autoDir = mkdtempSync(join(tmpdir(), "truer-seam-cut-auto-"));
+  const startDir = mkdtempSync(join(tmpdir(), "truer-seam-cut-start-"));
+  const endDir = mkdtempSync(join(tmpdir(), "truer-seam-cut-end-"));
+
+  assert.equal(runSeamCut(autoDir).status, 0);
+  assert.equal(runSeamCut(startDir, ["--corner", "start"]).status, 0);
+  assert.equal(runSeamCut(endDir, ["--corner", "end"]).status, 0);
+
+  const label = (dir: string): string =>
+    svgTexts(join(dir, "cut.prop_001.svg")).find((text) => text.includes("角 ")) ?? "";
+  assert.match(label(startDir), /角 start を/);
+  assert.match(label(endDir), /角 end を/);
+  // 既定はどちらか一方（最小 slide）に決まる = 両方に一致することはない。
+  assert.ok(/角 (start|end) を/.test(label(autoDir)));
+  assert.notEqual(label(startDir), label(endDir));
+});
+
+test("propose --cut: reference 未決（linkTarget なし）の seam は裁てないので何も書かない", () => {
+  // 守る仕様: どちらの辺をどの長さに合わせるか決まっていない提案から輪郭を捏造しない（T6/T8）。
+  //   band が targetBandLengthMm 無しを skip するのと同型。
+  const dir = mkdtempSync(join(tmpdir(), "truer-seam-cut-noref-"));
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const reportPath = writeSeamCutReport(dir);
+  const slnt = writeSeamCutSlnt(dir);
+  const result = runTruIn(dir, [
+    "propose",
+    "pattern.dxf",
+    "--diagnostic",
+    reportPath,
+    "--out",
+    join(dir, "prop.json"),
+    "--cut",
+    join(dir, "cut.svg"),
+    "--scale",
+    "fit-a4",
+    "--slnt",
+    `node "${slnt}"`
+  ]); // --reference なし = reference 未決
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /裁断できる提案がありません/);
+  assert.deepEqual(
+    readdirSync(dir).filter((file) => file.endsWith(".svg")),
+    []
+  );
+});
+
+test("propose --cut: 曲線隣辺しかない piece は角ごとの理由を出して skip（T8）", () => {
+  // 守る仕様: 曲線隣辺は solve しない（[S5] scope）。推測で角を動かさず、**どの角がなぜ解けなかったか**を
+  //   出して何も書かない。理由を角ごとに出すのは「曲線だから」と「未対応だから」を人が区別できるようにするため。
+  const dir = mkdtempSync(join(tmpdir(), "truer-seam-cut-curved-"));
+  const result = runSeamCut(dir, [], { curvedNeighbors: true });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /cut: skipped FRONT（no-solvable-corner）/);
+  assert.match(result.stdout, /start=curved-neighbor/);
+  assert.match(result.stdout, /end=curved-neighbor/);
+  assert.deepEqual(
+    readdirSync(dir).filter((file) => file.endsWith(".svg")),
+    []
+  );
+});
+
+test("cut: stale proposal（propose 後に DXF が変わった）では seam を裁たず digest 不一致を出す", () => {
+  // 守る仕様: Δ は proposal に**記録された** conform 辺長を基準に計算するのに、当てる相手は今 slnt から取った
+  //   **現在の**点列。DXF が変わっていると基準がずれ、**1:1 で刷った線が目標長に届かない**まま出てしまう
+  //   （人はそれを定規で測って布を裁つ）。記録済み edgeDigest と現在の点列の digest を照合し、食い違えば
+  //   何も書かずに skip する。band cut は絶対長へスケールするのでこの穴が無く、seam 固有の guard。
+  const dir = mkdtempSync(join(tmpdir(), "truer-seam-cut-stale-"));
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const reportPath = writeSeamCutReport(dir);
+  const proposeSlnt = writeSeamCutSlnt(dir); // propose 時の geometry
+  const proposalPath = join(dir, "prop.json");
+  const proposeResult = runTruIn(dir, [
+    "propose",
+    "pattern.dxf",
+    "--diagnostic",
+    reportPath,
+    "--reference",
+    "BACK",
+    "--out",
+    proposalPath,
+    "--slnt",
+    `node "${proposeSlnt}"`
+  ]);
+  assert.equal(proposeResult.status, 0, proposeResult.stderr);
+
+  // cut では conform 辺の中間頂点がずれた別 geometry を返す（= 型紙が変わった）。
+  const staleSlnt = writeSeamCutSlnt(dir, { shiftConform: true, fileName: "shifted-slnt.js" });
+  const cutResult = runTruIn(dir, [
+    "cut",
+    "pattern.dxf",
+    "--proposal",
+    proposalPath,
+    "--scale",
+    "fit-a4",
+    "--out",
+    join(dir, "cut.svg"),
+    "--slnt",
+    `node "${staleSlnt}"`
+  ]);
+
+  assert.equal(cutResult.status, 0, cutResult.stderr); // advisory なので exit 0（何も書かないだけ）
+  assert.match(cutResult.stdout, /stale proposal/);
+  assert.match(cutResult.stdout, /digest が propose 時と違います/);
+  assert.deepEqual(
+    readdirSync(dir).filter((file) => file.endsWith(".svg")),
+    []
+  );
+});
+
+// stale 系 3 本の共通ルーチン: propose 時の geometry で proposal を作り、cut では別 geometry を返す stub を使う。
+function runSeamCutWithDrift(
+  label: string,
+  drift: {
+    shiftConform?: boolean;
+    shiftReference?: boolean;
+    shiftNeighbor?: boolean;
+    mirrorNeighbor?: boolean;
+  }
+): { stdout: string; status: number | null; svgs: string[] } {
+  const dir = mkdtempSync(join(tmpdir(), `truer-seam-drift-${label}-`));
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const reportPath = writeSeamCutReport(dir);
+  const proposeSlnt = writeSeamCutSlnt(dir); // propose 時の geometry
+  const proposalPath = join(dir, "prop.json");
+  const proposed = runTruIn(dir, [
+    "propose",
+    "pattern.dxf",
+    "--diagnostic",
+    reportPath,
+    "--reference",
+    "BACK",
+    "--out",
+    proposalPath,
+    "--slnt",
+    `node "${proposeSlnt}"`
+  ]);
+  assert.equal(proposed.status, 0, proposed.stderr);
+
+  const driftedSlnt = writeSeamCutSlnt(dir, { ...drift, fileName: "drifted-slnt.js" });
+  const result = runTruIn(dir, [
+    "cut",
+    "pattern.dxf",
+    "--proposal",
+    proposalPath,
+    "--scale",
+    "fit-a4",
+    "--out",
+    join(dir, "cut.svg"),
+    "--slnt",
+    `node "${driftedSlnt}"`
+  ]);
+  return {
+    stdout: result.stdout,
+    status: result.status,
+    svgs: readdirSync(dir).filter((file) => file.endsWith(".svg"))
+  };
+}
+
+test("cut: reference 辺だけが変わっても stale として裁たない（目標長の根拠が古い）", () => {
+  // 守る仕様: `targetFinishedMm` は propose 時の **reference 辺**の長さから決まる。conform 辺の digest だけ見ても、
+  //   reference 辺（多くは別 BLOCK）が変わっていれば目標が古く、**相手ピースと合わない長さに裁つ**ことになる。
+  //   reference 辺の digest も記録されているので照合し、食い違えば書かずに skip する。
+  const run = runSeamCutWithDrift("ref", { shiftReference: true });
+
+  assert.equal(run.status, 0); // advisory なので exit 0（何も書かないだけ）
+  assert.match(run.stdout, /stale proposal/);
+  assert.match(run.stdout, /reference 辺 BACK/);
+  assert.match(run.stdout, /目標長/);
+  assert.deepEqual(run.svgs, []);
+});
+
+test("cut: 隣辺だけが変わっても stale として裁たない（人が見た corner-slide と違う輪郭を刷らない）", () => {
+  // 守る仕様: 角を滑らせる先の隣辺は conform でも reference でもない。その identity は
+  //   `cornerSlide.candidates[].slideAlong.edgeDigest` に記録されているので、core が実際に使った隣辺の digest と
+  //   照合する。ずれていれば「見せたものと違う輪郭を刷る」ことになるので裁たない（T2 の精神）。
+  const run = runSeamCutWithDrift("nb", { shiftNeighbor: true });
+
+  assert.equal(run.status, 0);
+  assert.match(run.stdout, /stale proposal/);
+  assert.match(run.stdout, /隣辺が propose 時と違います/);
+  assert.deepEqual(run.svgs, []);
+});
+
+test("cut: 同長・鏡像の隣辺変更も stale として裁たない（スカラーでは同一性を判定できない）", () => {
+  // 守る仕様: 共有角と conform 隣接頂点を通る直線について隣辺を**鏡像**にすると、この反射は
+  //   `d·(C−V)` と `|CN|` を保つので **slide 量・隣辺長（before/after）・conform 辺長がすべて完全一致**する。
+  //   実測: どちらも slide 34.936mm / 隣辺 300.666→265.73mm。ところが滑った先の角は
+  //   (202.324, 34.858) と (206.475, -34.331) で**別の点**＝別の輪郭が 1:1 で刷られる。
+  //   したがって数値の一致で「同じ隣辺」と判断してはならない。identity は digest で見る。
+  const run = runSeamCutWithDrift("mirror", { mirrorNeighbor: true });
+
+  assert.equal(run.status, 0);
+  assert.match(run.stdout, /stale proposal/);
+  assert.match(run.stdout, /隣辺が propose 時と違います/);
+  assert.deepEqual(run.svgs, []);
+});
+
+test("cut: ファイル名に使えない proposal.id では書かない（--out の外へ書かせない・T1）", () => {
+  // 守る仕様: `proposal.id` は出力名（`<base>.<id>.…`）に混ざるが、proposal JSON は**外部入力**で schema の
+  //   検証は「非空文字列」までしか縛らない。パス区切りや `..` を含む id を素で連結すると mkdir と併せて
+  //   **--out の外にディレクトリを作って書ける**。「頼んでいない場所へ書かない」（T1）ので書かずに skip する。
+  //   黙って別名に書き換えないのは、別 id が同名に潰れて上書きしうるため（id を挟む目的が壊れる）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-seam-cut-id-"));
+  writeFileSync(join(dir, "pattern.dxf"), "x");
+  const reportPath = writeSeamCutReport(dir);
+  const slnt = writeSeamCutSlnt(dir);
+  const proposalPath = join(dir, "prop.json");
+  assert.equal(
+    runTruIn(dir, [
+      "propose",
+      "pattern.dxf",
+      "--diagnostic",
+      reportPath,
+      "--reference",
+      "BACK",
+      "--out",
+      proposalPath,
+      "--slnt",
+      `node "${slnt}"`
+    ]).status,
+    0
+  );
+
+  // 出来上がった valid な proposal の id だけを、パス脱出を狙う値に差し替える（schema は通ってしまう）。
+  const file = JSON.parse(readFileSync(proposalPath, "utf8")) as { proposals: { id: string }[] };
+  file.proposals[0]!.id = "../../escaped";
+  writeFileSync(proposalPath, JSON.stringify(file));
+
+  const outDir = mkdtempSync(join(tmpdir(), "truer-seam-cut-out-"));
+  const result = runTruIn(dir, [
+    "cut",
+    "pattern.dxf",
+    "--proposal",
+    proposalPath,
+    "--scale",
+    "fit-a4",
+    "--out",
+    join(outDir, "cut.svg"),
+    "--slnt",
+    `node "${slnt}"`
+  ]);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /ファイル名に使えません/);
+  // --out のディレクトリにも、その外（親）にも SVG は書かれない。
+  assert.deepEqual(
+    readdirSync(outDir).filter((file) => file.endsWith(".svg")),
+    []
+  );
+  assert.equal(existsSync(join(dirname(outDir), "escaped.svg")), false);
+});
+
+test("propose --cut: band と seam が同じ run に来てもファイル名が衝突しない", () => {
+  // 守る仕様: band は「複数のときだけ id を挟む」規約なので単体なら素の cut.svg に書く。seam は **常に id を挟む**
+  //   ことで、band 単体 + seam 単体でも両方が残る（片方が上書きで消えない）。
+  const dir = mkdtempSync(join(tmpdir(), "truer-seam-cut-both-"));
+  const result = runSeamCut(dir, [], {}, { withBand: true });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /cut: WAISTBAND \(fit-a4\)/);
+  assert.match(result.stdout, /cut: FRONT seam \(fit-a4\)/);
+  assert.equal(existsSync(join(dir, "cut.svg")), true); // band（単体なので素の out）
+  // seam 診断が report の 1 件目なので seam = prop_001（band = prop_002）。seam は常に id つき。
+  assert.equal(existsSync(join(dir, "cut.prop_001.svg")), true);
+  // band 側のラベルは band のまま（seam のラベルが混ざらない）。
+  assert.ok(svgTexts(join(dir, "cut.svg")).every((text) => !text.includes("seam conform")));
 });
 
 // ---- propose -> apply 統合（実 subprocess の slnt stub 越し。A1 境界を CLI レベルで固定）----
