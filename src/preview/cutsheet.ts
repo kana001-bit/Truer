@@ -59,8 +59,15 @@ const INK = "#111827";
 const MUTED = "#6b7280";
 
 // レンダリングに要る派生値をまとめる。cut = 裁ち線（外側・実線）、net = 仕上がり線（内側・破線、縫い代>0 時のみ）。
+// ページ機構（fit-a4 のミニチュア / actual のカバー + A4 タイル）が要る情報だけを持つ**中立な**枠。
+// band 輪郭と seam の piece 輪郭で「描くもの」は違うが「刷り方」は同じなので、ここを共有して entry point を
+// 2 つ（`renderBandCutsheet` / `renderPieceCutsheet`）にする。band 固有の寸法文（`dimText`）や注記は
+// **呼び出し側が文字列にしてから**渡す（レンダラが band の型を知らない = piece でも同じ機構が使える）。
 interface Frame {
-  readonly input: BandCutsheetInput;
+  readonly title?: string; // 見出し（BLOCK 名 / part 名など）
+  readonly heading: string; // カバーページ 1 行目（"band cutsheet — 実寸(1:1) 印刷" 等）
+  readonly dimLine: string; // 寸法・縫い代の 1 行（内容は呼び出し側が組む）
+  readonly extraNote?: string; // 追加注記（曲線バンドの縫い代未対応 / piece の縫い代含まずなど）
   readonly box: Box; // extent は裁ち線（外側）で取る。
   readonly contentW: number;
   readonly contentH: number;
@@ -69,8 +76,6 @@ interface Frame {
   readonly allowance: number;
   // わ辺（縫い代 0）の netCorners index。onFold 指定 + 縫い代>0 のときだけ。ラベル・注記に使う。
   readonly foldIndex?: number;
-  // 曲線バンドで --seam-allowance>0 が要求されたが未対応で無視した（net 線のみ）ときの注記フラグ。
-  readonly curvedSeamAllowanceIgnored: boolean;
 }
 
 // SVG 数値の決定的な整形（3 桁で丸め、末尾ゼロは String に任せる）。
@@ -181,15 +186,51 @@ export function renderBandCutsheet(input: BandCutsheetInput): CutsheetPage[] {
   const contentW = Math.max(box.maxX - box.minX, 1e-6);
   const contentH = Math.max(box.maxY - box.minY, 1e-6);
   const frame: Frame = {
-    input,
+    ...(input.title !== undefined ? { title: input.title } : {}),
+    heading: "band cutsheet — 実寸(1:1) 印刷",
+    dimLine: dimText(input.outline, allowance, foldIndex !== undefined, curvedSeamAllowanceIgnored),
+    ...(curvedSeamAllowanceIgnored
+      ? { extraNote: "曲線バンドは縫い代未対応（仕上がり線のみ）。裁つときは手で縫い代を足す。" }
+      : {}),
     box,
     contentW,
     contentH,
     cutCorners,
     netCorners,
     allowance,
-    curvedSeamAllowanceIgnored,
     ...(foldIndex !== undefined ? { foldIndex } : {})
+  };
+  return input.scale === "fit-a4"
+    ? [{ label: "", svg: renderFitA4(frame) }]
+    : renderActualPages(frame);
+}
+
+// seam cut（seam_length_mismatch を corner-slide で合わせた**ピース輪郭**）を刷る。band と同じページ機構を通すが、
+// **仕上がり線のみ**（縫い代なし・わ辺なし）。piece 輪郭は矩形ではないので `offsetRectangleOutward` が使えず、
+// 任意の閉じた折れ線を外側へオフセットするのは別問題 — 曲線バンドが縫い代未対応で注記だけ出すのと同じ扱いにする。
+export interface PieceCutsheetInput {
+  // 補正後の閉じたピース輪郭（`computeSeamCutOutline` の corners）。
+  readonly corners: readonly Point[];
+  readonly scale: CutScale;
+  readonly title?: string; // 見出し（conform 辺の BLOCK 名など）
+  // 寸法の 1 行（"conform 辺 228.9 → 236.9mm / 角 end を 8.755mm スライド" など）。呼び出し側が組む。
+  readonly dimLine: string;
+}
+
+export function renderPieceCutsheet(input: PieceCutsheetInput): CutsheetPage[] {
+  const corners = input.corners;
+  const box = boxOf(corners);
+  const frame: Frame = {
+    ...(input.title !== undefined ? { title: input.title } : {}),
+    heading: "seam cutsheet — 実寸(1:1) 印刷",
+    dimLine: input.dimLine,
+    extraNote: "**縫い代は含まれません**（仕上がり線のみ）。裁つときは手で縫い代を足す。",
+    box,
+    contentW: Math.max(box.maxX - box.minX, 1e-6),
+    contentH: Math.max(box.maxY - box.minY, 1e-6),
+    cutCorners: corners, // 縫い代 0 なので裁ち線 = 仕上がり線（band の allowance 0 と同じ扱い）
+    netCorners: corners,
+    allowance: 0
   };
   return input.scale === "fit-a4"
     ? [{ label: "", svg: renderFitA4(frame) }]
@@ -222,7 +263,7 @@ function scaleBar(x: number, y: number, scale: number): string {
 }
 
 function renderFitA4(frame: Frame): string {
-  const { input, box, contentW, contentH, cutCorners, netCorners, allowance } = frame;
+  const { box, contentW, contentH, cutCorners, netCorners, allowance } = frame;
   const landscape = contentW >= contentH;
   const pageW = landscape ? A4_LONG_MM : A4_SHORT_MM;
   const pageH = landscape ? A4_SHORT_MM : A4_LONG_MM;
@@ -239,19 +280,8 @@ function renderFitA4(frame: Frame): string {
     closedPath(cutCorners, toXY, INK, 0.4), // 裁ち線（外側・実線）。縫い代 0 なら net と同一。
     allowance > 0 ? closedPath(netCorners, toXY, MUTED, 0.3, true) : "", // 仕上がり線（内側・破線）。
     foldLabel(frame, toXY, 4), // わ辺ラベル（fold のときだけ）。
-    input.title ? text(MARGIN_MM, MARGIN_MM - 3, 4, MUTED, input.title) : "",
-    text(
-      MARGIN_MM,
-      labelY,
-      4,
-      INK,
-      dimText(
-        input.outline,
-        allowance,
-        frame.foldIndex !== undefined,
-        frame.curvedSeamAllowanceIgnored
-      )
-    ),
+    frame.title ? text(MARGIN_MM, MARGIN_MM - 3, 4, MUTED, frame.title) : "",
+    text(MARGIN_MM, labelY, 4, INK, frame.dimLine),
     text(
       MARGIN_MM,
       labelY + 6,
@@ -286,7 +316,7 @@ function gridFor(drawW: number, drawH: number, pageW: number, pageH: number): Gr
 }
 
 function renderActualPages(frame: Frame): CutsheetPage[] {
-  const { input, box, contentW, contentH, cutCorners, netCorners, allowance } = frame;
+  const { box, contentW, contentH, cutCorners, netCorners, allowance } = frame;
   const drawW = contentW + 2 * DRAW_MARGIN_MM;
   const drawH = contentH + 2 * DRAW_MARGIN_MM;
   // 向きは総ページ数が少ない方を選ぶ（同数なら portrait）。
@@ -302,18 +332,7 @@ function renderActualPages(frame: Frame): CutsheetPage[] {
   const drawnCut = cutCorners.map(toDraw);
   const drawnNet = allowance > 0 ? netCorners.map(toDraw) : [];
 
-  const pages: CutsheetPage[] = [
-    {
-      label: "calibration",
-      svg: renderCoverPage(
-        input,
-        grid,
-        allowance,
-        frame.foldIndex !== undefined,
-        frame.curvedSeamAllowanceIgnored
-      )
-    }
-  ];
+  const pages: CutsheetPage[] = [{ label: "calibration", svg: renderCoverPage(frame, grid) }];
   let index = 0;
   for (let r = 0; r < grid.rows; r += 1) {
     for (let c = 0; c < grid.cols; c += 1) {
@@ -344,33 +363,21 @@ function calibrationSquare(x: number, y: number): string {
 }
 
 // カバーページ（A4 portrait）: 実寸確認の四角 + 貼り合わせ手順 + タイル地図。
-function renderCoverPage(
-  input: BandCutsheetInput,
-  grid: Grid,
-  allowance: number,
-  hasFold: boolean,
-  curvedNote: boolean
-): string {
+function renderCoverPage(frame: Frame, grid: Grid): string {
+  const allowance = frame.allowance;
+  const hasFold = frame.foldIndex !== undefined;
   const x = PAGE_MARGIN_MM + 6;
   let y = PAGE_MARGIN_MM + 12;
-  const parts: string[] = [text(x, y, 6, INK, "band cutsheet — 実寸(1:1) 印刷")];
+  const parts: string[] = [text(x, y, 6, INK, frame.heading)];
   y += 8;
-  if (input.title) {
-    parts.push(text(x, y, 4, MUTED, input.title));
+  if (frame.title) {
+    parts.push(text(x, y, 4, MUTED, frame.title));
     y += 6;
   }
-  parts.push(text(x, y, 4, INK, dimText(input.outline, allowance, hasFold, curvedNote)));
+  parts.push(text(x, y, 4, INK, frame.dimLine));
   y += 6;
-  if (curvedNote) {
-    parts.push(
-      text(
-        x,
-        y,
-        3.8,
-        MUTED,
-        "曲線バンドは縫い代未対応（仕上がり線のみ）。裁つときは手で縫い代を足す。"
-      )
-    );
+  if (frame.extraNote) {
+    parts.push(text(x, y, 3.8, MUTED, frame.extraNote));
     y += 6;
   }
   y += 4;

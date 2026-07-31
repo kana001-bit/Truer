@@ -66,7 +66,8 @@ function vdot(a: Vec, b: Vec): number {
 
 // 辺が「直線」か。端点（先頭・末尾）を結ぶ直線から全中間頂点の垂直距離が許容内なら true。頂点数ではなく
 // 幾何で判定するので、直線でも中間に collinear 頂点を持つ辺（slnt edges 由来）を曲線と誤らない。
-function isStraightEdge(points: readonly Point[]): boolean {
+// seam cut（`./seamCutOutline.ts`）も「隣辺が直線か」の判定に同じ規則を使うので export する（規則を 2 つ持たない）。
+export function isStraightEdge(points: readonly Point[]): boolean {
   if (points.length < 2) return false;
   const a = points[0]!;
   const b = points[points.length - 1]!;
