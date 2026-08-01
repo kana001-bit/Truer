@@ -973,15 +973,17 @@ async function writeSeamCutsheets(params: {
       ...(params.corner ? { corner: params.corner } : {})
     });
     if (!outline.ok) {
+      // 理由コードは括弧に残し（grep / 機械可読）、人向けの一文は理由ごとに正しいものを出す。
+      // 「解けなかった」と「解けたが出せない形になった」を同じ文言で出すと、次に何をすべきかが伝わらない。
       const detail =
         outline.reason === "no-solvable-corner"
-          ? `角ごとの理由: ${(["start", "end"] as const)
+          ? `corner-slide が解けないため出力しません。角ごとの理由: ${(["start", "end"] as const)
               .map((corner) => `${corner}=${outline.cornerReasons?.[corner] ?? "未試行"}`)
               .join(" / ")}`
-          : outline.reason;
-      process.stdout.write(
-        `cut: skipped ${blockName}（${outline.reason}）— corner-slide が解けないため出力しません。${detail}\n`
-      );
+          : outline.reason === "self-intersecting-outline"
+            ? "角を動かすとピースが自分自身と交差するため出力しません（折り重なった型紙は裁てません）。"
+            : "補正後の輪郭を作れないため出力しません。";
+      process.stdout.write(`cut: skipped ${blockName}（${outline.reason}）— ${detail}\n`);
       continue;
     }
 

@@ -1127,6 +1127,8 @@ function writeSeamCutSlnt(
     // 隣辺を「共有角 (200,0) と conform 隣接頂点 (100,-6) を通る直線」について**鏡像**にする。この反射は
     // |隣辺| と slide 量を厳密に保つので、**スカラー比較では検出できない**（digest でしか捕まらない）。
     mirrorNeighbor?: boolean;
+    // 隣辺（FRONT edge1）に**弦上の中間頂点**を 1 つ足す（実データのノッチ相当）。幾何は変わらない。
+    notchedNeighbor?: boolean;
     fileName?: string;
   } = {}
 ): string {
@@ -1149,7 +1151,9 @@ function writeSeamCutSlnt(
       : "{x:220,y:300}";
   const neighbor1 = options.curvedNeighbors
     ? "[{x:200,y:0},{x:260,y:150},{x:220,y:300}]"
-    : `[{x:200,y:0},${far}]`;
+    : options.notchedNeighbor
+      ? `[{x:200,y:0},{x:210,y:150},${far}]` // (200,0)-(220,300) の弦上（完全に collinear）
+      : `[{x:200,y:0},${far}]`;
   const edge2 = options.curvedNeighbors ? "[{x:220,y:300},{x:0,y:300}]" : `[${far},{x:0,y:300}]`;
   const script = [
     "const a = process.argv.slice(2);",
@@ -1211,7 +1215,7 @@ function writeSeamCutReport(dir: string, options: { withBand?: boolean } = {}): 
 function runSeamCut(
   dir: string,
   extra: string[] = [],
-  slntOptions: { curvedNeighbors?: boolean } = {},
+  slntOptions: { curvedNeighbors?: boolean; notchedNeighbor?: boolean } = {},
   reportOptions: { withBand?: boolean } = {}
 ) {
   writeFileSync(join(dir, "pattern.dxf"), "x");
@@ -1280,6 +1284,27 @@ test("propose --cut: --corner で Δ を吸う角を上書きできる（既定�
   // 既定はどちらか一方（最小 slide）に決まる = 両方に一致することはない。
   assert.ok(/角 (start|end) を/.test(label(autoDir)));
   assert.notEqual(label(startDir), label(endDir));
+});
+
+test("propose --cut: 直線隣辺が中間頂点（ノッチ）を持っていても裁てる（[S7]）", () => {
+  // 守る仕様: 実データの直線辺はノッチ位置が polyline 頂点として載るので中間頂点を持つのが普通。ここで
+  //   諦めると実データではほとんど裁てない（cycling-knickers は 1 件も出なかった）。
+  //   **この経路が通ること自体が結合の証明**でもある: propose が候補（slideAlong.edgeDigest 込み）を
+  //   記録し、cut の 4 段 stale guard がその記録と一致して初めて SVG が書かれる。片方だけ直すと必ず skip する。
+  const notchedDir = mkdtempSync(join(tmpdir(), "truer-seam-cut-notch-"));
+  const plainDir = mkdtempSync(join(tmpdir(), "truer-seam-cut-plain-"));
+  const notched = runSeamCut(notchedDir, [], { notchedNeighbor: true });
+  assert.equal(runSeamCut(plainDir).status, 0);
+
+  assert.equal(notched.status, 0, notched.stderr);
+  assert.match(notched.stdout, /cut: FRONT seam \(fit-a4\)/);
+  assert.equal(existsSync(join(notchedDir, "cut.prop_001.svg")), true);
+
+  // 弦上の頂点は幾何を変えないので、解（角と slide 量）は 2 点隣辺のときと同じでなければならない。
+  const label = (dir: string): string =>
+    svgTexts(join(dir, "cut.prop_001.svg")).find((text) => text.includes("角 ")) ?? "";
+  assert.match(label(notchedDir), /角 end を 34\.9mm スライド/);
+  assert.equal(label(notchedDir), label(plainDir));
 });
 
 test("propose --cut: reference 未決（linkTarget なし）の seam は裁てないので何も書かない", () => {
@@ -1384,6 +1409,7 @@ function runSeamCutWithDrift(
     shiftReference?: boolean;
     shiftNeighbor?: boolean;
     mirrorNeighbor?: boolean;
+    notchedNeighbor?: boolean;
   }
 ): { stdout: string; status: number | null; svgs: string[] } {
   const dir = mkdtempSync(join(tmpdir(), `truer-seam-drift-${label}-`));
@@ -1450,17 +1476,30 @@ test("cut: 隣辺だけが変わっても stale として裁たない（人が�
   assert.deepEqual(run.svgs, []);
 });
 
-test("cut: 同長・鏡像の隣辺変更も stale として裁たない（スカラーでは同一性を判定できない）", () => {
-  // 守る仕様: 共有角と conform 隣接頂点を通る直線について隣辺を**鏡像**にすると、この反射は
-  //   `d·(C−V)` と `|CN|` を保つので **slide 量・隣辺長（before/after）・conform 辺長がすべて完全一致**する。
-  //   実測: どちらも slide 34.936mm / 隣辺 300.666→265.73mm。ところが滑った先の角は
-  //   (202.324, 34.858) と (206.475, -34.331) で**別の点**＝別の輪郭が 1:1 で刷られる。
-  //   したがって数値の一致で「同じ隣辺」と判断してはならない。identity は digest で見る。
-  const run = runSeamCutWithDrift("mirror", { mirrorNeighbor: true });
+test("cut: 同長・同 slide でも隣辺が別物なら stale として裁たない（スカラーでは同一性を判定できない）", () => {
+  // 守る仕様: propose 後に隣辺へ**弦上の頂点が 1 つ増えた**（ノッチ追加の再エクスポート等）状況。幾何としては
+  //   同じ直線なので **slide 量・隣辺長 before/after・conform 辺長がすべて完全一致**し、数値では区別できない。
+  //   それでも刷られる輪郭には頂点が 1 つ増えている（= propose 時に人が見たものと違う）ので、identity は
+  //   digest で見て裁たない。数値の一致を「同じ隣辺」の根拠にしてはならない、を固定する。
+  const run = runSeamCutWithDrift("notch-added", { notchedNeighbor: true });
 
   assert.equal(run.status, 0);
   assert.match(run.stdout, /stale proposal/);
   assert.match(run.stdout, /隣辺が propose 時と違います/);
+  assert.deepEqual(run.svgs, []);
+});
+
+test("cut: 鏡像の隣辺は輪郭が自分と交差するので、その手前で裁たない", () => {
+  // 守る仕様: 共有角と conform 隣接頂点を通る直線について隣辺を**鏡像**にすると、この反射は `d·(C−V)` と
+  //   `|CN|` を保つので slide 量・隣辺長・conform 辺長がすべて一致する（digest guard を入れた元の発見）。
+  //   ただし反射で隣辺はピースの反対側へ回り込むため、**輪郭そのものが交差する**。今はその検査が先に効く。
+  //   どちらの経路でも「裁たない・何も書かない」ことは変わらない — それをここで固定する
+  //   （数値一致だけで同一性を判断しないことの回帰は、上の notch-added が受け持つ）。
+  const run = runSeamCutWithDrift("mirror", { mirrorNeighbor: true });
+
+  assert.equal(run.status, 0);
+  assert.match(run.stdout, /self-intersecting-outline/);
+  assert.match(run.stdout, /自分自身と交差する/);
   assert.deepEqual(run.svgs, []);
 });
 

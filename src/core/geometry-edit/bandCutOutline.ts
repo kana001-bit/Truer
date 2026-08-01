@@ -66,7 +66,11 @@ function vdot(a: Vec, b: Vec): number {
 
 // 辺が「直線」か。端点（先頭・末尾）を結ぶ直線から全中間頂点の垂直距離が許容内なら true。頂点数ではなく
 // 幾何で判定するので、直線でも中間に collinear 頂点を持つ辺（slnt edges 由来）を曲線と誤らない。
-// seam cut（`./seamCutOutline.ts`）も「隣辺が直線か」の判定に同じ規則を使うので export する（規則を 2 つ持たない）。
+// seam cut（`./seamCutOutline.ts` / `../fixes/cornerSlide.ts`）も「隣辺が直線か」の判定に同じ規則を使うので
+// export する（規則を 2 つ持たない）。
+// **保証するのは「弦の近くにある」ことだけで、頂点が端から端へ進むことは保証しない。** 見るのは
+// **無限直線**との距離なので、(0,0)→(20,0)→(10,0) のような**行って戻る** polyline も true になる。
+// 弦に沿った向き・単調性に依存する処理（例: 角を滑らせる `solveCornerSlide`）は、射影の単調増加を別途確認する。
 export function isStraightEdge(points: readonly Point[]): boolean {
   if (points.length < 2) return false;
   const a = points[0]!;

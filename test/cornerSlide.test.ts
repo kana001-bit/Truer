@@ -98,18 +98,170 @@ test("corner-slide solves the start corner symmetrically", () => {
 });
 
 test("corner-slide refuses a curved neighbor (no unique tangent)", () => {
-  // 守る仕様: 隣辺が直線（ちょうど 2 点）でなければ solve しない（設計で確定。preview-only のまま）。
+  // 守る仕様: 隣辺が**幾何的に**直線でなければ solve しない（設計で確定。preview-only のまま）。
+  //           点数ではなく弦からのズレで判定する（中間頂点があるだけの直線辺は下の test で解ける）。
   const result = solveCornerSlide({
     edgePoints: EDGE,
     corner: "end",
     neighborPoints: [
       { x: 0, y: 100 },
-      { x: 25, y: 110 },
+      { x: 25, y: 110 }, // 弦から 10mm 外れる = 曲線
       { x: 50, y: 100 }
     ],
     deltaMm: 5
   });
   assert.deepEqual(result, { ok: false, reason: "curved-neighbor" });
+});
+
+test("corner-slide solves a straight neighbor that carries intermediate vertices", () => {
+  // 守る仕様（[S7]）: 実データの直線辺は collinear な中間頂点を持つのが普通（ノッチ位置が polyline 頂点として
+  //           記録される）。点数で切ると実データではほとんど解けないので、幾何的に直線なら端点へ畳んで解く。
+  //           **畳んでも解は変わらない**ことを、同じ幾何の 2 点版と厳密比較して固定する。
+  const withVertices = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: [
+      { x: 0, y: 100 },
+      { x: 40, y: 100 }, // 弦上（ノッチ相当）。スライド量 √1025≈32mm より遠いので通り越さない。
+      { x: 50, y: 100 }
+    ],
+    deltaMm: 5
+  });
+  const twoPoint = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: PERPENDICULAR_NEIGHBOR,
+    deltaMm: 5
+  });
+  assert.ok(withVertices.ok);
+  assert.deepEqual(withVertices, twoPoint);
+});
+
+test("corner-slide reports the neighbor length as a polyline, not the chord", () => {
+  // 守る仕様: 隣辺長は連動 warning として人が読む（定規で測れる値）。中間頂点がわずかに弦から外れていると
+  //           折れ線長は弦より長いので、折れ線で測る。2 点隣辺では両者が一致するので従来の値は変わらない。
+  //           あわせて、角が隣辺の**末尾**にある向きでも同じ解になること（向きの正規化）を固定する。
+  const forward = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: [
+      { x: 0, y: 100 },
+      { x: 40, y: 100.3 }, // 弦から 0.3mm（直線判定の許容内）
+      { x: 50, y: 100 }
+    ],
+    deltaMm: 5
+  });
+  assert.ok(forward.ok);
+  if (!forward.ok) return;
+  const chordLen = 50;
+  const polylineLen = Math.hypot(40, 0.3) + Math.hypot(10, 0.3);
+  assert.ok(Math.abs(forward.neighborLengthBeforeMm - polylineLen) < 1e-9);
+  assert.ok(forward.neighborLengthBeforeMm > chordLen);
+
+  // 同じ隣辺を逆順（角が末尾）で渡しても同一の解。
+  const reversed = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: [
+      { x: 50, y: 100 },
+      { x: 40, y: 100.3 },
+      { x: 0, y: 100 }
+    ],
+    deltaMm: 5
+  });
+  assert.deepEqual(reversed, forward);
+});
+
+test("corner-slide refuses a neighbor whose vertices backtrack along the chord", () => {
+  // 守る仕様 (T6/T8): `isStraightEdge` は中間頂点と**無限直線**の距離しか見ないので、C→(20,100)→N(10,100) の
+  //   ような**行って戻る** polyline も「直線」と判定される。向きが定まらないものを滑らせると、折り返したままの
+  //   輪郭を**裁断用 SVG として刷ってしまう**（人はそれを 1:1 で布に当てる）。射影の単調増加まで確認して拒否する。
+  const backtracking = [
+    { x: 0, y: 100 },
+    { x: 20, y: 100 }, // N より先へ行って…
+    { x: 10, y: 100 } // …戻る（弦上なので isStraightEdge は true）
+  ];
+  // Δ を小さく取ると解 t≈8.9mm は隣辺長 10mm の内側に収まる = 単調性を見ないと ok になってしまう Δ。
+  const result = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: backtracking,
+    deltaMm: 0.4
+  });
+  assert.deepEqual(result, { ok: false, reason: "backtracking-neighbor" });
+
+  // 同じ点を単調な順に並べれば（C→(10,100)→N(20,100)）解ける = 拒んでいるのは折り返しであって点数ではない。
+  const monotonic = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: [
+      { x: 0, y: 100 },
+      { x: 10, y: 100 },
+      { x: 20, y: 100 }
+    ],
+    deltaMm: 0.4
+  });
+  assert.ok(monotonic.ok);
+
+  // 重複頂点（射影が進まない）も、どちらが生きているか決められないので同じく拒否する。
+  const duplicated = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: [
+      { x: 0, y: 100 },
+      { x: 10, y: 100 },
+      { x: 10, y: 100 },
+      { x: 20, y: 100 }
+    ],
+    deltaMm: 0.4
+  });
+  assert.deepEqual(duplicated, { ok: false, reason: "backtracking-neighbor" });
+});
+
+test("corner-slide refuses to slide past an intermediate vertex of the neighbor", () => {
+  // 守る仕様（T6）: 差し替えるのは共有角 1 点だけで、中間頂点は動かさない（実データではノッチ位置）。
+  //           滑らせる先がその頂点に届くと、通り越した輪郭は折り返す — 頂点を黙って捨てたり動かしたりせず
+  //           解かない。理由も "no-solution"（幾何的に届かない）と混ぜない。
+  const slanted = [
+    { x: 0, y: 100 },
+    { x: 100, y: 200 }
+  ];
+  // 同じ幾何で、中間頂点だけを足したもの。頂点は C から 3mm の位置（解は約 6.9mm 先）。
+  const blocked = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: [slanted[0]!, { x: 3 / Math.SQRT2, y: 100 + 3 / Math.SQRT2 }, slanted[1]!],
+    deltaMm: 5
+  });
+  assert.deepEqual(blocked, { ok: false, reason: "slide-past-neighbor-vertex" });
+
+  // 中間頂点が無ければ同じ Δ・同じ直線で解ける = 阻んでいるのは頂点であって幾何ではない。
+  const unblocked = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: slanted,
+    deltaMm: 5
+  });
+  assert.ok(unblocked.ok);
+});
+
+test("corner-slide does not switch to the far root when a vertex blocks the minimal one", () => {
+  // 守る仕様 (T6/T8): 採るのは |t| 最小の根だけ。最小根が中間頂点に阻まれたとき、もう片方の根（伸長時は
+  //           符号が逆で遥かに遠い）へ乗り換えない。それは「最小・局所」ではない大きな外向き移動で、角が
+  //           元の隣辺の外へ出るぶん**ピースの別の辺と交差した輪郭**を作りうる（2026-08-01 レビューで実例）。
+  //           裁てる解が無いなら、代わりの大きな解を勝手に選ばず解けないと言う。
+  const result = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: [
+      { x: 0, y: 100 },
+      { x: 20, y: 100 }, // 正方向の解 +√1025≈32mm はこの頂点を通り越す
+      { x: 50, y: 100 }
+    ],
+    deltaMm: 5
+  });
+  // 反対根 −√1025 は隣辺長 50mm の範囲内だが、それを採ってはいけない。
+  assert.deepEqual(result, { ok: false, reason: "slide-past-neighbor-vertex" });
 });
 
 test("corner-slide refuses a neighbor that does not share the corner", () => {
@@ -161,14 +313,15 @@ test("corner-slide refuses degenerate geometry (zero-length segment or neighbor)
 
 test("corner-slide reports no-solution instead of emitting broken numbers", () => {
   // 守る仕様 (T8/T10): 幾何的に届かないケースは no-solution。
-  // (1) 縮めすぎ: 末端 segment 長が 0 以下になる。
+  // (1) 縮めすぎ（末端 segment 長が 0 以下）は**別の理由**にする: 機構の容量オーバーであって、
+  //     「隣辺の向きでは届かない」とは原因が違う（実データで実際に当たる壁なので取り違えさせない）。
   const collapsed = solveCornerSlide({
     edgePoints: EDGE,
     corner: "end",
     neighborPoints: PERPENDICULAR_NEIGHBOR,
     deltaMm: -100
   });
-  assert.deepEqual(collapsed, { ok: false, reason: "no-solution" });
+  assert.deepEqual(collapsed, { ok: false, reason: "delta-exceeds-end-segment" });
 
   // (2) 垂直隣辺で縮める: 隣辺直線上のどの点も V から 100mm 以上（判別式 < 0）。
   const unreachable = solveCornerSlide({

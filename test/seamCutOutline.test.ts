@@ -135,21 +135,139 @@ test("computeSeamCutOutline: 曲線隣辺は解かず理由を返す（T8・[S5]
   assert.equal(result.cornerReasons?.end, "curved-neighbor");
 });
 
-test("computeSeamCutOutline: 直線だが中間頂点を持つ隣辺は curved と混ぜず「未対応」として区別する", () => {
-  // 守る仕様: 実データの直線辺は collinear な中間頂点を持ちうる（slnt edges 由来）。solver は 2 点しか
-  //   受けないのでこのスライスでは扱わないが、"curved-neighbor" と同じ理由にすると「曲線だから無理」と
-  //   誤読させる。**扱えないのは実装の都合**だと分かる別の理由で返す（将来の拡張ポイントの目印）。
+test("computeSeamCutOutline: 直線だが中間頂点を持つ隣辺でも裁てる（中間頂点は動かさない）", () => {
+  // 守る仕様（[S7]）: 実データの直線辺は collinear な中間頂点を持つ（ノッチ位置が polyline 頂点として
+  //   記録される）。ここで諦めると実データではほとんど裁てない。解いたうえで **中間頂点は 1 つも動かさない**
+  //   （T6。動かすとノッチが移動する）ことまで固定する — 動くのは共有角 1 点だけ。
   const edges = trapezoidEdges();
-  edges[1] = [
-    { x: 200, y: 0 },
-    { x: 210, y: 150 }, // (200,0)-(220,300) 上のほぼ中点 = collinear
-    { x: 220, y: 300 }
-  ];
+  const notch = { x: 210, y: 150 }; // (200,0)-(220,300) の弦上 = collinear（ノッチ相当）
+  edges[1] = [{ x: 200, y: 0 }, notch, { x: 220, y: 300 }];
+  const before = edges.flatMap((edge) => edge.slice(0, -1));
+
+  const result = computeSeamCutOutline({ edges, conformEdgeIndex: 0, deltaMm: 10, corner: "end" });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  assert.equal(result.outline.conformToLengthMm, 210); // 目標長（200 + 10）を実測で満たす
+  assert.equal(result.outline.neighborEdgeIndex, 1);
+
+  const after = result.outline.corners;
+  const moved = after.filter(
+    (point, index) => point.x !== before[index]!.x || point.y !== before[index]!.y
+  );
+  assert.equal(moved.length, 1, "動いた頂点はちょうど 1 つ（共有角）");
+  assert.ok(
+    after.some((point) => point.x === notch.x && point.y === notch.y),
+    "隣辺の中間頂点（ノッチ）は輪郭にそのまま残る"
+  );
+});
+
+test("computeSeamCutOutline: 中間頂点を通り越す解は裁てないと言う（理由を no-solution と分ける）", () => {
+  // 守る仕様（T6/T8）: 中間頂点を通り越すと輪郭が折り返す。頂点を黙って捨てず、理由を分けて出す
+  //   （「幾何的に届かない」ではなく「頂点に阻まれた」と分かる形で人へ渡す）。
+  // 隣辺を 45° に倒すと 2 根が非対称になり（+13.8mm / −296.7mm）、隣辺長 100mm では負の根も範囲外。
+  // そこへ共有角から 3mm の中間頂点を置くと、唯一届いていた +13.8mm の解が頂点に阻まれる。
+  const along = (mm: number) => ({ x: 200 + mm / Math.SQRT2, y: mm / Math.SQRT2 });
+  const edges = trapezoidEdges();
+  edges[1] = [{ x: 200, y: 0 }, along(3), along(100)];
+  edges[2] = [along(100), { x: 0, y: 300 }];
 
   const result = computeSeamCutOutline({ edges, conformEdgeIndex: 0, deltaMm: 10, corner: "end" });
   assert.equal(result.ok, false);
   if (result.ok) return;
-  assert.equal(result.cornerReasons?.end, "multi-vertex-straight-neighbor");
+  assert.equal(result.reason, "no-solvable-corner");
+  assert.equal(result.cornerReasons?.end, "slide-past-neighbor-vertex");
+});
+
+// 角を動かすと離れた辺と交差しうるピース（凹形）。conform=edge0、その end 角 (0,100) を右へ滑らせると、
+// 新しい conform 辺 (0,0)→(新角) が edge3 (50,60)→(5,45) を横切る。solver は conform 辺と隣辺しか見ないので
+// この交差には気づけない — 輪郭を組んだ後でしか判定できない。
+function concavePieceEdges(): Point[][] {
+  return [
+    [
+      { x: 0, y: 0 },
+      { x: 0, y: 100 }
+    ], // edge0 = conform
+    [
+      { x: 0, y: 100 },
+      { x: 50, y: 100 }
+    ], // edge1 = end 側の直線隣辺
+    [
+      { x: 50, y: 100 },
+      { x: 50, y: 60 }
+    ],
+    [
+      { x: 50, y: 60 },
+      { x: 5, y: 45 }
+    ], // 交差する相手
+    [
+      { x: 5, y: 45 },
+      { x: 60, y: 10 }
+    ],
+    [
+      { x: 60, y: 10 },
+      { x: 0, y: 0 }
+    ]
+  ];
+}
+
+test("computeSeamCutOutline: 角を動かして輪郭が自分と交差したら出さない", () => {
+  // 守る仕様 (T8): cut の成果物は 1:1 で刷って布を裁つ線。折り重なった型紙を「裁てます」と渡さない。
+  //   solver は conform 辺と隣辺しか見ないので、離れた辺との交差は輪郭を組んだここでしか判定できない。
+  const crossing = computeSeamCutOutline({
+    edges: concavePieceEdges(),
+    conformEdgeIndex: 0,
+    deltaMm: 5, // 角が約 32mm 滑り、edge3 を横切る
+    corner: "end"
+  });
+  assert.equal(crossing.ok, false);
+  if (crossing.ok) return;
+  assert.equal(crossing.reason, "self-intersecting-outline");
+
+  // 同じピースでも滑る量が小さければ交差しない = 交差検査が正常な解まで潰していないことの対照。
+  const fine = computeSeamCutOutline({
+    edges: concavePieceEdges(),
+    conformEdgeIndex: 0,
+    deltaMm: 0.1, // 角は約 4.5mm しか動かず edge3 に届かない
+    corner: "end"
+  });
+  assert.ok(fine.ok);
+});
+
+test("computeSeamCutOutline: 丸めた後に頂点へ乗る輪郭も出さない（検査は emit 後の配列で）", () => {
+  // 守る仕様 (T10 と T8 の接点): 出力座標は emit 境界で 0.001mm に丸める。丸める**前**の座標で交差を検査すると、
+  //   紙一重で外れていた線が丸めで頂点に乗るケースを通してしまう（検査した形と刷られる形が別物になる）。
+  //   ここでは新しい角の x = 9.9996 が (5,50) をわずかに外れるが、丸めると x = 10.000 になり、
+  //   (0,0)→(10,100) はちょうど非隣接頂点 (5,50) を通る＝自己接触した型紙になる。
+  const edges: Point[][] = [
+    [
+      { x: 0, y: 0 },
+      { x: 0, y: 100 }
+    ], // conform（end 角 = (0,100)、V = (0,0)）
+    [
+      { x: 0, y: 100 },
+      { x: 60, y: 100 }
+    ], // 直線隣辺
+    [
+      { x: 60, y: 100 },
+      { x: 5, y: 50 }
+    ], // (5,50) が非隣接頂点として輪郭に入る
+    [
+      { x: 5, y: 50 },
+      { x: 60, y: 10 }
+    ],
+    [
+      { x: 60, y: 10 },
+      { x: 0, y: 0 }
+    ]
+  ];
+  // t = 9.9996 になる Δ（末端 segment 100mm・垂直隣辺なので t = √(target²−100²)）。
+  const slide = 9.9996;
+  const deltaMm = Math.sqrt(100 * 100 + slide * slide) - 100;
+
+  const result = computeSeamCutOutline({ edges, conformEdgeIndex: 0, deltaMm, corner: "end" });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, "self-intersecting-outline");
 });
 
 test("computeSeamCutOutline: 閉ループでない / index 範囲外 / 退化は推測せず理由付きで諦める", () => {
