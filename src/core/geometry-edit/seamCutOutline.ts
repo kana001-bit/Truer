@@ -217,8 +217,14 @@ export function computeSeamCutOutline(input: SeamCutOutlineInput): SeamCutOutlin
       : cornerIndexOfEdgeStart[(conformEdgeIndex + 1) % count]!;
   loop[replaceIndex] = best.newCorner;
 
+  // ここが cut 成果物の emit 境界なので、座標はここで丸める（band 輪郭と同じ流儀・T10）。
+  const corners = loop.map(roundPoint);
+
   // 角を動かした結果ピースが自分自身と交差したら出さない（上の movedCornerCrosses のコメント参照）。
-  if (movedCornerCrosses(loop, replaceIndex)) {
+  // **検査は丸めた後の配列に対して行い、その同じ配列を返す。** 丸め前で判定すると、紙一重で外れていた線が
+  // 丸めで頂点に乗る（0.001mm 単位に量子化されるので実際に起きる）ケースを通してしまう — 検査した形と
+  // 刷られる形が別物になる。
+  if (movedCornerCrosses(corners, replaceIndex)) {
     return { ok: false, reason: "self-intersecting-outline" };
   }
 
@@ -227,11 +233,10 @@ export function computeSeamCutOutline(input: SeamCutOutlineInput): SeamCutOutlin
   if (best.corner === "start") conformAfter[0] = best.newCorner;
   else conformAfter[conformAfter.length - 1] = best.newCorner;
 
-  // ここが cut 成果物の emit 境界なので、座標と長さはここで丸める（band 輪郭と同じ流儀・T10）。
   return {
     ok: true,
     outline: {
-      corners: loop.map(roundPoint),
+      corners,
       corner: best.corner,
       neighborEdgeIndex: best.neighborEdgeIndex,
       conformFromLengthMm: roundCoord(conformFromLengthMm),

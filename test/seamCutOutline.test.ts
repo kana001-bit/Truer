@@ -233,6 +233,43 @@ test("computeSeamCutOutline: 角を動かして輪郭が自分と交差したら
   assert.ok(fine.ok);
 });
 
+test("computeSeamCutOutline: 丸めた後に頂点へ乗る輪郭も出さない（検査は emit 後の配列で）", () => {
+  // 守る仕様 (T10 と T8 の接点): 出力座標は emit 境界で 0.001mm に丸める。丸める**前**の座標で交差を検査すると、
+  //   紙一重で外れていた線が丸めで頂点に乗るケースを通してしまう（検査した形と刷られる形が別物になる）。
+  //   ここでは新しい角の x = 9.9996 が (5,50) をわずかに外れるが、丸めると x = 10.000 になり、
+  //   (0,0)→(10,100) はちょうど非隣接頂点 (5,50) を通る＝自己接触した型紙になる。
+  const edges: Point[][] = [
+    [
+      { x: 0, y: 0 },
+      { x: 0, y: 100 }
+    ], // conform（end 角 = (0,100)、V = (0,0)）
+    [
+      { x: 0, y: 100 },
+      { x: 60, y: 100 }
+    ], // 直線隣辺
+    [
+      { x: 60, y: 100 },
+      { x: 5, y: 50 }
+    ], // (5,50) が非隣接頂点として輪郭に入る
+    [
+      { x: 5, y: 50 },
+      { x: 60, y: 10 }
+    ],
+    [
+      { x: 60, y: 10 },
+      { x: 0, y: 0 }
+    ]
+  ];
+  // t = 9.9996 になる Δ（末端 segment 100mm・垂直隣辺なので t = √(target²−100²)）。
+  const slide = 9.9996;
+  const deltaMm = Math.sqrt(100 * 100 + slide * slide) - 100;
+
+  const result = computeSeamCutOutline({ edges, conformEdgeIndex: 0, deltaMm, corner: "end" });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, "self-intersecting-outline");
+});
+
 test("computeSeamCutOutline: 閉ループでない / index 範囲外 / 退化は推測せず理由付きで諦める", () => {
   // 守る仕様（鳴ってはいけない面）: 前提が崩れた入力で輪郭を捏造しない。ループ順で隣辺を選ぶ設計なので、
   //   辺が繋がっていなければ「k±1 が隣辺」という前提自体が無効。
