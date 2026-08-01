@@ -13,7 +13,6 @@
 
 import type { Point } from "../proposal/proposalSchema.ts";
 import { roundCoord, roundPoint } from "./index.ts";
-import { isStraightEdge } from "./bandCutOutline.ts";
 import { solveCornerSlide } from "../fixes/cornerSlide.ts";
 
 // 連続する辺の端点が「同じ角」とみなせる距離（mm）。band 輪郭と同じ規則（slnt edges は同一 DXF 頂点を
@@ -33,16 +32,16 @@ export interface SeamCutOutlineInput {
   readonly corner?: SeamCutCorner;
 }
 
-// 角ごとに「なぜ解けなかったか」。`solveCornerSlide` の理由に、こちら側で判定する
-// multi-vertex-straight-neighbor（幾何的には直線だが中間頂点を持つ隣辺）を足したもの。
-// 後者は solver が 2 点しか受けないため**このスライスでは扱わない**が、"curved-neighbor" と混ぜると
-// 「曲線だから無理」と誤読させるので理由を分ける（正直に「未対応」と言う）。
+// 角ごとに「なぜ解けなかったか」= `solveCornerSlide` の理由をそのまま人へ渡す。
+// 幾何的に直線な隣辺は中間頂点を持っていても solver が解く（2026-08-01）ので、点数によるここでの
+// 事前 reject は無い。中間頂点に阻まれた場合だけ `slide-past-neighbor-vertex` で区別される。
 export type SeamCutCornerReject =
   | "curved-neighbor"
-  | "multi-vertex-straight-neighbor"
   | "detached-corner"
   | "degenerate"
-  | "no-solution";
+  | "no-solution"
+  | "slide-past-neighbor-vertex"
+  | "delta-exceeds-end-segment";
 
 export type SeamCutOutlineReject =
   "conform-edge-not-found" | "not-a-closed-loop" | "degenerate" | "no-solvable-corner";
@@ -128,15 +127,7 @@ export function computeSeamCutOutline(input: SeamCutOutlineInput): SeamCutOutlin
       corner === "start" ? (conformEdgeIndex - 1 + count) % count : (conformEdgeIndex + 1) % count;
     const neighbor = edges[neighborIndex]!;
 
-    // solver は「直線隣辺 = ちょうど 2 点」しか受けない。幾何的には直線でも中間頂点を持つ辺は、角を滑らせると
-    // 通り過ぎた中間頂点の扱いが決まらない（輪郭が折り返しうる）ので、このスライスでは扱わず理由を分けて返す。
-    if (neighbor.length !== 2) {
-      cornerReasons[corner] = isStraightEdge(neighbor)
-        ? "multi-vertex-straight-neighbor"
-        : "curved-neighbor";
-      continue;
-    }
-
+    // 直線判定（中間頂点の許容も含む）と可解判定は solver が一手に持つ。ここで点数で先に諦めない。
     const solved = solveCornerSlide({
       edgePoints: conform,
       corner,

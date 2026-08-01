@@ -135,21 +135,47 @@ test("computeSeamCutOutline: 曲線隣辺は解かず理由を返す（T8・[S5]
   assert.equal(result.cornerReasons?.end, "curved-neighbor");
 });
 
-test("computeSeamCutOutline: 直線だが中間頂点を持つ隣辺は curved と混ぜず「未対応」として区別する", () => {
-  // 守る仕様: 実データの直線辺は collinear な中間頂点を持ちうる（slnt edges 由来）。solver は 2 点しか
-  //   受けないのでこのスライスでは扱わないが、"curved-neighbor" と同じ理由にすると「曲線だから無理」と
-  //   誤読させる。**扱えないのは実装の都合**だと分かる別の理由で返す（将来の拡張ポイントの目印）。
+test("computeSeamCutOutline: 直線だが中間頂点を持つ隣辺でも裁てる（中間頂点は動かさない）", () => {
+  // 守る仕様（[S7]）: 実データの直線辺は collinear な中間頂点を持つ（ノッチ位置が polyline 頂点として
+  //   記録される）。ここで諦めると実データではほとんど裁てない。解いたうえで **中間頂点は 1 つも動かさない**
+  //   （T6。動かすとノッチが移動する）ことまで固定する — 動くのは共有角 1 点だけ。
   const edges = trapezoidEdges();
-  edges[1] = [
-    { x: 200, y: 0 },
-    { x: 210, y: 150 }, // (200,0)-(220,300) 上のほぼ中点 = collinear
-    { x: 220, y: 300 }
-  ];
+  const notch = { x: 210, y: 150 }; // (200,0)-(220,300) の弦上 = collinear（ノッチ相当）
+  edges[1] = [{ x: 200, y: 0 }, notch, { x: 220, y: 300 }];
+  const before = edges.flatMap((edge) => edge.slice(0, -1));
+
+  const result = computeSeamCutOutline({ edges, conformEdgeIndex: 0, deltaMm: 10, corner: "end" });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  assert.equal(result.outline.conformToLengthMm, 210); // 目標長（200 + 10）を実測で満たす
+  assert.equal(result.outline.neighborEdgeIndex, 1);
+
+  const after = result.outline.corners;
+  const moved = after.filter(
+    (point, index) => point.x !== before[index]!.x || point.y !== before[index]!.y
+  );
+  assert.equal(moved.length, 1, "動いた頂点はちょうど 1 つ（共有角）");
+  assert.ok(
+    after.some((point) => point.x === notch.x && point.y === notch.y),
+    "隣辺の中間頂点（ノッチ）は輪郭にそのまま残る"
+  );
+});
+
+test("computeSeamCutOutline: 中間頂点を通り越す解は裁てないと言う（理由を no-solution と分ける）", () => {
+  // 守る仕様（T6/T8）: 中間頂点を通り越すと輪郭が折り返す。頂点を黙って捨てず、理由を分けて出す
+  //   （「幾何的に届かない」ではなく「頂点に阻まれた」と分かる形で人へ渡す）。
+  // 隣辺を 45° に倒すと 2 根が非対称になり（+13.8mm / −296.7mm）、隣辺長 100mm では負の根も範囲外。
+  // そこへ共有角から 3mm の中間頂点を置くと、唯一届いていた +13.8mm の解が頂点に阻まれる。
+  const along = (mm: number) => ({ x: 200 + mm / Math.SQRT2, y: mm / Math.SQRT2 });
+  const edges = trapezoidEdges();
+  edges[1] = [{ x: 200, y: 0 }, along(3), along(100)];
+  edges[2] = [along(100), { x: 0, y: 300 }];
 
   const result = computeSeamCutOutline({ edges, conformEdgeIndex: 0, deltaMm: 10, corner: "end" });
   assert.equal(result.ok, false);
   if (result.ok) return;
-  assert.equal(result.cornerReasons?.end, "multi-vertex-straight-neighbor");
+  assert.equal(result.reason, "no-solvable-corner");
+  assert.equal(result.cornerReasons?.end, "slide-past-neighbor-vertex");
 });
 
 test("computeSeamCutOutline: 閉ループでない / index 範囲外 / 退化は推測せず理由付きで諦める", () => {

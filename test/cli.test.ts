@@ -1127,6 +1127,8 @@ function writeSeamCutSlnt(
     // 隣辺を「共有角 (200,0) と conform 隣接頂点 (100,-6) を通る直線」について**鏡像**にする。この反射は
     // |隣辺| と slide 量を厳密に保つので、**スカラー比較では検出できない**（digest でしか捕まらない）。
     mirrorNeighbor?: boolean;
+    // 隣辺（FRONT edge1）に**弦上の中間頂点**を 1 つ足す（実データのノッチ相当）。幾何は変わらない。
+    notchedNeighbor?: boolean;
     fileName?: string;
   } = {}
 ): string {
@@ -1149,7 +1151,9 @@ function writeSeamCutSlnt(
       : "{x:220,y:300}";
   const neighbor1 = options.curvedNeighbors
     ? "[{x:200,y:0},{x:260,y:150},{x:220,y:300}]"
-    : `[{x:200,y:0},${far}]`;
+    : options.notchedNeighbor
+      ? `[{x:200,y:0},{x:210,y:150},${far}]` // (200,0)-(220,300) の弦上（完全に collinear）
+      : `[{x:200,y:0},${far}]`;
   const edge2 = options.curvedNeighbors ? "[{x:220,y:300},{x:0,y:300}]" : `[${far},{x:0,y:300}]`;
   const script = [
     "const a = process.argv.slice(2);",
@@ -1211,7 +1215,7 @@ function writeSeamCutReport(dir: string, options: { withBand?: boolean } = {}): 
 function runSeamCut(
   dir: string,
   extra: string[] = [],
-  slntOptions: { curvedNeighbors?: boolean } = {},
+  slntOptions: { curvedNeighbors?: boolean; notchedNeighbor?: boolean } = {},
   reportOptions: { withBand?: boolean } = {}
 ) {
   writeFileSync(join(dir, "pattern.dxf"), "x");
@@ -1280,6 +1284,27 @@ test("propose --cut: --corner で Δ を吸う角を上書きできる（既定�
   // 既定はどちらか一方（最小 slide）に決まる = 両方に一致することはない。
   assert.ok(/角 (start|end) を/.test(label(autoDir)));
   assert.notEqual(label(startDir), label(endDir));
+});
+
+test("propose --cut: 直線隣辺が中間頂点（ノッチ）を持っていても裁てる（[S7]）", () => {
+  // 守る仕様: 実データの直線辺はノッチ位置が polyline 頂点として載るので中間頂点を持つのが普通。ここで
+  //   諦めると実データではほとんど裁てない（cycling-knickers は 1 件も出なかった）。
+  //   **この経路が通ること自体が結合の証明**でもある: propose が候補（slideAlong.edgeDigest 込み）を
+  //   記録し、cut の 4 段 stale guard がその記録と一致して初めて SVG が書かれる。片方だけ直すと必ず skip する。
+  const notchedDir = mkdtempSync(join(tmpdir(), "truer-seam-cut-notch-"));
+  const plainDir = mkdtempSync(join(tmpdir(), "truer-seam-cut-plain-"));
+  const notched = runSeamCut(notchedDir, [], { notchedNeighbor: true });
+  assert.equal(runSeamCut(plainDir).status, 0);
+
+  assert.equal(notched.status, 0, notched.stderr);
+  assert.match(notched.stdout, /cut: FRONT seam \(fit-a4\)/);
+  assert.equal(existsSync(join(notchedDir, "cut.prop_001.svg")), true);
+
+  // 弦上の頂点は幾何を変えないので、解（角と slide 量）は 2 点隣辺のときと同じでなければならない。
+  const label = (dir: string): string =>
+    svgTexts(join(dir, "cut.prop_001.svg")).find((text) => text.includes("角 ")) ?? "";
+  assert.match(label(notchedDir), /角 end を 34\.9mm スライド/);
+  assert.equal(label(notchedDir), label(plainDir));
 });
 
 test("propose --cut: reference 未決（linkTarget なし）の seam は裁てないので何も書かない", () => {
