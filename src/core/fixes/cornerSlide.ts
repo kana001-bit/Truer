@@ -63,13 +63,16 @@ export type CornerSlideResult =
       // delta-exceeds-end-segment: 縮め量が**末端 segment 長を超える**。角を滑らせて変えられるのは
       //              C–V の 1 segment だけなので、この機構の容量を超えている（辺の中身を作り直す別問題）。
       //              実データで実際に起きる: cycling-knickers の outseam は末端 segment 1.4mm に対し Δ −7.8mm。
+      // backtracking-neighbor: 弦の上には乗っているが**行って戻る** polyline（C→N 方向の射影が単調でない）。
+      //              直線に見えて向きが定まらないので滑らせない（そのまま解くと折り返した輪郭を刷ってしまう）。
       reason:
         | "curved-neighbor"
         | "detached-corner"
         | "degenerate"
         | "no-solution"
         | "slide-past-neighbor-vertex"
-        | "delta-exceeds-end-segment";
+        | "delta-exceeds-end-segment"
+        | "backtracking-neighbor";
     };
 
 // polyline の総長（mm）。中間頂点を持つ直線隣辺では chord ではなくこちらを「隣辺の長さ」として報告する
@@ -115,6 +118,26 @@ export function solveCornerSlide(input: CornerSlideInput): CornerSlideResult {
   // 2 点隣辺は常に直線なのでこのゲートは中間頂点を持つ辺にだけ効く。
   if (!isStraightEdge(orientedNeighbor)) return { ok: false, reason: "curved-neighbor" };
 
+  const d = { x: (far.x - c.x) / neighborLen, y: (far.y - c.y) / neighborLen };
+
+  // **`isStraightEdge` だけでは「向き」を保証できない。** あれは中間頂点と**無限直線**との距離しか見ないので、
+  // C(0,100) → (20,100) → N(10,100) のように**行って戻る** polyline も「直線」と判定される。そのまま解くと
+  // 折り返したままの輪郭を裁断用 SVG として出してしまう（人はそれを 1:1 で刷って布を裁つ）。
+  // C→N 方向の射影が単調増加であること（= 途中で戻らない）を確認し、崩れていれば推測せず解かない（T6/T8）。
+  // 同一点の重複（射影が進まない）も、どちらの頂点が生きているか決められないので同じく拒否する。
+  let previousProjection = 0; // C 自身の射影。
+  let slideLimitToward = neighborLen;
+  for (let i = 1; i < orientedNeighbor.length; i += 1) {
+    const p = orientedNeighbor[i]!;
+    const projection = d.x * (p.x - c.x) + d.y * (p.y - c.y);
+    if (!(projection > previousProjection)) return { ok: false, reason: "backtracking-neighbor" };
+    previousProjection = projection;
+    // 中間頂点（末尾 N は除く）のうち最も手前のものが、正方向へ滑れる限界になる（下記）。
+    if (i < orientedNeighbor.length - 1 && projection < slideLimitToward) {
+      slideLimitToward = projection;
+    }
+  }
+
   // 角を滑らせて変えられるのは C–V の 1 segment だけなので、縮め量がその長さを超えたら**この機構の外**。
   // 「幾何的に届かない（no-solution）」と混ぜず、容量オーバーだと分かる理由を返す — 実データではここが
   // 実際の壁になる（曲線 seam 辺は点が密で、末端 segment が Δ より短いことがある）。
@@ -123,7 +146,6 @@ export function solveCornerSlide(input: CornerSlideInput): CornerSlideResult {
 
   // 直線を C + t·d（d = C→N の単位ベクトル）で径数化し、|C + t·d − V|² = targetSegLen² を解く。
   // 展開すると t² + 2·b·t + (segLen² − targetSegLen²) = 0（b = d·(C−V)）。
-  const d = { x: (far.x - c.x) / neighborLen, y: (far.y - c.y) / neighborLen };
   const b = d.x * (c.x - v.x) + d.y * (c.y - v.y);
   const constant = segLen * segLen - targetSegLen * targetSegLen;
   const discriminant = b * b - constant;
@@ -140,17 +162,10 @@ export function solveCornerSlide(input: CornerSlideInput): CornerSlideResult {
   // 大延長も「隣辺に沿って滑らせる」局所操作から外れる — どちらも advisory に出さず解なしとする
   //（実際の mismatch Δ は数 mm で辺は数百 mm なので、範囲外は形が壊れているサイン）。
   //
-  // **中間頂点を持つ直線隣辺では、正方向の限界が反対端 N ではなく「最も近い中間頂点」になる。**
-  // 差し替えるのは共有角 1 点だけで中間頂点は動かさない（T6。実データではノッチ位置なので、動かすと
-  // ノッチが移動する）から、そこへ届くと輪郭が折り返す。負方向（C から外側へ延ばす向き）は中間頂点を
-  // 通り越さないので従来どおり neighborLen が限界。
-  let slideLimitToward = neighborLen;
-  for (let i = 1; i < orientedNeighbor.length - 1; i += 1) {
-    const p = orientedNeighbor[i]!;
-    const projection = d.x * (p.x - c.x) + d.y * (p.y - c.y);
-    if (projection < slideLimitToward) slideLimitToward = projection;
-  }
-
+  // **中間頂点を持つ直線隣辺では、正方向の限界が反対端 N ではなく「最も近い中間頂点」になる**
+  // （`slideLimitToward`・上の単調性チェックと同じループで求めてある）。差し替えるのは共有角 1 点だけで
+  // 中間頂点は動かさない（T6。実データではノッチ位置なので、動かすとノッチが移動する）から、そこへ届くと
+  // 輪郭が折り返す。負方向（C から外側へ延ばす向き）は中間頂点を通り越さないので従来どおり neighborLen が限界。
   const admissible = (t: number): boolean =>
     Number.isFinite(t) && t > -neighborLen && t < slideLimitToward;
   // roots は |t| 昇順なので、admissible な最初の根が minimal-change 解（決定的, T10）。

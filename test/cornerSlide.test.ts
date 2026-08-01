@@ -172,6 +172,52 @@ test("corner-slide reports the neighbor length as a polyline, not the chord", ()
   assert.deepEqual(reversed, forward);
 });
 
+test("corner-slide refuses a neighbor whose vertices backtrack along the chord", () => {
+  // 守る仕様 (T6/T8): `isStraightEdge` は中間頂点と**無限直線**の距離しか見ないので、C→(20,100)→N(10,100) の
+  //   ような**行って戻る** polyline も「直線」と判定される。向きが定まらないものを滑らせると、折り返したままの
+  //   輪郭を**裁断用 SVG として刷ってしまう**（人はそれを 1:1 で布に当てる）。射影の単調増加まで確認して拒否する。
+  const backtracking = [
+    { x: 0, y: 100 },
+    { x: 20, y: 100 }, // N より先へ行って…
+    { x: 10, y: 100 } // …戻る（弦上なので isStraightEdge は true）
+  ];
+  // Δ を小さく取ると解 t≈8.9mm は隣辺長 10mm の内側に収まる = 単調性を見ないと ok になってしまう Δ。
+  const result = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: backtracking,
+    deltaMm: 0.4
+  });
+  assert.deepEqual(result, { ok: false, reason: "backtracking-neighbor" });
+
+  // 同じ点を単調な順に並べれば（C→(10,100)→N(20,100)）解ける = 拒んでいるのは折り返しであって点数ではない。
+  const monotonic = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: [
+      { x: 0, y: 100 },
+      { x: 10, y: 100 },
+      { x: 20, y: 100 }
+    ],
+    deltaMm: 0.4
+  });
+  assert.ok(monotonic.ok);
+
+  // 重複頂点（射影が進まない）も、どちらが生きているか決められないので同じく拒否する。
+  const duplicated = solveCornerSlide({
+    edgePoints: EDGE,
+    corner: "end",
+    neighborPoints: [
+      { x: 0, y: 100 },
+      { x: 10, y: 100 },
+      { x: 10, y: 100 },
+      { x: 20, y: 100 }
+    ],
+    deltaMm: 0.4
+  });
+  assert.deepEqual(duplicated, { ok: false, reason: "backtracking-neighbor" });
+});
+
 test("corner-slide refuses to slide past an intermediate vertex of the neighbor", () => {
   // 守る仕様（T6）: 差し替えるのは共有角 1 点だけで、中間頂点は動かさない（実データではノッチ位置）。
   //           滑らせる先がその頂点に届くと、通り越した輪郭は折り返す — 頂点を黙って捨てたり動かしたりせず

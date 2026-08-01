@@ -41,7 +41,8 @@ export type SeamCutCornerReject =
   | "degenerate"
   | "no-solution"
   | "slide-past-neighbor-vertex"
-  | "delta-exceeds-end-segment";
+  | "delta-exceeds-end-segment"
+  | "backtracking-neighbor";
 
 export type SeamCutOutlineReject =
   "conform-edge-not-found" | "not-a-closed-loop" | "degenerate" | "no-solvable-corner";
