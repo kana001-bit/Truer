@@ -245,11 +245,11 @@ test("corner-slide refuses to slide past an intermediate vertex of the neighbor"
   assert.ok(unblocked.ok);
 });
 
-test("corner-slide falls back to the other root when a vertex blocks the minimal one", () => {
-  // 守る仕様: 中間頂点があると正方向だけに限界ができる（負方向 = 隣辺を延ばす向きは頂点を通り越さない）。
-  //           限界が非対称になるので**両方の根を検査**する。片方が頂点に阻まれても、もう片方が隣辺の範囲に
-  //           収まっているなら裁てる解は実在する — それを no-solution にすると裁てるものを取りこぼす。
-  //           （2 点隣辺は限界が ±neighborLen で対称なので、この分岐は従来の結果を変えない。）
+test("corner-slide does not switch to the far root when a vertex blocks the minimal one", () => {
+  // 守る仕様 (T6/T8): 採るのは |t| 最小の根だけ。最小根が中間頂点に阻まれたとき、もう片方の根（伸長時は
+  //           符号が逆で遥かに遠い）へ乗り換えない。それは「最小・局所」ではない大きな外向き移動で、角が
+  //           元の隣辺の外へ出るぶん**ピースの別の辺と交差した輪郭**を作りうる（2026-08-01 レビューで実例）。
+  //           裁てる解が無いなら、代わりの大きな解を勝手に選ばず解けないと言う。
   const result = solveCornerSlide({
     edgePoints: EDGE,
     corner: "end",
@@ -260,14 +260,8 @@ test("corner-slide falls back to the other root when a vertex blocks the minimal
     ],
     deltaMm: 5
   });
-  assert.ok(result.ok);
-  if (!result.ok) return;
-  const expectedSlide = Math.sqrt(105 * 105 - 100 * 100);
-  assert.ok(Math.abs(result.slideDistanceMm - expectedSlide) < 1e-9);
-  assert.ok(result.newCorner.x < 0, "頂点を通り越さない負方向（隣辺を延ばす側）の根を選ぶ");
-  // 解であることの検算: 補正後も conform 辺長は目標 105mm。
-  const v = EDGE[0]!;
-  assert.ok(Math.abs(Math.hypot(result.newCorner.x - v.x, result.newCorner.y - v.y) - 105) < 1e-9);
+  // 反対根 −√1025 は隣辺長 50mm の範囲内だが、それを採ってはいけない。
+  assert.deepEqual(result, { ok: false, reason: "slide-past-neighbor-vertex" });
 });
 
 test("corner-slide refuses a neighbor that does not share the corner", () => {

@@ -178,6 +178,61 @@ test("computeSeamCutOutline: 中間頂点を通り越す解は裁てないと言
   assert.equal(result.cornerReasons?.end, "slide-past-neighbor-vertex");
 });
 
+// 角を動かすと離れた辺と交差しうるピース（凹形）。conform=edge0、その end 角 (0,100) を右へ滑らせると、
+// 新しい conform 辺 (0,0)→(新角) が edge3 (50,60)→(5,45) を横切る。solver は conform 辺と隣辺しか見ないので
+// この交差には気づけない — 輪郭を組んだ後でしか判定できない。
+function concavePieceEdges(): Point[][] {
+  return [
+    [
+      { x: 0, y: 0 },
+      { x: 0, y: 100 }
+    ], // edge0 = conform
+    [
+      { x: 0, y: 100 },
+      { x: 50, y: 100 }
+    ], // edge1 = end 側の直線隣辺
+    [
+      { x: 50, y: 100 },
+      { x: 50, y: 60 }
+    ],
+    [
+      { x: 50, y: 60 },
+      { x: 5, y: 45 }
+    ], // 交差する相手
+    [
+      { x: 5, y: 45 },
+      { x: 60, y: 10 }
+    ],
+    [
+      { x: 60, y: 10 },
+      { x: 0, y: 0 }
+    ]
+  ];
+}
+
+test("computeSeamCutOutline: 角を動かして輪郭が自分と交差したら出さない", () => {
+  // 守る仕様 (T8): cut の成果物は 1:1 で刷って布を裁つ線。折り重なった型紙を「裁てます」と渡さない。
+  //   solver は conform 辺と隣辺しか見ないので、離れた辺との交差は輪郭を組んだここでしか判定できない。
+  const crossing = computeSeamCutOutline({
+    edges: concavePieceEdges(),
+    conformEdgeIndex: 0,
+    deltaMm: 5, // 角が約 32mm 滑り、edge3 を横切る
+    corner: "end"
+  });
+  assert.equal(crossing.ok, false);
+  if (crossing.ok) return;
+  assert.equal(crossing.reason, "self-intersecting-outline");
+
+  // 同じピースでも滑る量が小さければ交差しない = 交差検査が正常な解まで潰していないことの対照。
+  const fine = computeSeamCutOutline({
+    edges: concavePieceEdges(),
+    conformEdgeIndex: 0,
+    deltaMm: 0.1, // 角は約 4.5mm しか動かず edge3 に届かない
+    corner: "end"
+  });
+  assert.ok(fine.ok);
+});
+
 test("computeSeamCutOutline: 閉ループでない / index 範囲外 / 退化は推測せず理由付きで諦める", () => {
   // 守る仕様（鳴ってはいけない面）: 前提が崩れた入力で輪郭を捏造しない。ループ順で隣辺を選ぶ設計なので、
   //   辺が繋がっていなければ「k±1 が隣辺」という前提自体が無効。

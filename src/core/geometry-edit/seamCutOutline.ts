@@ -45,7 +45,12 @@ export type SeamCutCornerReject =
   | "backtracking-neighbor";
 
 export type SeamCutOutlineReject =
-  "conform-edge-not-found" | "not-a-closed-loop" | "degenerate" | "no-solvable-corner";
+  | "conform-edge-not-found"
+  | "not-a-closed-loop"
+  | "degenerate"
+  | "no-solvable-corner"
+  // 角を動かした結果、輪郭が自分自身と交差した（solver は conform 辺と隣辺しか見ないので気づけない）。
+  | "self-intersecting-outline";
 
 export interface SeamCutOutline {
   // 補正後の閉じたピース輪郭（1 頂点 1 点・始点は末尾で繰り返さない = band 輪郭と同じ規約）。
@@ -80,6 +85,53 @@ function polylineLengthMm(points: readonly Point[]): number {
     total += Math.hypot(points[i]!.x - points[i - 1]!.x, points[i]!.y - points[i - 1]!.y);
   }
   return total;
+}
+
+function cross(ox: number, oy: number, a: Point, b: Point): number {
+  return (a.x - ox) * (b.y - oy) - (a.y - oy) * (b.x - ox);
+}
+
+// 2 本の線分が交差するか（端点での接触も交差とみなす）。呼び出し側が隣接 segment を除外してから使う。
+function segmentsIntersect(p1: Point, p2: Point, p3: Point, p4: Point): boolean {
+  const d1 = cross(p3.x, p3.y, p4, p1);
+  const d2 = cross(p3.x, p3.y, p4, p2);
+  const d3 = cross(p1.x, p1.y, p2, p3);
+  const d4 = cross(p1.x, p1.y, p2, p4);
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+    return true;
+  }
+  // 共線・端点接触。非隣接 segment 同士が触れているなら、それも裁てない形（重なり）なので交差扱い。
+  const onSegment = (a: Point, b: Point, p: Point): boolean =>
+    Math.min(a.x, b.x) <= p.x &&
+    p.x <= Math.max(a.x, b.x) &&
+    Math.min(a.y, b.y) <= p.y &&
+    p.y <= Math.max(a.y, b.y);
+  if (d1 === 0 && onSegment(p3, p4, p1)) return true;
+  if (d2 === 0 && onSegment(p3, p4, p2)) return true;
+  if (d3 === 0 && onSegment(p1, p2, p3)) return true;
+  if (d4 === 0 && onSegment(p1, p2, p4)) return true;
+  return false;
+}
+
+// 角を差し替えた輪郭が自分自身と交差していないか。**動かした角に接する 2 本だけ**を、隣接しない全 segment と
+// 突き合わせる。solver は conform 辺と隣辺しか見ないので、離れた辺と交差したことに気づけない（角が元の隣辺の
+// 外側へ出る解で実際に起きる）。交差したまま出すと、1:1 で刷って布を裁つ人に**折り重なった型紙**を渡すことに
+// なる（T8: 直せないと言う）。元から交差している輪郭（入力データ側の問題）まで拾わないよう、検査対象は
+// 変更した 2 本に限る。
+function movedCornerCrosses(loop: readonly Point[], movedIndex: number): boolean {
+  const n = loop.length;
+  if (n < 4) return false;
+  const changed = [(movedIndex - 1 + n) % n, movedIndex]; // 動いた角に接する segment の始点 index
+  for (const start of changed) {
+    const a1 = loop[start]!;
+    const a2 = loop[(start + 1) % n]!;
+    for (let other = 0; other < n; other += 1) {
+      // 端点を共有する segment（自分自身と両隣）は必ず「接触」するので除外する。
+      if (other === start || (other + 1) % n === start || (start + 1) % n === other) continue;
+      if (segmentsIntersect(a1, a2, loop[other]!, loop[(other + 1) % n]!)) return true;
+    }
+  }
+  return false;
 }
 
 export function computeSeamCutOutline(input: SeamCutOutlineInput): SeamCutOutlineResult {
@@ -164,6 +216,11 @@ export function computeSeamCutOutline(input: SeamCutOutlineInput): SeamCutOutlin
       ? cornerIndexOfEdgeStart[conformEdgeIndex]!
       : cornerIndexOfEdgeStart[(conformEdgeIndex + 1) % count]!;
   loop[replaceIndex] = best.newCorner;
+
+  // 角を動かした結果ピースが自分自身と交差したら出さない（上の movedCornerCrosses のコメント参照）。
+  if (movedCornerCrosses(loop, replaceIndex)) {
+    return { ok: false, reason: "self-intersecting-outline" };
+  }
 
   // 補正後の conform 辺長は「角を差し替えた点列」から実測する（目標を書き戻さない = 幾何と数値が食い違わない）。
   const conformAfter = conform.slice();

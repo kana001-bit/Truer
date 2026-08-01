@@ -14,7 +14,8 @@
 // まま（角の xy も proposal に出さない, V2）。Slice 2（緊急 DXF 焼き）が同じ solver を再利用する想定。
 //
 // pure かつ決定的（T10）: 同じ入力 → 同じ出力。2 根は |t| 最小（minimal-change, T6 の精神）、同値なら
-// 隣辺の向き側（t > 0）で決定的に選ぶ。丸めない — emit 丸めは builder（emission boundary）の責務。
+// 隣辺の向き側（t > 0）で決定的に選ぶ。**その最小根が採れないときに他方の根へ乗り換えることはしない**
+// （大きな移動は「最小・局所」ではなく、輪郭を交差させうる）。丸めない — emit 丸めは builder の責務。
 // 解けない状況は理由付きで返し、呼び出し側はその角を候補にしない（preview-only のまま, T8）。
 
 import type { Point } from "../proposal/proposalSchema.ts";
@@ -166,23 +167,19 @@ export function solveCornerSlide(input: CornerSlideInput): CornerSlideResult {
   // （`slideLimitToward`・上の単調性チェックと同じループで求めてある）。差し替えるのは共有角 1 点だけで
   // 中間頂点は動かさない（T6。実データではノッチ位置なので、動かすとノッチが移動する）から、そこへ届くと
   // 輪郭が折り返す。負方向（C から外側へ延ばす向き）は中間頂点を通り越さないので従来どおり neighborLen が限界。
-  const admissible = (t: number): boolean =>
-    Number.isFinite(t) && t > -neighborLen && t < slideLimitToward;
-  // roots は |t| 昇順なので、admissible な最初の根が minimal-change 解（決定的, T10）。
-  // 2 点隣辺では限界が ±neighborLen で対称なので、最小根が範囲外ならもう片方も必ず範囲外＝従来と同じ結果。
-  // 中間頂点で正方向だけが切られるときは非対称になるため、両方の根を検査する必要がある（伸長時の 2 根は
-  // 符号が逆なので、正の最小根が頂点に阻まれても負の根が生きていることがある）。
-  const t = roots.find(admissible);
-  if (t === undefined) {
-    // 理由を分けるのは「中間頂点が無ければ解けていた」根が実在するときだけ。隣辺そのものを超える解まで
-    // 頂点のせいにすると、本当は「幾何的に届かない」ケースを取り違えて人に伝えることになる。
-    const blockedByVertex = roots.some(
-      (root) =>
-        Number.isFinite(root) &&
-        root > -neighborLen &&
-        root < neighborLen && // 従来（中間頂点なし）の限界には収まっていた
-        root >= slideLimitToward // が、中間頂点に届くので今は採れない
-    );
+  // **採るのは |t| 最小の根だけ**（`roots[0]`）。最小根が中間頂点に阻まれたとき、もう片方の根（伸長時は
+  // 符号が逆で遥かに遠い）へ乗り換えることは**しない** — それは「最小・局所」ではない大きな外向き移動で、
+  // 角が元の隣辺の外へ出るぶんピースの別の辺と交差した輪郭を作りうる（レビュー 2026-08-01 で実例）。
+  // 吸える角が無いなら、代わりの大きな解を勝手に選ばず解けないと言う（T6/T8）。
+  const t = roots[0]!;
+  if (!Number.isFinite(t) || t <= -neighborLen || t >= slideLimitToward) {
+    // 理由を分けるのは「中間頂点が無ければ解けていた」ときだけ。隣辺そのものを超える解まで頂点のせいに
+    // すると、本当は「幾何的に届かない」ケースを取り違えて人に伝えることになる。
+    const blockedByVertex =
+      Number.isFinite(t) &&
+      t > -neighborLen &&
+      t < neighborLen && // 従来（中間頂点なし）の限界には収まっていた
+      t >= slideLimitToward; // が、中間頂点に届くので採れない
     return { ok: false, reason: blockedByVertex ? "slide-past-neighbor-vertex" : "no-solution" };
   }
 

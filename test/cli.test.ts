@@ -1409,6 +1409,7 @@ function runSeamCutWithDrift(
     shiftReference?: boolean;
     shiftNeighbor?: boolean;
     mirrorNeighbor?: boolean;
+    notchedNeighbor?: boolean;
   }
 ): { stdout: string; status: number | null; svgs: string[] } {
   const dir = mkdtempSync(join(tmpdir(), `truer-seam-drift-${label}-`));
@@ -1475,17 +1476,30 @@ test("cut: 隣辺だけが変わっても stale として裁たない（人が�
   assert.deepEqual(run.svgs, []);
 });
 
-test("cut: 同長・鏡像の隣辺変更も stale として裁たない（スカラーでは同一性を判定できない）", () => {
-  // 守る仕様: 共有角と conform 隣接頂点を通る直線について隣辺を**鏡像**にすると、この反射は
-  //   `d·(C−V)` と `|CN|` を保つので **slide 量・隣辺長（before/after）・conform 辺長がすべて完全一致**する。
-  //   実測: どちらも slide 34.936mm / 隣辺 300.666→265.73mm。ところが滑った先の角は
-  //   (202.324, 34.858) と (206.475, -34.331) で**別の点**＝別の輪郭が 1:1 で刷られる。
-  //   したがって数値の一致で「同じ隣辺」と判断してはならない。identity は digest で見る。
-  const run = runSeamCutWithDrift("mirror", { mirrorNeighbor: true });
+test("cut: 同長・同 slide でも隣辺が別物なら stale として裁たない（スカラーでは同一性を判定できない）", () => {
+  // 守る仕様: propose 後に隣辺へ**弦上の頂点が 1 つ増えた**（ノッチ追加の再エクスポート等）状況。幾何としては
+  //   同じ直線なので **slide 量・隣辺長 before/after・conform 辺長がすべて完全一致**し、数値では区別できない。
+  //   それでも刷られる輪郭には頂点が 1 つ増えている（= propose 時に人が見たものと違う）ので、identity は
+  //   digest で見て裁たない。数値の一致を「同じ隣辺」の根拠にしてはならない、を固定する。
+  const run = runSeamCutWithDrift("notch-added", { notchedNeighbor: true });
 
   assert.equal(run.status, 0);
   assert.match(run.stdout, /stale proposal/);
   assert.match(run.stdout, /隣辺が propose 時と違います/);
+  assert.deepEqual(run.svgs, []);
+});
+
+test("cut: 鏡像の隣辺は輪郭が自分と交差するので、その手前で裁たない", () => {
+  // 守る仕様: 共有角と conform 隣接頂点を通る直線について隣辺を**鏡像**にすると、この反射は `d·(C−V)` と
+  //   `|CN|` を保つので slide 量・隣辺長・conform 辺長がすべて一致する（digest guard を入れた元の発見）。
+  //   ただし反射で隣辺はピースの反対側へ回り込むため、**輪郭そのものが交差する**。今はその検査が先に効く。
+  //   どちらの経路でも「裁たない・何も書かない」ことは変わらない — それをここで固定する
+  //   （数値一致だけで同一性を判断しないことの回帰は、上の notch-added が受け持つ）。
+  const run = runSeamCutWithDrift("mirror", { mirrorNeighbor: true });
+
+  assert.equal(run.status, 0);
+  assert.match(run.stdout, /self-intersecting-outline/);
+  assert.match(run.stdout, /自分自身と交差する/);
   assert.deepEqual(run.svgs, []);
 });
 
