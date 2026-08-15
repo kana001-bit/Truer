@@ -1,8 +1,7 @@
 {
-  "name": "truer",
-  "version": "0.0.0",
+  "name": "@kana001-bit/truer",
+  "version": "0.1.0",
   "license": "MIT",
-  "private": true,
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -16,7 +15,7 @@
     }
   },
   "bin": {
-    "tru": "./dist/cli/tru.js"
+    "tru": "dist/cli/tru.js"
   },
   "files": [
     "dist"
@@ -29,7 +28,8 @@
     "lint": "eslint .",
     "format": "prettier --write . --ignore-unknown",
     "format:check": "prettier --check . --ignore-unknown",
-    "tru": "node ./src/cli/tru.ts"
+    "tru": "node ./src/cli/tru.ts",
+    "prepare": "npm run build"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -38,5 +38,13 @@
     "prettier": "^3.9.5",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.63.0"
+  },
+  "description": "Proposes minimal geometry corrections for sewing patterns from Seamlint diagnostics",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kana001-bit/truer.git"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
