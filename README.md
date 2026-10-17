@@ -1,5 +1,6 @@
 # Truer
 
+[![npm](https://img.shields.io/npm/v/@kana001-bit/truer)](https://www.npmjs.com/package/@kana001-bit/truer)
 [![CI](https://github.com/kana001-bit/Truer/actions/workflows/ci.yml/badge.svg)](https://github.com/kana001-bit/Truer/actions/workflows/ci.yml)
 
 A write tool for pattern making — it proposes a small, explainable correction and writes only the one a human accepts.
@@ -55,6 +56,18 @@ lie_ about what it will do:
 The proposal itself is a machine-readable contract (`truer.proposal.v0`) — self-contained, with
 a stable shape a future Loomit Studio can read. `apply` replays the recorded `changes`; it never
 re-solves the fix, so a proposal can never produce a line different from its preview.
+
+## Install
+
+Requires Node.js 24+.
+
+```sh
+npm install -g @kana001-bit/truer seamlint
+tru --help
+```
+
+Truer reads edge geometry by calling Seamlint's `slnt` as a subprocess, so install both. `tru`
+finds `slnt` on your `PATH` (override with `--slnt <cmd>` or `$SEAMLINT_CLI`).
 
 ## The loop: propose → accept → apply
 
@@ -157,8 +170,8 @@ decides _how it could be fixed and writes it_, and a human decides _what actuall
 
 ## Status
 
-Early prototype — a **public alpha in preparation**, not a published package yet (`package.json`
-is still `private` at `0.0.0`).
+Early prototype — a **public alpha**, published on npm as
+[`@kana001-bit/truer`](https://www.npmjs.com/package/@kana001-bit/truer) (v0.1.0).
 
 **Works today**
 
@@ -170,6 +183,9 @@ is still `private` at `0.0.0`).
 - The full **propose → accept → apply** loop runs end-to-end for `geometry.curve_kink` (an
   interior kink slid onto the chord between its neighbours), verified against a real DXF and a
   real Seamlint (`slnt`) subprocess. `preview == apply` is pinned by tests.
+- The loop starts from a plain Seamlint diagnostic: Seamlint (v0.1.0) attaches the edge address
+  (`actual.edge`) to a DXF `curve_kink` — only for a unique interior kink, never for a corner or
+  dart tip.
 
 **Preview-only for now**
 
@@ -178,22 +194,14 @@ is still `private` at `0.0.0`).
   a human choice. Any diagnostic Truer cannot map with confidence stays `preview-only` with
   `changes: []`.
 
-**Open across repos**
-
-- For an outside user to run the `curve_kink` loop today, the Seamlint diagnostic must carry the
-  edge address (`actual.edge`). Having Seamlint emit that automatically — only for a unique
-  interior kink, never for a corner or dart tip — is agreed in shape and still landing on the
-  Seamlint side.
-- Truer writes its own corrected DXF (this one garment), not `.val` (the Valentina master), by
-  design; an npm install path is not there yet.
-
 The corrected DXF Truer writes is for _this one cut_ — it is not propagated back to a Valentina
 `.val` master. That is a deliberate trade-off, kept honest: "fix this garment before cutting,"
 not "re-grade the whole size run." The design history has the full reasoning.
 
 ## Develop
 
-TypeScript, single package. Source `.ts` runs directly on Node 24.
+TypeScript, single package. Source `.ts` runs directly on Node 24, so a clone runs without
+installing the package.
 
 ```sh
 npm install            # devDependencies for typecheck / build
