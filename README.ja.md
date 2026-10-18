@@ -1,5 +1,6 @@
 # Truer
 
+[![npm](https://img.shields.io/npm/v/@kana001-bit/truer)](https://www.npmjs.com/package/@kana001-bit/truer)
 [![CI](https://github.com/kana001-bit/Truer/actions/workflows/ci.yml/badge.svg)](https://github.com/kana001-bit/Truer/actions/workflows/ci.yml)
 
 型紙のための write tool——小さく説明できる補正案を出し、人が採ったものだけを書く。
@@ -49,6 +50,18 @@ Truer が編集する線は、最終的に布の裁断になる。だからこ�
 proposal 自身が機械可読な契約（`truer.proposal.v0`）である——self-contained で、将来の
 Loomit Studio が読める安定した shape を持つ。`apply` は記録済みの `changes` を再実行する
 だけで、fix を解き直さない。だから proposal が preview と違う線を生むことは決してない。
+
+## インストール
+
+必要なもの: Node.js 24+。
+
+```sh
+npm install -g @kana001-bit/truer seamlint
+tru --help
+```
+
+Truer は辺の幾何を Seamlint の `slnt` を subprocess として呼んで読むので、両方を入れる。`tru` は
+`PATH` 上の `slnt` を使う（`--slnt <cmd>` か `$SEAMLINT_CLI` で差し替えられる）。
 
 ## ループ：propose → accept → apply
 
@@ -148,8 +161,8 @@ Truer は型紙製作 toolchain の三分の一で、それぞれが一つの仕
 
 ## 状態
 
-初期プロトタイプ——**public alpha を準備中**で、まだ公開 package ではない（`package.json` は
-`private` のまま `0.0.0`）。
+初期プロトタイプ——**public alpha** として npm に
+[`@kana001-bit/truer`](https://www.npmjs.com/package/@kana001-bit/truer)（v0.1.0）を公開済み。
 
 **いま動くこと**
 
@@ -161,6 +174,8 @@ Truer は型紙製作 toolchain の三分の一で、それぞれが一つの仕
 - **propose → accept → apply** の通し loop が `geometry.curve_kink`（内部 kink を隣接 2 点の
   弦上へ寄せる）で end-to-end に動く。実 DXF ＋実 Seamlint（`slnt`）subprocess で確認済み。
   `preview == apply` は test で固定している。
+- loop は素の Seamlint 診断から始められる。Seamlint（v0.1.0）は DXF の `curve_kink` に辺住所
+  （`actual.edge`）を付ける——一意な内部 kink のときだけで、corner や dart tip には付けない。
 
 **いまは preview-only**
 
@@ -168,21 +183,14 @@ Truer は型紙製作 toolchain の三分の一で、それぞれが一つの仕
   しない——Δ の吸収は正解が一意でないので、人の選択を待つ。確信を持って対応づけられない診断は
   すべて `changes: []` の `preview-only` に留まる。
 
-**cross-repo で未決**
-
-- 外部の人が今 `curve_kink` の loop を回すには、Seamlint 診断が辺住所（`actual.edge`）を運ぶ
-  必要がある。Seamlint がそれを自動で出すこと——一意な内部 kink のときだけ、corner や dart tip
-  には出さない——は shape 合意済みで、Seamlint 側で landing 待ち。
-- Truer は `.val`（Valentina master）ではなく自分の補正済み DXF（この 1 着分）を書く設計。
-  npm install 導線はまだ無い。
-
 Truer が書く補正済み DXF は _この 1 回の裁断_ のためのもので、Valentina `.val` master には
 戻さない。これは意図的なトレードオフで、正直に受け入れている——「裁つ前にこの服を直す」であって
 「サイズ全体を grade し直す」ではない。理由の全体は design history にある。
 
 ## 開発
 
-TypeScript 単一パッケージ。source の `.ts` は Node 24 でそのまま実行する。
+TypeScript 単一パッケージ。source の `.ts` は Node 24 でそのまま実行するので、clone からは
+package を入れずに動かせる。
 
 ```sh
 npm install            # typecheck / build に必要な devDependencies
