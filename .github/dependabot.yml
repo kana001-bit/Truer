@@ -1,0 +1,12 @@
+# GitHub Actions(actions/checkout・actions/setup-node など)の新しい版を月 1 回、1 本の PR にまとめて出す。
+# npm の依存はここでは更新しない(脆弱性があれば Dependabot security updates が別途 PR を出す)。
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      actions:
+        patterns:
+          - "*"
