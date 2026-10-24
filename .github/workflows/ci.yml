@@ -22,6 +22,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+          check-latest: true
           cache: npm
       - run: npm ci
       # lint / format は OS 非依存なので ubuntu の 1 本だけで足りる（二重実行しない）。
